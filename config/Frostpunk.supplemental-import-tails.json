@@ -1,0 +1,19 @@
+{
+  "original_exe_sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc",
+  "proof": {
+    "path": "research/zfree-import-tail.json",
+    "sha256": "46d2d604f4db3d4b8fcb1453445091d7ee220e955588308f9f389f4f30c23b75",
+    "producer": "tools/inspect_zfree_thunk.py",
+    "producer_sha256": "7d30d63b1dd4c71a0be8e4e587320ffaff6de40e60f6ec859ddae05b309e48d3"
+  },
+  "entries": [
+    {
+      "va": "0x141c04ec0",
+      "size": 10,
+      "bytes": "488bca48ff258e2d0c00",
+      "IAT_slot": "0x141cc7c58",
+      "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+      "name": "free"
+    }
+  ]
+}

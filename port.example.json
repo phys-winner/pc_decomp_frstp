@@ -1,0 +1,9 @@
+{
+  "game_directory": "D:/Games/Frostpunk",
+  "device": "SERIAL",
+  "gpu_provider": "system",
+  "original_exe_sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc",
+  "reference_workspace": "../the_void",
+  "android_sdk": "D:/Android/Sdk",
+  "android_ndk_version": "27.2.12479018"
+}

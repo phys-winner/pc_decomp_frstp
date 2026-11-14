@@ -1,0 +1,86 @@
+#version 450
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std430) readonly buffer Meta { uvec2 slots[1216]; } meta;
+layout(set=0,binding=1,std430) buffer Output { uint words[]; } result;
+layout(set=0,binding=2,std430) buffer BoundBuffer { uint words[]; } boundBuffer;
+layout(set=0,binding=3,std430) buffer UnboundBuffer { uint words[]; } unboundBuffer;
+layout(set=0,binding=4) uniform usampler2D unboundTexture;
+layout(set=0,binding=5,r32ui) uniform uimage2D boundImage;
+layout(set=0,binding=6,r32ui) uniform uimage2D unboundImage;
+layout(set=0,binding=7) uniform usampler2D boundTexture;
+layout(set=0,binding=8,std430) buffer UnboundCounter { uint value; } unboundCounter;
+
+bool readable(uint slot, uint index) {
+  return (meta.slots[slot].x & 1u) != 0u && index < meta.slots[slot].y / 4u;
+}
+uint readWord(uint index) {
+  if (readable(2u,index)) return boundBuffer.words[index];
+  return 0u;
+}
+void main() {
+  for (uint i=0u;i<64u;i++) {
+    uint o=i*16u;
+    result.words[o]=readWord(i);
+    for(uint c=0u;c<4u;c++) result.words[o+1u+c]=readWord(i+c);
+    uint v=0u;
+    if(readable(3u,i)) v=unboundBuffer.words[i];
+    result.words[o+5u]=v;
+    if(readable(3u,i)) unboundBuffer.words[i]=0xbad00001u;
+    v=0u;
+    if(readable(3u,i)) v=atomicAdd(unboundBuffer.words[i],1u);
+    result.words[o+6u]=v;
+    v=0u;
+    // The allocation is 64 bytes, but the bound descriptor exposes only 12.
+    if(readable(2u,i+3u)) v=atomicAdd(boundBuffer.words[i+3u],1u);
+    result.words[o+7u]=v;
+    if(readable(2u,i+3u)) boundBuffer.words[i+3u]=0xbad00002u;
+    uvec2 dims=uvec2(0u);v=0u;
+    if((meta.slots[4].x&1u)!=0u) {
+      dims=uvec2(textureSize(unboundTexture,0));
+      v=texelFetch(unboundTexture,ivec2(0),0).x;
+    }
+    result.words[o+8u]=dims.x|dims.y|v;
+    dims=uvec2(0u);v=0u;
+    if((meta.slots[6].x&1u)!=0u) {
+      dims=uvec2(imageSize(unboundImage));
+      v=imageLoad(unboundImage,ivec2(0)).x;
+      imageStore(unboundImage,ivec2(0),uvec4(0xbad00003u));
+      v|=imageAtomicAdd(unboundImage,ivec2(0),1u);
+    }
+    result.words[o+9u]=dims.x|dims.y|v;
+    v=0u;
+    if((meta.slots[8].x&1u)!=0u && meta.slots[8].y>=4u)
+      v=atomicAdd(unboundCounter.value,1u);
+    result.words[o+10u]=v;
+    ivec2 pos=ivec2(int(i)-1,1);
+    v=0u;
+    if((meta.slots[5].x&1u)!=0u) {
+      ivec2 size=imageSize(boundImage);
+      if(all(greaterThanEqual(pos,ivec2(0))) && all(lessThan(pos,size)))
+        v=imageLoad(boundImage,pos).x;
+    }
+    result.words[o+11u]=v;
+    v=0u;
+    if((meta.slots[5].x&1u)!=0u) {
+      ivec2 size=imageSize(boundImage);
+      ivec2 outside=ivec2(int(i)+2,0);
+      if(all(greaterThanEqual(outside,ivec2(0))) && all(lessThan(outside,size))) {
+        v=imageAtomicAdd(boundImage,outside,1u);
+        imageStore(boundImage,outside,uvec4(0xbad00004u));
+      }
+    }
+    result.words[o+12u]=v;
+    v=0u;
+    if((meta.slots[7].x&1u)!=0u) {
+      ivec2 size=textureSize(boundTexture,0);
+      if(all(greaterThanEqual(pos,ivec2(0))) && all(lessThan(pos,size)))
+        v=texelFetch(boundTexture,pos,0).x;
+    }
+    result.words[o+13u]=v;
+    result.words[o+14u]=0x51afe000u+i;
+    result.words[o+15u]=0u;
+  }
+  // Positive paths ensure the guards do not silently suppress every operation.
+  result.words[1024]=atomicAdd(boundBuffer.words[0],7u);
+  result.words[1025]=imageAtomicAdd(boundImage,ivec2(0),5u);
+}

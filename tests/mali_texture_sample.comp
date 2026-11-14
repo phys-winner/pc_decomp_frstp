@@ -1,0 +1,11 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0) uniform sampler2D source_texture;
+layout(std430,set=0,binding=1) buffer Output { uvec4 pixels[]; } result;
+layout(push_constant) uniform Dimensions { uint width; uint height; } size;
+void main() {
+    uvec2 xy=gl_GlobalInvocationID.xy;
+    if(xy.x>=size.width||xy.y>=size.height)return;
+    vec4 rgba=texelFetch(source_texture,ivec2(xy),0);
+    result.pixels[xy.y*size.width+xy.x]=uvec4(round(clamp(rgba,0.0,1.0)*255.0));
+}

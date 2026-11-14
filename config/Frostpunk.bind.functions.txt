@@ -1,0 +1,3 @@
+# Original .bind wrapper ranges, not a substituted CRT entry.
+0x144506310  60  original_bind_entry
+0x1445063D0  35A8  original_bind_loader

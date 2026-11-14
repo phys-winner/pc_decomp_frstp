@@ -1,0 +1,17 @@
+{
+  "upstream_revision": "904ac3129d0c9d05efbeec19a1dce6abbe7f5d26",
+  "license": "MIT",
+  "changes": [
+    "ARM64 TEB and CPUID explicit host callbacks; no fabricated defaults",
+    "Portable C11 thread-local EH frame head",
+    "Explicit per-thread EH reset after ExitThread boundary longjmp",
+    "Unsupported instructions require an explicit diagnostic host trap",
+    "Local ADDSS/MULSS helpers preserve x86 NaN propagation and indefinite result",
+    "Portable BSWAP32/64 helpers; CheckedLifter retains width-specific register writes"
+  ],
+  "upstream_sha256": {
+    "cpu64.h": "966c88a35642be1bd12f11ff141f8c71d6fb314c16c31847bcff8513519e26d2",
+    "eh64.c": "d394b0abe10e3e7951dae1daa10e61f556676d4c7b9f7257f033330da38c3226",
+    "eh64.h": "e5c313e51dbab542d6eabf7b9a79c9c9a4325eb89c2cfb35b17328fbcd9ab4a9"
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "archives": [
+    {
+      "append": "port-ui.common.append",
+      "base": {
+        ".dat": {
+          "bytes": 600386048,
+          "sha256": "17e3d82f80a3ff13db09aa2fc492cc6f76e683b6454ae307e0ab20b19e75fa86"
+        },
+        ".idx": {
+          "bytes": 207651,
+          "sha256": "1fed33fa1888c7c83542bb6106beff3be86929d33ded66b87333d421717d6350"
+        }
+      },
+      "index": "port-ui.common.idx",
+      "output": {
+        ".dat": {
+          "bytes": 600387204,
+          "sha256": "af549e1901f7377b97709b8dc0cfa2dcab50768a32411bdc7ed0ff377930d83b"
+        },
+        ".idx": {
+          "bytes": 207651,
+          "sha256": "ac7fe17505eadb8df4cd3501d4f770888244c6fcd60c07036f6cdef7f3fba4fc"
+        }
+      },
+      "replaced_entries": 1,
+      "stem": "common"
+    },
+    {
+      "append": "port-ui.localizations.append",
+      "base": {
+        ".dat": {
+          "bytes": 9688036,
+          "sha256": "615a015966751e05b36e221763d0311b4b4ad44dd0f2234ecc39003f825efb61"
+        },
+        ".idx": {
+          "bytes": 591,
+          "sha256": "1ae6017bcecc931e9cf9df2764cd040539502eebd69363d91fc77b613b0b842e"
+        }
+      },
+      "index": "port-ui.localizations.idx",
+      "output": {
+        ".dat": {
+          "bytes": 18679869,
+          "sha256": "c25ea745bce10de8ace4d299bebbfbc8a65e8829887133dead32a841a3aefa4e"
+        },
+        ".idx": {
+          "bytes": 591,
+          "sha256": "c1638e6153c3b0e2f463a5ec2dc865d5641664e5fe054437525a7d38c3b043f0"
+        }
+      },
+      "replaced_entries": 14,
+      "stem": "localizations"
+    }
+  ],
+  "kind": "port-ui",
+  "original_exe_sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc",
+  "payloads": {
+    "port-ui.common.append": {
+      "bytes": 1156,
+      "sha256": "6f1eb8c44e8348d80be45358450060d1470c19479d87a39da16cddc58ea2e8a6"
+    },
+    "port-ui.common.idx": {
+      "bytes": 207651,
+      "sha256": "ac7fe17505eadb8df4cd3501d4f770888244c6fcd60c07036f6cdef7f3fba4fc"
+    },
+    "port-ui.localizations.append": {
+      "bytes": 8991833,
+      "sha256": "cd97d0a9b45ebf41f34f84cff68d9f8acc22bcd63ef5ddb49d5ee5873f44c8a2"
+    },
+    "port-ui.localizations.idx": {
+      "bytes": 591,
+      "sha256": "c1638e6153c3b0e2f463a5ec2dc865d5641664e5fe054437525a7d38c3b043f0"
+    }
+  },
+  "schema": 1
+}

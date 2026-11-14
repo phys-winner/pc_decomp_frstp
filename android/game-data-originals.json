@@ -1,0 +1,154 @@
+{
+  "AnselSDK64.dll": {
+    "bytes": 667664,
+    "sha256": "7fec0c1e67343476521bf224fd56119bd052969894b01ee2079055da3000291e"
+  },
+  "ChromaAppInfo.xml": {
+    "bytes": 380,
+    "sha256": "04df2c44080459b62f30e40ff592b362c65007446cb2a5ef883c34cfe87727c6"
+  },
+  "Frostpunk.exe": {
+    "bytes": 48845296,
+    "sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc"
+  },
+  "GfxConfig.ini": {
+    "bytes": 434,
+    "sha256": "f6dda7962541312b54364c7e2f04ed49be4db04fcd60ccf6b4983e5abaccc04c"
+  },
+  "PCTouchHelper.dll": {
+    "bytes": 10240,
+    "sha256": "bbb45970dea77d00dedb4fc365cf70726de1a4b736934da1ced9a844bb3418ed"
+  },
+  "animations.dat": {
+    "bytes": 29260989,
+    "sha256": "b6b33a1de67212153f4e22fe417ccb8e0b682894a3466084989cdd8d34210a89"
+  },
+  "animations.idx": {
+    "bytes": 26952,
+    "sha256": "2f6f9ec174ff93f5a5e634a2f61ae79ecbff81be3035f05aee340645fa21dd09"
+  },
+  "archives.dat": {
+    "bytes": 12801392,
+    "sha256": "d28084df2d97a569f522c521f0d7bfe0c551bf88c483f15cf0b17837267547ee"
+  },
+  "archives.idx": {
+    "bytes": 307875,
+    "sha256": "266b9f06c6285f5766f30e7212ba20287ac1c646b66ddd1d67a014b6cb924662"
+  },
+  "archives.str": {
+    "bytes": 936675,
+    "sha256": "c01bdf7c16272dcff6b6f02a1b15013cabc17a7ab8077cc3da4cac028b1f9ba6"
+  },
+  "common.dat": {
+    "bytes": 600386048,
+    "sha256": "17e3d82f80a3ff13db09aa2fc492cc6f76e683b6454ae307e0ab20b19e75fa86"
+  },
+  "common.idx": {
+    "bytes": 207651,
+    "sha256": "1fed33fa1888c7c83542bb6106beff3be86929d33ded66b87333d421717d6350"
+  },
+  "custom_localizations.dat": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "custom_localizations.idx": {
+    "bytes": 11,
+    "sha256": "d99175a7aea779f7cf8fdd95d22e29432e98c690c524bd99cdc6e4617611adb7"
+  },
+  "libcurl.dll": {
+    "bytes": 389120,
+    "sha256": "5cb576b9e779c2aa6ca93cabd6ec21e9464f4ba16873b0d777dc6e92d5c525a4"
+  },
+  "libeay32.dll": {
+    "bytes": 2077184,
+    "sha256": "3be96307aad11b67cd089a2d9de06b51dee596a30b305aaa2ce78784c9aa6f7b"
+  },
+  "libssh2.dll": {
+    "bytes": 226816,
+    "sha256": "c0df3d33344b388be13b5dd80c91971db14e5abeb1eeccdd18f5a0a2c0a5377e"
+  },
+  "localizations.dat": {
+    "bytes": 9688036,
+    "sha256": "615a015966751e05b36e221763d0311b4b4ad44dd0f2234ecc39003f825efb61"
+  },
+  "localizations.idx": {
+    "bytes": 591,
+    "sha256": "1ae6017bcecc931e9cf9df2764cd040539502eebd69363d91fc77b613b0b842e"
+  },
+  "newsfeed.dll": {
+    "bytes": 67800,
+    "sha256": "38f6edfaed5df325af2112f2e62c2f3b3ce4a103b91fe777a28571edfc212afd"
+  },
+  "openfontlicense.txt": {
+    "bytes": 4089,
+    "sha256": "bc987555b293976ac8e538adb1800d217527017368b9df428d53ff7ed9e093e0"
+  },
+  "scenes.dat": {
+    "bytes": 10767625,
+    "sha256": "d4ed8c72357def3ec5ad83edeb4f9754318a02c32a3457c7d540cf076224f86c"
+  },
+  "scenes.idx": {
+    "bytes": 4419,
+    "sha256": "bb7979fcdef7b7c69081a8bca6fafa877a6a251bfad61961d8d22501a6a2bf32"
+  },
+  "sequences.dat": {
+    "bytes": 33554,
+    "sha256": "bc0eebed12c3c0b513d9264e26f55d271b5e43f69831c7feaaf3700e109471da"
+  },
+  "sequences.idx": {
+    "bytes": 40,
+    "sha256": "a06762179ae9305e34583442c0489566fd431f184b605c78bcd0083882792a62"
+  },
+  "sounds.dat": {
+    "bytes": 1048872323,
+    "sha256": "01389ac7d9add65601d81de933f96fc9ac02555e0f90d282db8c4887c90e012b"
+  },
+  "sounds.idx": {
+    "bytes": 57460,
+    "sha256": "6139dcfa4dc686a661ae3045cd8ea4cfd219b7a605de34294c02b63843963979"
+  },
+  "ssleay32.dll": {
+    "bytes": 379392,
+    "sha256": "926672f4d09ca4bef5f778789b4e11eda62e084ac14768afadab638526b0e912"
+  },
+  "steam_api64.dll": {
+    "bytes": 295336,
+    "sha256": "4df999c0c8cb12589f0864d52be5d4c775577aeb27fee28b49b188f9ba083eea"
+  },
+  "steam_appid.txt": {
+    "bytes": 6,
+    "sha256": "912e00dc876527d2415bbace411269f13684aa0e7287bdc38ac131755f01c795"
+  },
+  "templates.dat": {
+    "bytes": 387680465,
+    "sha256": "6bcb38a117a12a24a66477c43c5f76909f2c5aa11d199e0aff1f6f4be1c81cd6"
+  },
+  "templates.idx": {
+    "bytes": 183871,
+    "sha256": "2bb6f409553058102a4236288c786c0fb8f4d6067a9bb4a0dbbb8be9bcc58aeb"
+  },
+  "textures-s3.dat": {
+    "bytes": 6781223379,
+    "sha256": "ef5b74f5b49bb54ad2cfd32737a70f70207703bce14fdda63304e6cca539398c"
+  },
+  "textures-s3.idx": {
+    "bytes": 121144,
+    "sha256": "9815bc284d9938227925686d27ae7920423abd4a3dc9ae785a4589c6305f2c7a"
+  },
+  "videos.dat": {
+    "bytes": 752528180,
+    "sha256": "0a7eb983c29d706a0e5862b6135e53efd6ca16709fc3cacc8730454978b869f4"
+  },
+  "videos.idx": {
+    "bytes": 881,
+    "sha256": "68d55eb2408d6e38dd371a97d272b24dd983c5d86771fde770dae035271f1dc9"
+  },
+  "voices.dat": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "voices.idx": {
+    "bytes": 11,
+    "sha256": "d99175a7aea779f7cf8fdd95d22e29432e98c690c524bd99cdc6e4617611adb7"
+  }
+}

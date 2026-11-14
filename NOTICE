@@ -1,0 +1,23 @@
+Frostpunk Android ARM64 port
+Copyright (C) 2026 Eugene (phys-winner)
+
+Original port code is licensed under the GNU General Public License,
+version 3 or (at your option) any later version. See LICENSE.
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+Existing third-party notices and licenses take precedence for their respective
+files. In particular, native/runtime64 retains its upstream MIT license, and the
+libvorbis-derived code in android/host/vorbis_native.c retains its BSD notice.
+External dependencies retain their own licenses. See DEPENDENCIES.md and the
+assets/licenses directory inside the APK for bundled dependency notices.
+
+Frostpunk, its executable, game data, artwork, fonts, audio, and any generated
+translation of its proprietary code are outside this license grant. They remain
+subject to their respective owners' rights. The GPL grant covers the original
+port code; it does not relicense the game or grant redistribution rights to it.
+
+This is an unofficial community project, unaffiliated with 11 bit studios.

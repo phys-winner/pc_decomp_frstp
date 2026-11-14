@@ -1,0 +1,71 @@
+{
+  "archives": [
+    {
+      "append": "switch-ui.templates.append",
+      "base": {
+        ".dat": {
+          "bytes": 387680465,
+          "sha256": "6bcb38a117a12a24a66477c43c5f76909f2c5aa11d199e0aff1f6f4be1c81cd6"
+        },
+        ".idx": {
+          "bytes": 183871,
+          "sha256": "2bb6f409553058102a4236288c786c0fb8f4d6067a9bb4a0dbbb8be9bcc58aeb"
+        }
+      },
+      "index": "switch-ui.templates-switch.idx",
+      "output": {
+        ".dat": {
+          "bytes": 388727308,
+          "sha256": "19435d9d388fd0fecf014cbf6127190cdf0075915ef5a3b4c81e8caedf6bd0b6"
+        },
+        ".idx": {
+          "bytes": 183871,
+          "sha256": "671a00826d4e6d5358768c5af645354b50f16116b4f10c50df8778499015c89c"
+        }
+      },
+      "replaced_entries": 63,
+      "stem": "templates"
+    }
+  ],
+  "kind": "switch-ui",
+  "original_exe_sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc",
+  "payloads": {
+    "switch-ui.action0.png": {
+      "bytes": 8064,
+      "sha256": "95aae4131f9f2057965fbc35e70b2e7d7c202afabf0863b1bf2eaa0ec47f529b"
+    },
+    "switch-ui.action1.png": {
+      "bytes": 5157,
+      "sha256": "d786a23ba181a5eb2d8321100bdd062023022bd7cea1b209c15ee6f191298ab5"
+    },
+    "switch-ui.action2.png": {
+      "bytes": 8999,
+      "sha256": "6187798ba12c0ad51c5f1fcf0a1fdff3502a30854a6cbfbffa6444ae552d2cef"
+    },
+    "switch-ui.action3.png": {
+      "bytes": 8081,
+      "sha256": "f64f0cd6cb6ea8c65e33297791aef4bcb9465816cc52b14b03624daef9fba45f"
+    },
+    "switch-ui.action4.png": {
+      "bytes": 5777,
+      "sha256": "1d33cdce66fd453c41103ffe1e9f6028e1c23d8b336cc9f82067527ea29aee13"
+    },
+    "switch-ui.halo.png": {
+      "bytes": 62090,
+      "sha256": "083000c5d557fdfe1d4a74b1f3043e923330e4b19032010611896c9f7a0790f7"
+    },
+    "switch-ui.ring.png": {
+      "bytes": 9827,
+      "sha256": "9ced1c5f414593c5593ef1d760143698394d0cb3f3c472b9c27bd0d0c7ca72cd"
+    },
+    "switch-ui.templates-switch.idx": {
+      "bytes": 183871,
+      "sha256": "671a00826d4e6d5358768c5af645354b50f16116b4f10c50df8778499015c89c"
+    },
+    "switch-ui.templates.append": {
+      "bytes": 1046843,
+      "sha256": "40d39a05276baf494d7ea402765521ccc58408fee688377b8c8b51b6ff230f93"
+    }
+  },
+  "schema": 1
+}

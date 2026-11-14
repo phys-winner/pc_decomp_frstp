@@ -1,0 +1,130 @@
+import json
+import struct
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+from port_settings_localization import (LABELS, PHOTO_HELP_KEY, PHOTO_PATH_KEY, PREFIX, TABLE_LANGUAGES, encode_table,
+                                        localize_table, parse_table, translations)
+from prepare_android_port_settings_asset import GENERAL, GRAPHICS, KEY, ROWS, SOURCE, resource
+from prepare_raw_archives import entries
+
+
+class PortSettingsLocalizationTest(unittest.TestCase):
+    def test_utf16_lengths_and_old_text_roundtrip(self):
+        original = encode_table({'A': 'Snow \U0001f328', PHOTO_PATH_KEY: '写真: {Path}',
+                                 PHOTO_HELP_KEY: 'Original desktop help', 'Z': '\ud800'})
+        result = localize_table(original, 'ja')
+        after = parse_table(result)
+        self.assertEqual(after['A'], 'Snow \U0001f328')
+        self.assertEqual(after['Z'], '\ud800')
+        self.assertEqual(after[PREFIX + 'InterfaceScale'], 'インターフェース倍率')
+        self.assertEqual(len(after), 4 + 24)
+        self.assertEqual(after[PHOTO_PATH_KEY], '写真: Pictures/Frostpunk')
+        help_text = json.loads((ROOT / 'android/port-help-localization.json').read_text(encoding='utf-8'))
+        self.assertEqual(after[PHOTO_HELP_KEY], help_text['ja'][2])
+        self.assertEqual(after[PREFIX + 'GestureHelpText'], help_text['ja'][0])
+        self.assertEqual(after[PREFIX + 'GestureHelpClose'], help_text['ja'][1])
+        with self.assertRaises(ValueError):
+            localize_table(result, 'ja')
+        with self.assertRaises(ValueError):
+            parse_table(original[:-1])
+        with self.assertRaises(ValueError):
+            localize_table(encode_table({'A': 'Preserve me', PHOTO_PATH_KEY: 'Missing placeholder'}), 'ja')
+        with self.assertRaises(ValueError):
+            localize_table(encode_table({'A': 'Preserve me', PHOTO_PATH_KEY: '{Path} {Path}'}), 'ja')
+
+    def test_all_setting_labels_and_options_resolve_in_every_language(self):
+        all_translations = translations()
+        expected_labels = ('RenderScale', 'OutputResolution', 'MobileEffects', 'ObjectHighlight',
+                           'InterfaceScale', 'DeveloperMenu', 'TouchOffset', 'Upscaling', 'Bilinear',
+                           'FrameLimit', 'FrameLimitAuto', 'GestureHelp', 'SwitchInterface')
+        self.assertEqual(LABELS, expected_labels)
+        expected_keys = {PREFIX + key for key in expected_labels}
+        expected_keys.update(PREFIX + 'Offset%d' % value for value in range(0, 129, 16))
+        expected_keys.update((PREFIX + 'GestureHelpText', PREFIX + 'GestureHelpClose'))
+        self.assertEqual(len(expected_keys), 24)
+        required = {text[1:] for _, text, _ in ROWS}
+        required.add(PREFIX + LABELS[0])
+        required.update(name[1:] for _, _, options in ROWS for _, name in options
+                        if name.startswith('@UI/Android/'))
+        self.assertEqual(set(all_translations), set(TABLE_LANGUAGES.values()))
+        for language, values in all_translations.items():
+            self.assertTrue(required <= values.keys(), language)
+            self.assertEqual(set(values), expected_keys, language)
+            self.assertTrue(all(isinstance(value, str) and value for value in values.values()), language)
+
+    def test_actual_game_tables_preserve_every_old_string(self):
+        archive = ROOT / 'build/raw-archives/localizations'
+        data = (archive / 'localizations.dat').read_bytes()
+        all_translations = translations()
+        help_text = json.loads((ROOT / 'android/port-help-localization.json').read_text(encoding='utf-8'))
+        seen = set()
+        for key, size, _, offset, _ in entries((archive / 'localizations.idx').read_bytes(), len(data)):
+            if key not in TABLE_LANGUAGES:
+                continue
+            original = data[offset:offset + size]
+            result = localize_table(original, TABLE_LANGUAGES[key])
+            before, after = parse_table(original), parse_table(result)
+            language = TABLE_LANGUAGES[key]
+            allowed_changes = {PHOTO_PATH_KEY, PHOTO_HELP_KEY}
+            self.assertEqual({name: value for name, value in before.items() if name not in allowed_changes},
+                             {name: after[name] for name in before if name not in allowed_changes})
+            expected_keys = set(before) | set(all_translations[language]) | allowed_changes
+            self.assertEqual(set(after), expected_keys)
+            for name, value in all_translations[language].items():
+                self.assertEqual(after[name], value)
+            self.assertEqual(after[PHOTO_HELP_KEY], help_text[language][2])
+            self.assertIn('Pictures/Frostpunk', after[PHOTO_PATH_KEY])
+            self.assertNotIn('{Path}', after[PHOTO_PATH_KEY])
+            if PHOTO_PATH_KEY in before:
+                self.assertEqual(after[PHOTO_PATH_KEY], before[PHOTO_PATH_KEY].replace('{Path}', 'Pictures/Frostpunk'))
+            else:
+                self.assertEqual(language, 'fa')
+                self.assertEqual(after[PHOTO_PATH_KEY], 'تصویر شما در این مسیر ذخیره شده است:\nPictures/Frostpunk')
+            restored = {name: value for name, value in after.items() if name not in all_translations[language]}
+            for name in allowed_changes:
+                if name in before:
+                    restored[name] = before[name]
+                else:
+                    del restored[name]
+            self.assertEqual(encode_table(restored), original)
+            seen.add(key)
+        self.assertEqual(seen, set(TABLE_LANGUAGES))
+
+    def test_render_scale_and_new_rows_use_original_localization_handlers(self):
+        index = (SOURCE / 'common.idx').read_bytes()
+        data_path = SOURCE / 'common.dat'
+        selected = [row for row in entries(index, data_path.stat().st_size) if row[0] == KEY]
+        self.assertEqual(len(selected), 1)
+        row, = selected
+        with data_path.open('rb') as stream:
+            stream.seek(row[3])
+            original = stream.read(row[1])
+        result, insert, inserted_bytes = resource(original)
+        self.assertEqual([number for number, _, _ in ROWS], list(range(21, 31)))
+        self.assertEqual(struct.unpack_from('<I', result, 0x160)[0], 29)
+        self.assertNotIn(b'\1Render scale\0', result)
+        self.assertIn(b'\1@UI/Android/RenderScale\0', result)
+        for _, label, _ in ROWS:
+            self.assertEqual(result.count(b'\1' + label.encode() + b'\0'), 1)
+        self.assertEqual(ROWS[-3], (28, '@UI/Android/FrameLimit', [(0, '@UI/Android/FrameLimitAuto')]))
+        self.assertEqual(ROWS[-2], (29, '@UI/Android/GestureHelp', [(0, '@UI/Menu/Settings/Off'), (1, '@UI/Menu/Settings/On')]))
+        self.assertEqual(ROWS[-1][0], 30)
+        self.assertEqual(result.count(b'\1@UI/Android/FrameLimitAuto\0'), 1)
+        head = b'\1FrostpunkSettingCombo\0'
+        for number, label, _ in ROWS:
+            row_head = b'\1FrostpunkSettingYesNo\0' if number == 30 else head
+            row_start = result.index(row_head + struct.pack('<II', number, 0) + b'\1' + label.encode() + b'\0')
+            category_at = row_start + len(row_head) + 8 + len(label) + 2 + 4
+            self.assertEqual(result[category_at:category_at + 16], GENERAL if number in (24, 25, 26, 29, 30) else GRAPHICS)
+        unlocalized = result.replace(b'\1@UI/Android/RenderScale\0', b'\1Render scale\0')
+        restored = bytearray(unlocalized[:insert] + unlocalized[insert + inserted_bytes:])
+        struct.pack_into('<I', restored, 0x160, 19)
+        self.assertEqual(bytes(restored), original)
+
+
+if __name__ == '__main__':
+    unittest.main()

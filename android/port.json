@@ -1,0 +1,331 @@
+{
+  "schema": 1,
+  "app": {
+    "label": "Frostpunk",
+    "title": "Frostpunk",
+    "subtitle": {
+      "en": "Android ARM64 port",
+      "ru": "Порт для Android ARM64",
+      "de": "Android-ARM64-Port",
+      "pl": "Port Android ARM64"
+    },
+    "javaPackage": "com.frostpunk.staticrecomp.launcher",
+    "storage": "Frostpunk",
+    "allFilesAccess": true,
+    "autoLaunch": false,
+    "languages": [
+      "en",
+      "ru",
+      "de",
+      "pl"
+    ]
+  },
+  "theme": {
+    "accent": "#9BD9ED",
+    "accentDark": "#568DA8",
+    "primaryFill": "#142D3D",
+    "playGlow": "#9BD9ED",
+    "playParticles": "#A0DCF0",
+    "playParticleStyle": "snow"
+  },
+  "distributions": [
+    {
+      "id": "frostpunk",
+      "title": "Frostpunk",
+      "activity": "com.frostpunk.staticrecomp.MainActivity",
+      "renderers": [
+        "dxvk",
+        "turnip"
+      ],
+      "parts": [
+        {
+          "id": "game",
+          "title": {
+            "en": "Original Steam game files",
+            "ru": "Оригинальные файлы игры из Steam"
+          },
+          "folder": "{files}/game",
+          "marker": "Frostpunk.exe",
+          "required": [
+            "Frostpunk.exe",
+            "common.dat",
+            "common.idx",
+            "GfxConfig.ini"
+          ],
+          "mount": true
+        }
+      ],
+      "intro": {
+        "default": true
+      }
+    }
+  ],
+  "renderers": {
+    "default": "dxvk",
+    "modes": [
+      {
+        "id": "dxvk",
+        "kind": "vulkan",
+        "title": "Vulkan (DXVK)",
+        "vulkan": "1.3",
+        "needsBC": true,
+        "libraries": [
+          "libdxvk_d3d11.so",
+          "libdxvk_dxgi.so"
+        ]
+      },
+      {
+        "id": "turnip",
+        "kind": "turnip",
+        "title": "Vulkan (Turnip)",
+        "vulkan": "1.3",
+        "needsBC": true,
+        "adreno": [
+          600,
+          899
+        ],
+        "driver": "libfrostpunk_turnip.so",
+        "libraries": [
+          "libadrenotools.so",
+          "libdxvk_d3d11.so",
+          "libdxvk_dxgi.so"
+        ]
+      }
+    ]
+  },
+  "options": [
+    {
+      "key": "switch_graphics",
+      "type": "bool",
+      "default": "1",
+      "only": [
+        "frostpunk"
+      ],
+      "title": {
+        "en": "Use Switch graphics",
+        "ru": "Использовать графику Switch",
+        "de": "Switch-Grafik verwenden",
+        "pl": "Używaj grafiki Switch"
+      },
+      "hint": {
+        "en": "Off: PC graphics for every group. On: use the groups selected in Advanced graphics settings. Applies from the next game start.",
+        "ru": "Выкл.: ПК-графика для всех групп. Вкл.: применяются группы из дополнительных настроек. Изменения действуют со следующего запуска игры."
+      }
+    },
+    {
+      "key": "snow",
+      "type": "choice",
+      "default": "pc",
+      "only": [
+        "frostpunk"
+      ],
+      "title": {
+        "en": "Graphics: snow and terrain",
+        "ru": "Графика: снег и рельеф",
+        "de": "Grafik: Schnee und Gelände",
+        "pl": "Grafika: śnieg i teren"
+      },
+      "hint": {
+        "en": "PC: full snow detail, splatting and triplanar texturing. Switch: low-resolution snow map, flatter look.",
+        "ru": "ПК: полная детализация снега, смешивание и трипланарные текстуры. Switch: снег в низком разрешении, выглядит более плоским.",
+        "de": "PC: volle Schneedetails, Splatting und triplanare Texturen. Switch: Schnee in niedriger Auflösung, flacher.",
+        "pl": "PC: pełne detale śniegu, splatting i tekstury trójpłaszczyznowe. Switch: śnieg w niskiej rozdzielczości, bardziej płaski."
+      },
+      "choices": [
+        {
+          "value": "pc",
+          "title": {
+            "en": "PC",
+            "ru": "Как на ПК",
+            "de": "Wie am PC",
+            "pl": "Jak na PC"
+          }
+        },
+        {
+          "value": "switch",
+          "title": {
+            "en": "Switch-like (faster)",
+            "ru": "Как на Switch (быстрее)",
+            "de": "Wie auf Switch (schneller)",
+            "pl": "Jak na Switch (szybciej)"
+          }
+        }
+      ]
+    },
+    {
+      "key": "buildings",
+      "type": "choice",
+      "default": "switch",
+      "only": [
+        "frostpunk"
+      ],
+      "title": {
+        "en": "Graphics: buildings and objects",
+        "ru": "Графика: здания и объекты",
+        "de": "Grafik: Gebäude und Objekte",
+        "pl": "Grafika: budynki i obiekty"
+      },
+      "hint": {
+        "en": "Switch: simplified building meshes and fewer distant small objects (Switch-like polygon budget).",
+        "ru": "Switch: упрощённые модели зданий и меньше мелких дальних объектов (бюджет полигонов как на Switch).",
+        "de": "Switch: vereinfachte Gebäudemodelle und weniger kleine ferne Objekte.",
+        "pl": "Switch: uproszczone modele budynków i mniej małych odległych obiektów."
+      },
+      "choices": [
+        {
+          "value": "pc",
+          "title": {
+            "en": "PC",
+            "ru": "Как на ПК",
+            "de": "Wie am PC",
+            "pl": "Jak na PC"
+          }
+        },
+        {
+          "value": "switch",
+          "title": {
+            "en": "Switch-like (faster)",
+            "ru": "Как на Switch (быстрее)",
+            "de": "Wie auf Switch (schneller)",
+            "pl": "Jak na Switch (szybciej)"
+          }
+        }
+      ]
+    },
+    {
+      "key": "textures",
+      "type": "choice",
+      "default": "switch",
+      "only": [
+        "frostpunk"
+      ],
+      "title": {
+        "en": "Graphics: textures",
+        "ru": "Графика: текстуры",
+        "de": "Grafik: Texturen",
+        "pl": "Grafika: tekstury"
+      },
+      "hint": {
+        "en": "Switch: texture sizes of the Switch release, no anisotropic filtering.",
+        "ru": "Switch: размеры текстур как в версии для Switch, без анизотропной фильтрации.",
+        "de": "Switch: Texturgrößen der Switch-Version, keine anisotrope Filterung.",
+        "pl": "Switch: rozmiary tekstur jak w wersji na Switch, bez filtrowania anizotropowego."
+      },
+      "choices": [
+        {
+          "value": "pc",
+          "title": {
+            "en": "PC",
+            "ru": "Как на ПК",
+            "de": "Wie am PC",
+            "pl": "Jak na PC"
+          }
+        },
+        {
+          "value": "switch",
+          "title": {
+            "en": "Switch-like (faster)",
+            "ru": "Как на Switch (быстрее)",
+            "de": "Wie auf Switch (schneller)",
+            "pl": "Jak na Switch (szybciej)"
+          }
+        }
+      ]
+    },
+    {
+      "key": "shadows",
+      "type": "choice",
+      "default": "switch",
+      "only": [
+        "frostpunk"
+      ],
+      "title": {
+        "en": "Graphics: shadows",
+        "ru": "Графика: тени",
+        "de": "Grafik: Schatten",
+        "pl": "Grafika: cienie"
+      },
+      "hint": {
+        "en": "Switch: one low-resolution shadow cascade, no point-light shadows.",
+        "ru": "Switch: один каскад теней низкого разрешения, без теней от точечных источников.",
+        "de": "Switch: eine Schattenkaskade niedriger Auflösung, keine Punktlicht-Schatten.",
+        "pl": "Switch: jedna kaskada cieni niskiej rozdzielczości, bez cieni od świateł punktowych."
+      },
+      "choices": [
+        {
+          "value": "pc",
+          "title": {
+            "en": "PC",
+            "ru": "Как на ПК",
+            "de": "Wie am PC",
+            "pl": "Jak na PC"
+          }
+        },
+        {
+          "value": "switch",
+          "title": {
+            "en": "Switch-like (faster)",
+            "ru": "Как на Switch (быстрее)",
+            "de": "Wie auf Switch (schneller)",
+            "pl": "Jak na Switch (szybciej)"
+          }
+        }
+      ]
+    },
+    {
+      "key": "effects",
+      "type": "choice",
+      "default": "switch",
+      "only": [
+        "frostpunk"
+      ],
+      "title": {
+        "en": "Graphics: lighting and effects",
+        "ru": "Графика: свет и эффекты",
+        "de": "Grafik: Licht und Effekte",
+        "pl": "Grafika: światło i efekty"
+      },
+      "hint": {
+        "en": "Switch: no local lights, particles, refraction, interiors and screen effects (FXAA, SSAO, SSR, DOF).",
+        "ru": "Switch: без локального освещения, частиц, преломления, интерьеров и экранных эффектов (FXAA, SSAO, SSR, DOF).",
+        "de": "Switch: ohne lokale Lichter, Partikel, Brechung, Innenräume und Bildschirmeffekte.",
+        "pl": "Switch: bez świateł lokalnych, cząsteczek, refrakcji, wnętrz i efektów ekranowych."
+      },
+      "choices": [
+        {
+          "value": "pc",
+          "title": {
+            "en": "PC",
+            "ru": "Как на ПК",
+            "de": "Wie am PC",
+            "pl": "Jak na PC"
+          }
+        },
+        {
+          "value": "switch",
+          "title": {
+            "en": "Switch-like (faster)",
+            "ru": "Как на Switch (быстрее)",
+            "de": "Wie auf Switch (schneller)",
+            "pl": "Jak na Switch (szybciej)"
+          }
+        }
+      ]
+    }
+  ],
+  "textures": {
+    "backend": "com.frostpunk.staticrecomp.launcher.FrostpunkTextures"
+  },
+  "hints": {
+    "gameFiles": {
+      "en": "Select the single Frostpunk data ZIP. Original Steam files and the optional port-ui./switch-ui. resources share its root. Use Play from archive to read stored files directly. DXT conversion is optional on supported GPUs.",
+      "ru": "Выберите единый ZIP данных Frostpunk. Оригинальные файлы Steam и дополнения с префиксами port-ui./switch-ui. находятся в одном корне. «Играть из архива» читает несжатые файлы напрямую. На совместимых GPU конвертация DXT необязательна."
+    },
+    "options": {
+      "en": "Graphics groups apply with \"Mobile post-processing\" on (in-game Graphics settings) and take effect on the next start. Interface scale and touch controls are configured in the game.",
+      "ru": "Группы графики действуют при включённой «Мобильной пост-обработке» (настройки графики в игре) и применяются при следующем запуске. Масштаб интерфейса и сенсорное управление настраиваются в игре.",
+      "de": "Grafikgruppen gelten bei eingeschalteter mobiler Nachbearbeitung (Grafikeinstellungen im Spiel) ab dem nächsten Start. Oberflächengröße und Touch-Steuerung werden im Spiel eingestellt.",
+      "pl": "Grupy grafiki działają przy włączonym mobilnym przetwarzaniu (ustawienia grafiki w grze) i obowiązują od następnego uruchomienia. Skalę interfejsu i sterowanie dotykowe ustawia się w grze."
+    }
+  }
+}

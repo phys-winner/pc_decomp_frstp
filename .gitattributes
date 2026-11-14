@@ -1,0 +1,2 @@
+# Preserve exact source/fixture bytes used by the SHA256 validation pipeline.
+* -text whitespace=cr-at-eol

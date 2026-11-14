@@ -1,0 +1,29 @@
+{
+  "original_exe_sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc",
+  "proof": {
+    "path": "research/lua-gc-jump-table.json",
+    "sha256": "c12c97463cfe99812503d9541f4448f89614f2142ca6e826c63e7407dd5d5aa6",
+    "producer": "tools/inspect_lua_gc_jump.py",
+    "producer_sha256": "a557d752608fb3c6a3b8d32048242fc360bc3638d93f0b129796da9cd686cc04"
+  },
+  "entries": [
+    {
+      "va": "0x141c10160",
+      "size": 40,
+      "bytes": "488b473848894330eb15488b4738488983a0000000eb08488b47384889436848895f38488b742430",
+      "tail": "0x141c10188"
+    },
+    {
+      "va": "0x141c1016a",
+      "size": 30,
+      "bytes": "488b4738488983a0000000eb08488b47384889436848895f38488b742430",
+      "tail": "0x141c10188"
+    },
+    {
+      "va": "0x141c10177",
+      "size": 17,
+      "bytes": "488b47384889436848895f38488b742430",
+      "tail": "0x141c10188"
+    }
+  ]
+}

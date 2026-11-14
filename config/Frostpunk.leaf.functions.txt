@@ -1,0 +1,3 @@
+# Exact-byte-pinned original leaves omitted by .pdata and generic discovery.
+# R9 callback loaded at 0x1412FC073; EH-vector constructor invokes six elements.
+0x1412FCEC0  12  original_leaf_1412FCEC0

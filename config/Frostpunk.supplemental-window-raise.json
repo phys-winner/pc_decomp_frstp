@@ -1,0 +1,19 @@
+{
+  "original_exe_sha256": "45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc",
+  "proof": {
+    "path": "research/sdl-raise-window-tail.json",
+    "sha256": "04fbec93314e27718bb31190bbb1df2c1992bea01e020beef8c25eec06005507",
+    "producer": "tools/inspect_sdl_raise_window_tail.py",
+    "producer_sha256": "feb9b5077c57b430795453b8b149dc7efdff26a522e0a5b91a227d25deacdce2"
+  },
+  "entries": [
+    {
+      "va": "0x141b1ef20",
+      "size": 18,
+      "bytes": "488b8ac0000000488b490848ff2536881a00",
+      "IAT_slot": "0x141cc7768",
+      "dll": "USER32.dll",
+      "name": "SetForegroundWindow"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+static const char FROSTPUNK_DLC_CONFIG[] = R"dlc(@FROSTPUNK_DLC_CONFIG@)dlc";

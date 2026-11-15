@@ -1,4 +1,3 @@
-    private android.app.AlertDialog fpCompatibilityDialog;
     private Spec.Distribution fpTexturePlay;
     private Spec.Distribution fpDataPlay;
     private boolean fpTextureRebuild;
@@ -55,7 +54,8 @@
     }
 
     private String fpDeviceProblem(Spec.Distribution distribution) {
-        if (gpu == null || Probe.report(this) == null) return null;
+        if (gpu == null) return null;
+        if (!Probe.carried(this)) return FrostpunkDevice.text(this, "no_probe");
         List<Renderers.Status> statuses = Renderers.evaluate(this, spec, distribution, gpu, false);
         StringBuilder why = new StringBuilder();
         for (Renderers.Status status : statuses) {
@@ -66,26 +66,7 @@
         return why.length() == 0 ? FrostpunkDevice.text(this, "no_renderer") : why.toString();
     }
     private void fpUnsupported(String problem) {
-        if (isFinishing() || isDestroyed() || fpCompatibilityDialog != null && fpCompatibilityDialog.isShowing()) return;
-        String body = FrostpunkDevice.text(this, "intro") + "\n\n"
-            + FrostpunkDevice.text(this, "gpu", gpu == null ? "?" : gpu.renderer) + "\n\n" + problem;
-        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(ui.dp(24), ui.dp(20), ui.dp(24), ui.dp(8));
-        content.setBackgroundColor(ui.cell);
-        content.addView(ui.label(FrostpunkDevice.text(this, "title"), 22, ui.text));
-        content.addView(ui.label(body, 16, ui.text));
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this); scroll.addView(content);
-        fpCompatibilityDialog = ui.show(ui.dialog().setView(scroll).setCancelable(false)
-            .setPositiveButton(FrostpunkDevice.text(this, "exit"), (dialog, which) -> finishAndRemoveTask()));
-        fpCompatibilityDialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(ui.cell));
-        ((View)fpCompatibilityDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).getParent()).setBackgroundColor(ui.cell);
-        fpCompatibilityDialog.setCanceledOnTouchOutside(false);
-    }
-    private void fpCheckCompatibility() {
-        if (gpu == null || !hasWindowFocus() || isFinishing() || isDestroyed() || Work.busy()) return;
-        if (!Probe.carried(this)) { fpUnsupported(FrostpunkDevice.text(this, "no_probe")); return; }
-        String problem = fpDeviceProblem(selected);
-        if (problem != null) fpUnsupported(problem);
+        note(Texts.PLAY, problem, true);
     }
     private void fpResourceWarnings() {
         File game = Install.folder(this, spec, selected, selected.part("game"));

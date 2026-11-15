@@ -1,3 +1,16 @@
+# 0.1.1-dev
+
+- Keep the launcher usable on devices with incompatible renderers.
+- Show insufficient Vulkan versions and missing GPU features in the Play card
+  instead of a forced-exit compatibility dialog. Game launch requirements remain
+  enforced.
+
+APK: `Frostpunk-0.1.1-dev.apk`; version code: `3`.
+
+Requires Android 11+, compatible ARM64 Vulkan 1.3 hardware and driver, and the
+supported Steam PC game files supplied by the player. Existing gameplay, device
+coverage, and build reproducibility limitations below still apply.
+
 # 0.1-dev
 
 Experimental Frostpunk ARM64 port for Android with touch controls and Vulkan.

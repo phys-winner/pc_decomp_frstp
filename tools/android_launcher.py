@@ -48,8 +48,8 @@ def prepare(work, manifest_text):
     work.mkdir(parents=True, exist_ok=True)
     manifest = work / 'game-manifest.xml'
     manifest_text = manifest_text.replace('android:targetSdkVersion="36"', 'android:targetSdkVersion="37"')
-    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.1-dev"')
-    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="2"')
+    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.1.1-dev"')
+    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="3"')
     manifest_text = manifest_text.replace('<application ', '<application android:appCategory="game" ', 1) if 'android:appCategory=' not in manifest_text else manifest_text
     manifest_text = manifest_text.replace('<uses-sdk ', '<!-- launcher:manifest -->\n  <uses-sdk ', 1)
     manifest_text = manifest_text.replace('<activity ', '<!-- launcher:application -->\n    <activity ', 1)
@@ -99,7 +99,9 @@ def prepare(work, manifest_text):
         activity_text = activity_text.replace(before, after)
     play_button = '            card.addView(ui.buttons(play));'
     assert activity_text.count(play_button) == 1
-    activity_text = activity_text.replace(play_button, play_button + '''
+    activity_text = activity_text.replace(play_button, '''            String problem = running ? null : fpDeviceProblem(d);
+            if (problem != null) card.addView(ui.label(problem, 13, ui.error));
+''' + play_button + '''
             if (Work.current != null && !Work.current.finished && Work.current.section == Texts.PLAY) {
                 attach(card, work);
                 work.setVisibility(View.VISIBLE);
@@ -206,10 +208,6 @@ def prepare(work, manifest_text):
     texture_section_job = '        confirmJob(new Work.Job(Texts.TEXTURES, Texts.t(this, Texts.JOB_TEXTURES), root) {'
     assert activity_text.count(texture_job) + activity_text.count(texture_section_job) == 1
     texture_job = texture_section_job if texture_section_job in activity_text else texture_job
-    idle_call = '        boolean idle = idle();'
-    idle_check = '        boolean idle = busy == null && !Work.busy();'
-    assert activity_text.count(idle_call) + activity_text.count(idle_check) == 1
-    idle_anchor = idle_call if idle_call in activity_text else idle_check
     finished_refresh = '        refresh(Texts.PERM_FILES, Texts.PLAY, Texts.GAME_FILES, Texts.RENDERER, Texts.TEXTURES, Texts.SPACE);\n    }'
     finished_all = '        textureScan = null;\n        refresh();\n    }'
     assert activity_text.count(finished_refresh) + activity_text.count(finished_all) == 1
@@ -228,7 +226,6 @@ def prepare(work, manifest_text):
     assert activity_text.count(launch_block) + activity_text.count(deferred_launch) == 1
     launch_anchor = deferred_launch if deferred_launch in activity_text else launch_block
     edits = {
-        idle_anchor: idle_anchor + '\n        if (idle) fpCheckCompatibility();',
         launch_anchor: '        fpPlay(d);',
         finished_anchor: finished_anchor[:-5] + '        fpTexturesFinished(job);\n    }',
         texture_job: texture_job.replace('confirmJob(', 'startJob(', 1).replace('new Work.Job(Texts.TEXTURES,', 'new Work.Job(fpTexturePlay != null ? Texts.PLAY : Texts.TEXTURES,')

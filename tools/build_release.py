@@ -1,4 +1,4 @@
-"""Build Frostpunk 0.1-dev from the validated private AOT/base-APK inputs."""
+"""Build Frostpunk 0.1.1-dev from the validated private AOT/base-APK inputs."""
 import shutil
 import hashlib
 import json
@@ -7,7 +7,7 @@ import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'build/release-0.1-dev'
+OUT = ROOT / 'build/release-0.1.1-dev'
 import android_release as builder
 builder.OUT = OUT
 builder.EXTRA_HOST += [name for name in ('android/host/zip_files.c', 'reference/launcher-zipmount/zipmount.c') if name not in json.loads(builder.CANONICAL.read_text())['sources']]
@@ -74,7 +74,7 @@ with zipfile.ZipFile(apk) as source, zipfile.ZipFile(unsigned, 'w', zipfile.ZIP_
         target.write(path, 'assets/' + name)
 fb = builder.fb
 subprocess.run([str(fb.BUILD_TOOLS / 'zipalign.exe'), '-P', '16', '-f', '4', str(unsigned), str(aligned)], check=True)
-final = ROOT / 'pub/Frostpunk-0.1-dev.apk'
+final = ROOT / 'pub/Frostpunk-0.1.1-dev.apk'
 final.parent.mkdir(exist_ok=True)
 for name, pin in {**pins, **source_pins}.items():
     assert builder.sha(ROOT / builder.SOURCE_OVERRIDE.get(name, name)) == pin, 'Source changed during build: ' + name
@@ -85,7 +85,7 @@ subprocess.run([str(fb.JAVA), '-jar', str(fb.SIGNER / fb.MACHINE['signer']['apks
 subprocess.run([str(fb.BUILD_TOOLS / 'zipalign.exe'), '-c', '-P', '16', '4', str(final)], check=True)
 with zipfile.ZipFile(final) as packaged:
     metadata = json.loads(packaged.read('assets/launcher/build.json'))
-    assert (metadata['versionName'], metadata['versionCode']) == ('0.1-dev', 2)
+    assert (metadata['versionName'], metadata['versionCode']) == ('0.1.1-dev', 3)
     assert packaged.read('assets/licenses/Frostpunk-port-GPL-3.0.txt') == (ROOT / 'LICENSE').read_bytes()
     assert packaged.read('assets/licenses/Frostpunk-port-NOTICE.txt') == (ROOT / 'NOTICE').read_bytes()
     assert not any(Path(name).suffix.lower() in ('.exe', '.dll', '.dat', '.idx', '.append', '.pk8', '.pem', '.jks', '.keystore')

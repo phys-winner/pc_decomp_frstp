@@ -14,6 +14,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,6 @@ from pathlib import Path
 import android_launcher
 import android_native_payload
 import public_metadata
-from build_gpu_runtime import sm8250_driver
 
 ROOT = Path(__file__).resolve().parents[1]
 FAST = ROOT / 'build/fast'
@@ -37,11 +37,12 @@ JAVA = Path(MACHINE['java_exe'])
 BUILD_TOOLS = Path(MACHINE['project_root']) / 'tools/android/sdk/build-tools' / MACHINE['build_tools_version']
 SIGNER = Path(MACHINE['signer']['dir'])
 INPUTS = FAST / 'runtime-inputs.json'
+FASTLIFT = ROOT / 'build/fastlift'
 # Optional Mesa Turnip provider (selected in the shared launcher): adrenotools + hooks from
 # tools/build_gpu_runtime.py and the pinned community Turnip build, loaded only when selected.
 GPU_RUNTIME = ROOT / 'build/gpu-runtime/runtime'
 GPU_LIBS = ('libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so')
-TURNIP_SHA256 = 'fdd378520022f88b0363dd1f77f6989332730271712621523075fe4eb4de2a09'
+TURNIP_SHA256 = '1d80dfa019659b008e4669311db5b1e4a02af59ff1d5458a98e2f5fe18ed013b'
 QA_ONLY_LIBRARIES = {'libVkLayer_khronos_validation.so'}
 
 COMPILE_FLAGS = ['--target=aarch64-linux-android30', '-O2', '-std=c11', '-fPIC', *android_native_payload.COMPILE_FLAGS, '-DFROSTPUNK_ANDROID_LIBRARY=1',
@@ -109,15 +110,68 @@ def compile_one(source, flags, headers):
     return obj, True
 
 
+def production_game_objects(rows):
+    """Fastlift units, the published runtime's size.
+
+    Linking the overlay objects in runtime-inputs produces a library about twice
+    as large. Unit 0982 is the copy whose CRC calls bind to crc_native.o. The
+    inflate experiment object is left out: the fastlift unit already defines
+    L_000141C05470.
+    """
+    import build_native_crc as crc
+    crc.ensure_routed()
+    out, units = [], set()
+    skip = {'build/fast/native-inflate/inflate_native.o',
+            'build/fast/native-crc/recomp_funcs_0982.o'}
+    for row in rows:
+        normal = row.replace('\\', '/')
+        if normal in skip:
+            continue
+        match = re.search(r'recomp_funcs_(\d{4})[^/]*\.o$', normal)
+        unit = None
+        if match and not normal.startswith('generated/'):
+            unit = int(match[1])
+        elif normal.endswith('bounds-native/production-fallback.o'):
+            unit = 804
+        if unit is None:
+            out.append(str(ROOT / normal))
+            continue
+        if unit in units:
+            continue
+        target = crc.ROUTED_UNIT if unit == 982 else FASTLIFT / 'obj' / ('recomp_funcs_%04d.o' % unit)
+        if not target.exists():
+            raise FileNotFoundError(target)
+        out.append(str(target))
+        units.add(unit)
+    lifted = {int(path.stem[-4:]) for path in (FASTLIFT / 'obj').glob('recomp_funcs_*.o')}
+    if units != lifted:
+        raise ValueError('unit coverage differs: missing %s extra %s' % (
+            sorted(lifted - units)[:10], sorted(units - lifted)[:10]))
+    native = str(crc.NATIVE_OBJECT)
+    if native not in out:
+        out.append(native)
+    return out
+
+
+# The release link compiles these on top of runtime-inputs. The fastlift objects
+# call the LOD wrapper, which lives only in mobile_lod.c. thread_placement.c is the
+# same extra host file the release runtime carries.
+RELEASE_HOST = ['android/host/mobile_lod.c', 'android/host/thread_placement.c']
+
+
 def build_runtime(extra, objects_override=None):
     data = seed_inputs()
     flags = COMPILE_FLAGS + extra
     headers = header_digest()
+    sources = list(data['sources'])
+    for item in RELEASE_HOST:
+        if item not in sources:
+            sources.append(item)
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        results = list(pool.map(lambda s: compile_one(s, flags, headers), data['sources']))
+        results = list(pool.map(lambda s: compile_one(s, flags, headers), sources))
     rebuilt = [str(o.name) for o, fresh in results if fresh]
     objects = [str(o) for o, _ in results]
-    game = objects_override or [str(ROOT / o) for o in data['objects']]
+    game = objects_override or production_game_objects(data['objects'])
     out = FAST / 'lib/libfrostpunk_runtime.so'
     out.parent.mkdir(parents=True, exist_ok=True)
     rsp = FAST / 'link.rsp'
@@ -177,6 +231,11 @@ def build_dex():
     profile_source.write_text((ROOT / 'android/app/PortProfile.java').read_text(encoding='utf-8')
                               .replace('com.frostpunk.staticrecomp.probe', package), encoding='utf-8')
     sources.append(profile_source)
+    for name in ('GameWatchActivity', 'CrashReport'):
+        target = work / ('src/%s.java' % name)
+        target.write_text((ROOT / ('android/app/%s.java' % name)).read_text(encoding='utf-8')
+                          .replace('com.frostpunk.staticrecomp.probe', package), encoding='utf-8')
+        sources.append(target)
     sources += [Path(p) for p in prepared['sources']]
     classes, dex = work / 'classes', FAST / 'dex'
     classes.mkdir()
@@ -214,7 +273,7 @@ def build_apk(base):
     work.mkdir(parents=True)
     unsigned = work / 'unsigned.apk'
     replaced = {}
-    libs = {p.name: p for p in (FAST / 'lib').glob('*.so') if p.name not in QA_ONLY_LIBRARIES}
+    libs = {p.name: p for p in (FAST / 'lib').glob('*.so') if p.name not in QA_ONLY_LIBRARIES and p.name != 'libfrostpunk_turnip.so'}
     fsr3 = ROOT / 'build/fsr3-android-sdk/libfrostpunk_fsr3.so'
     if not fsr3.exists():
         raise RuntimeError('optional FSR 3 module missing; run tools/build_fsr3.py')
@@ -224,15 +283,11 @@ def build_apk(base):
     if sha(GPU_RUNTIME / 'vulkan.ad07xx.so') != TURNIP_SHA256:
         raise RuntimeError('pinned Turnip driver missing or changed; run tools/build_gpu_runtime.py')
     extra = {'lib/arm64-v8a/' + name: (GPU_RUNTIME / name, zipfile.ZIP_STORED) for name in GPU_LIBS}
-    extra['assets/turnip/vulkan.ad07xx.so'] = (GPU_RUNTIME / 'vulkan.ad07xx.so', zipfile.ZIP_DEFLATED)
-    extra['assets/turnip/vulkan.sm8250.so'] = (sm8250_driver(), zipfile.ZIP_DEFLATED)
-    extra['lib/arm64-v8a/libfrostpunk_turnip.so'] = (GPU_RUNTIME / 'vulkan.ad07xx.so', zipfile.ZIP_STORED)
+    extra['lib/arm64-v8a/libpurple_turnip.so'] = (GPU_RUNTIME / 'vulkan.ad07xx.so', zipfile.ZIP_STORED)
     extra.update({'assets/' + p.relative_to(FAST / 'assets').as_posix(): (p, zipfile.ZIP_DEFLATED)
-                  for p in (FAST / 'assets').rglob('*') if p.is_file()})
+                  for p in (FAST / 'assets').rglob('*') if p.is_file() and p.relative_to(FAST / 'assets').parts[0] != 'turnip'})
     extra.update({'assets/licenses/' + p.name: (p, zipfile.ZIP_DEFLATED) for p in (GPU_RUNTIME / 'licenses').iterdir()})
     extra['assets/licenses/Turnip-origin.json'] = (ROOT / 'reference/turnip-android/provenance.json', zipfile.ZIP_DEFLATED)
-    extra['assets/licenses/Turnip-SM8250-origin.json'] = (ROOT / 'reference/turnip-sm8250/provenance.json', zipfile.ZIP_DEFLATED)
-    extra['assets/licenses/Turnip-SM8250-LICENSE-NOTE.txt'] = (ROOT / 'reference/turnip-sm8250/LICENSE-NOTE.txt', zipfile.ZIP_DEFLATED)
     extra['assets/licenses/FSR1.txt'] = (ROOT / 'reference/fsr1/license.txt', zipfile.ZIP_DEFLATED)
     extra['assets/licenses/FSR3.txt'] = (ROOT / 'reference/fsr3-android/LICENSE.txt', zipfile.ZIP_DEFLATED)
     extra['assets/licenses/FSR3-SDK.txt'] = (ROOT / 'reference/fsr3-android/sdk/LICENSE.txt', zipfile.ZIP_DEFLATED)
@@ -255,7 +310,7 @@ def build_apk(base):
         for info in source.infolist():
             if info.filename.startswith('lib/arm64-v8a/') and info.filename.endswith('.so'):
                 name = Path(info.filename).name
-                if name not in libs and info.filename not in extra and name != 'libfrostpunk_xz.so' and name not in QA_ONLY_LIBRARIES:
+                if name not in libs and info.filename not in extra and name not in ('libfrostpunk_xz.so', 'libfrostpunk_turnip.so') and name not in QA_ONLY_LIBRARIES:
                     path = work / 'base-libs' / name
                     path.parent.mkdir(exist_ok=True)
                     path.write_bytes(source.read(info))
@@ -268,7 +323,9 @@ def build_apk(base):
     resources = zipfile.ZipFile(FAST / 'launcher/resources.apk')
     with zipfile.ZipFile(base) as src, zipfile.ZipFile(unsigned, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as dst, resources:
         for info in src.infolist():
-            if (info.filename.startswith('META-INF/') or info.filename.startswith('assets/native/')
+            if (info.filename.startswith(('META-INF/', 'assets/turnip/', 'assets/native/'))
+                    or info.filename in ('lib/arm64-v8a/libfrostpunk_turnip.so',
+                        'assets/licenses/Turnip-SM8250-origin.json', 'assets/licenses/Turnip-SM8250-LICENSE-NOTE.txt')
                     or info.filename == 'lib/arm64-v8a/libfrostpunk_runtime.so'
                     or info.filename.startswith('lib/arm64-v8a/') and Path(info.filename).name in QA_ONLY_LIBRARIES):
                 continue

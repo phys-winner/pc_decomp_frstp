@@ -1,4 +1,4 @@
-# Frostpunk for Android — 0.1.1-dev
+# Frostpunk for Android — 0.2-dev
 
 Experimental native ARM64 Android port of Frostpunk using static recompilation,
 with Vulkan rendering, touch controls, and on-device texture conversion.
@@ -20,7 +20,7 @@ You need:
 
 - Android 11 / API 30 or newer on a 64-bit ARM device.
 - A compatible Vulkan 1.3 GPU and driver. Adreno uses Mesa Turnip; supported Mali
-  and PowerVR devices use system Vulkan. The launcher checks the actual features.
+  and PowerVR devices use system Vulkan. The launcher reports the actual features; attempting launch despite a warning does not guarantee compatibility.
 - Your own supported Steam PC installation of Frostpunk. The pinned
   `Frostpunk.exe` SHA-256 is
   `45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc`.
@@ -37,8 +37,8 @@ manifests in `android/` contain names, sizes, and hashes, not game payloads.
 
 ## Install and play
 
-1. Install `Frostpunk-0.1.1-dev.apk`: package `com.frostpunk.staticrecomp`, version
-   name `0.1.1-dev`, version code `3`.
+1. Install `Frostpunk-0.2-dev-<commit>.apk` (eight commit hash characters): package `com.frostpunk.staticrecomp`, version
+   name `0.2-dev`, version code `4`.
 2. Open the launcher and grant storage access as needed. The Play card shows
    unsupported GPU features and insufficient Vulkan versions. The launcher stays
    usable when the device cannot run the game.
@@ -97,11 +97,14 @@ Switch texture quality skips top mip levels of 785 identified world textures;
 UI and unknown textures retain their full mip chains. A full PC ASTC cache also
 covers Switch quality; a reduced cache cannot supply PC quality. World meshes
 remain PC meshes with runtime simplification. The adapted Switch artwork belongs
-to the optional interface data.
+to the optional interface data. Current port settings and localization patches
+are bundled in the APK, verified by SHA-256, and installed ahead of older
+interface patches in the game ZIP. The built-in driver is purple-turnip T30
+(Mesa); its license text and origin are under assets/licenses in the APK.
 
 Turnip disables hardware tessellation to avoid GPU hangs observed in development.
 Upscaling, frame generation, and reduced graphics are experimental and depend on
-the GPU and driver. `0.1.1-dev` remains an early development build.
+the GPU and driver. `0.2-dev` remains an early development build.
 
 ## Sources and building
 
@@ -133,7 +136,7 @@ Copy-Item port.example.json port.json
 python -m pip install -r requirements.txt
 ```
 
-The release recipe rebuilds the launcher, application library, and host runtime,
+The release recipe rebuilds the launcher, application library, D3D11 bridge, and host runtime,
 links the validated AOT objects, and packages a signed APK:
 
 ```powershell
@@ -144,7 +147,8 @@ python -X utf8 -B tools/build_release.py
 It needs previously generated private AOT inputs, dependency checkouts, and base
 APKs: `build/fast/runtime-inputs.json`, matching generated sources,
 `build/fastlift/obj`, the bridge objects named in `tools/android_release.py`, the
-pinned `build/ui-20261114/v25` base APK, and `build/fastlift/fl18` DXVK payload.
+pinned `build/ui-20261114/v25` base APK, `build/fastlift/fl18` DXVK payload,
+and pinned Turnip inputs in `build/gpu-runtime/runtime` and `reference/turnip-*`.
 These include generated game code and local build products and are not in Git.
 A fresh clone alone cannot reproduce the APK.
 
@@ -152,8 +156,10 @@ APK tooling and the existing signing key are read from the local
 `~/.agents/skills/adapt-arm32-game/machine_config.json` used by `tools/fastbuild.py`.
 Provide your own private machine configuration and signer; no key or keystore is
 distributed here. The recipe checks the base pin, source stability, APK signature,
-and 16 KB ZIP alignment. Outputs are `pub/Frostpunk-0.1.1-dev.apk`, its SHA-256 file,
-and the local `pub/Frostpunk.apk` alias. The whole `pub/` directory is Git-ignored.
+and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.2-dev-<commit>.apk`, where
+`<commit>` matches the eight-character commit embedded in the APK, with a SHA-256
+sidecar. Local aliases `pub/Frostpunk-0.2-dev.apk` and `pub/Frostpunk.apk` are also
+updated. The whole `pub/` directory is Git-ignored.
 
 A portable localization check needs no device or game files:
 

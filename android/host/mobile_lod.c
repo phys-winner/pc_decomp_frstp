@@ -26,20 +26,32 @@ static _Atomic unsigned policy_minimum;
 
 void fp_mobile_lod_minimum(unsigned level) { atomic_store_explicit(&policy_minimum, level > 3 ? 3 : level, memory_order_relaxed); }
 
+static _Atomic int lod_override = -2;
+
+static int lod_property(void) {
+#ifdef __ANDROID__
+    char value[PROP_VALUE_MAX] = {0}; int saved = errno;
+    __system_property_get("debug.fp.lod", value);
+    int mode = value[0] >= '0' && value[0] <= '3' && !value[1] ? value[0] - '0' : -1;
+    errno = saved;
+    return mode;
+#else
+    return -1;
+#endif
+}
+
+void fp_mobile_lod_refresh(void) {
+    atomic_store_explicit(&lod_override, lod_property(), memory_order_relaxed);
+}
+
 unsigned fp_mobile_lod_level(unsigned requested) {
     unsigned minimum = atomic_load_explicit(&policy_minimum, memory_order_relaxed);
-#ifdef __ANDROID__
-    static _Atomic int override = -2;
-    int mode = atomic_load_explicit(&override, memory_order_relaxed);
+    int mode = atomic_load_explicit(&lod_override, memory_order_relaxed);
     if (mode == -2) {
-        char value[PROP_VALUE_MAX] = {0}; int saved = errno;
-        __system_property_get("debug.fp.lod", value);
-        mode = value[0] >= '0' && value[0] <= '3' && !value[1] ? value[0] - '0' : -1;
-        atomic_store_explicit(&override, mode, memory_order_relaxed);
-        errno = saved;
+        mode = lod_property();
+        atomic_store_explicit(&lod_override, mode, memory_order_relaxed);
     }
     if (mode >= 0) minimum = (unsigned)mode;
-#endif
     /* Out-of-range requests reach the original unchanged: it reports them itself. */
     return requested < 4 && requested < minimum ? minimum : requested;
 }

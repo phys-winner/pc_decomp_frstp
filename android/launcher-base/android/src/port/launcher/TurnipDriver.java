@@ -64,12 +64,7 @@ final class TurnipDriver {
         String name = path != null ? path.getName() : displayName(context, uri);
         try {
             String[] driver = unpack(picked, name, dir);
-            State.update(context, State.CHOICES, values -> {
-                values.setProperty(KEY, driver[0]);
-                values.setProperty(TITLE, driver[1]);
-            });
-            clean(dir, driver[0]);
-            return driver[1];
+            return select(context, new File(dir, driver[0]), driver[1]);
         } finally {
             picked.delete();
         }
@@ -85,13 +80,13 @@ final class TurnipDriver {
         return uri.getLastPathSegment();
     }
 
-    /** Back to the port's own driver. */
+    /** Back to the port's own driver; external libraries stay cached until cleanup. */
     static void reset(Context context) {
         State.update(context, State.CHOICES, values -> {
             values.remove(KEY);
             values.remove(TITLE);
         });
-        clean(folder(context), null);
+
     }
 
     /** The driver of a picked file into dir: {library file name, title}. A ZIP is a driver package
@@ -129,7 +124,7 @@ final class TurnipDriver {
     private static String[] settle(File part, File target, String title) throws IOException {
         try {
             check(part);
-            if (target.exists() && !target.delete()) throw new IOException("cannot replace " + target.getName());
+            target = new File(target.getParentFile(), "libturnip-" + sha(part) + ".so");
             if (!part.renameTo(target)) throw new IOException("cannot store " + target.getName());
             return new String[] {target.getName(), title.trim().isEmpty() ? target.getName() : title.trim()};
         } finally {
@@ -186,10 +181,44 @@ final class TurnipDriver {
         return out.toString();
     }
 
-    /** Every driver file but keep (null: all) leaves the folder. */
-    private static void clean(File dir, String keep) {
+    static String sha(File file) throws IOException {
+        try (InputStream in = new FileInputStream(file)) {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[65536];
+            for (int n; (n = in.read(buffer)) > 0;) digest.update(buffer, 0, n);
+            return FrostpunkFiles.hex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+    }
+
+    static String select(Context context, File file, String title) throws IOException {
+        if (!file.getCanonicalFile().getParentFile().equals(folder(context).getCanonicalFile()))
+            throw new IOException("driver leaves its folder");
+        check(file);
+        if (!State.update(context, State.CHOICES, values -> {
+            values.setProperty(KEY, file.getName());
+            values.setProperty(TITLE, title);
+        })) throw new IOException("cannot save the selected driver");
+        return title;
+    }
+
+    static java.util.List<File> unused(Context context) {
+        java.util.List<File> result = new java.util.ArrayList<>();
+        File active = chosen(context), dir = folder(context);
         File[] files = dir.listFiles();
-        if (files != null) for (File f : files) if (keep == null || !f.getName().equals(keep)) f.delete();
+        if (files != null) for (File file : files)
+            if (file.isFile() && file.getName().endsWith(".so") && !file.equals(active)) result.add(file);
+        return result;
+    }
+
+    static void removeUnused(Context context) throws IOException {
+        for (File file : unused(context))
+            if (!file.equals(chosen(context)) && !file.delete() && file.exists())
+                throw new IOException("cannot delete " + file.getName());
+        State.update(context, "turnip-cache", values -> values.entrySet().removeIf(entry -> {
+            String key = (String)entry.getKey();
+            String file = key.endsWith(".title") ? key.substring(0, key.length() - 6) : (String)entry.getValue();
+            return !new File(folder(context), file).isFile();
+        }));
     }
 
     private static void copy(InputStream in, OutputStream out, long limit) throws IOException {

@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <time.h>
 static unsigned debug_calls;
+static int geometry_level;
+void frostpunk_geometry_detail(int level){geometry_level=level;}
 int64_t g_image_delta;
 static void L_000140E1DC20(CPU *c){c->rsp+=8;}
 void fp_dispatch_main(CPU *c,uint64_t target,void (*linked)(CPU*)){
@@ -42,6 +44,26 @@ static void check_frame_options(CPU *cpu){
  for(unsigned i=1;i<3;++i)free((void*)(uintptr_t)rd64((uintptr_t)options+i*16+8));
  fp_port_setting_set(FP_SETTING_FRAME_LIMIT,0);
 }
+static void check_output_labels(CPU *cpu) {
+ unsigned char row[0x80]={0},slots[10*16]={0};
+ static const uint32_t scales[]={20,30,40,50,60,67,75,80,90,100};
+ char literal[10][8];
+ wr32((uintptr_t)row+0x20,21);wr64((uintptr_t)row+0x28,(uintptr_t)slots);wr32((uintptr_t)row+0x30,10);wr32((uintptr_t)row+0x34,10);
+ for(unsigned i=0;i<10;++i){snprintf(literal[i],sizeof literal[i],"%u%%",scales[i]);wr32((uintptr_t)slots+i*16,scales[i]);wr64((uintptr_t)slots+i*16+8,(uintptr_t)literal[i]);}
+ unsigned created=option_creates,destroyed=option_destroys;
+ fp_output_labels(cpu,(uintptr_t)row);assert(option_creates==created&&option_destroys==destroyed);
+ fp_output_display_size(2780,1264);
+ char label[48];assert(fp_output_resolution_label(50,label,sizeof label)&&!strcmp(label,"1390x632 (50%)"));
+ assert(fp_output_resolution_label(20,label,sizeof label)&&!strcmp(label,"556x252 (20%)"));
+ assert(fp_output_resolution_label(67,label,sizeof label)&&!strcmp(label,"1862x846 (67%)"));
+ assert(fp_output_resolution_label(100,label,sizeof label)&&!strcmp(label,"2780x1264 (100%)"));
+ assert(!fp_output_resolution_label(19,label,sizeof label));
+ fp_output_labels(cpu,(uintptr_t)row);assert(option_creates==created+10&&option_destroys==destroyed);
+ assert(!strcmp((const char*)(uintptr_t)rd64((uintptr_t)slots+3*16+8),"1390x632 (50%)"));
+ assert(!strcmp((const char*)(uintptr_t)rd64((uintptr_t)slots+8),"556x252 (20%)"));
+ fp_output_labels(cpu,(uintptr_t)row);assert(option_creates==created+10&&option_destroys==destroyed);
+ for(unsigned i=0;i<10;++i)free((void*)(uintptr_t)rd64((uintptr_t)slots+i*16+8));
+}
 void fp_mobile_debug_menu_request(void){++debug_calls;}
 int main(void){
  _Alignas(16) unsigned char renderer[0x200]={0},stack[1024];
@@ -49,8 +71,11 @@ int main(void){
  push64(&cpu,0);L_000140E5C1A0(&cpu);
  assert(rdss((uintptr_t)renderer+0xf4)==1.0f&&rdss((uintptr_t)renderer+0xf8)==.25f);
  check_frame_options(&cpu);
+ check_output_labels(&cpu);
  char folder[]="/data/local/tmp/fp-settings-XXXXXX";assert(mkdtemp(folder));
  fp_port_settings_load(folder);
+ assert(fp_port_setting_get(FP_SETTING_BUILDING_MODELS)==0&&geometry_level==5);
+ assert(fp_port_setting_get(FP_SETTING_MODEL_DETAIL)==5);
  assert(fp_port_setting_get(FP_SETTING_UI_SCALE)==200&&frostpunk_dxvk_object_highlight()==1);
  fp_port_setting_set(FP_SETTING_UI_SCALE,150);fp_port_settings_load(folder);
  assert(fp_port_setting_get(FP_SETTING_UI_SCALE)==150&&fp_port_setting_get(FP_SETTING_OUTPUT_SCALE)==50);
@@ -96,7 +121,7 @@ int main(void){
  fp_port_setting_set(FP_SETTING_MOBILE_EFFECTS,1);fp_port_setting_set(FP_SETTING_OBJECT_HIGHLIGHT,0);
  assert(frostpunk_dxvk_mobile_effects()==1&&!frostpunk_dxvk_object_highlight());
  fp_port_setting_set(FP_SETTING_OBJECT_HIGHLIGHT,1);fp_port_setting_set(FP_SETTING_MOBILE_EFFECTS,0);
- assert(!frostpunk_dxvk_mobile_effects()&&frostpunk_dxvk_object_highlight()==1);
+ assert(!frostpunk_dxvk_mobile_effects()&&frostpunk_dxvk_object_highlight()==1&&geometry_level==5);
  fp_port_setting_set(FP_SETTING_DEBUG_MENU,1);assert(debug_calls==1&&fp_port_setting_get(FP_SETTING_DEBUG_MENU)==0);
  fp_port_setting_set(FP_SETTING_DEBUG_MENU,0);assert(debug_calls==1);
  fp_port_settings_load(folder);assert(fp_port_setting_get(FP_SETTING_UI_SCALE)==200);
@@ -116,6 +141,20 @@ int main(void){
  assert(!frostpunk_dxvk_mobile_effects());for(unsigned group=0;group<FP_GFX_COUNT;++group)assert(frostpunk_mobile_graphics_pc(group)&&!frostpunk_mobile_graphics_reduced(group));
  setenv("PORT_OPTION_SWITCH_GRAPHICS","1",1);fp_port_settings_load(folder);
  assert(frostpunk_dxvk_mobile_effects());for(unsigned group=0;group<FP_GFX_COUNT;++group)assert(frostpunk_mobile_graphics_pc(group)==(group==FP_GFX_SNOW)&&frostpunk_mobile_graphics_reduced(group)==(group!=FP_GFX_SNOW));
+ fp_port_setting_set(FP_SETTING_MODEL_DETAIL,3);assert(fp_port_setting_get(FP_SETTING_MODEL_DETAIL)==3);
+ fp_port_setting_set(FP_SETTING_MODEL_DETAIL,6);assert(fp_port_setting_get(FP_SETTING_MODEL_DETAIL)==3);
+ fp_port_settings_load(folder);assert(fp_port_setting_get(FP_SETTING_MODEL_DETAIL)==3);
+ fp_port_setting_set(FP_SETTING_MODEL_DETAIL,0);assert(!fp_port_setting_get(FP_SETTING_MODEL_DETAIL));
+ assert(fp_port_setting_get(FP_SETTING_BUILDING_MODELS)==0&&geometry_level==5);
+ fp_port_setting_set(FP_SETTING_BUILDING_MODELS,0);assert(!fp_port_setting_get(FP_SETTING_BUILDING_MODELS));
+ fp_port_setting_set(FP_SETTING_BUILDING_MODELS,5);assert(!fp_port_setting_get(FP_SETTING_BUILDING_MODELS));
+ fp_port_settings_load(folder);assert(!fp_port_setting_get(FP_SETTING_BUILDING_MODELS));
+ fp_port_setting_set(FP_SETTING_MODEL_DETAIL,1);assert(fp_port_setting_get(FP_SETTING_MODEL_DETAIL)==1);
+ assert(fp_port_setting_get(FP_SETTING_BUILDING_MODELS)==4);
+ fp_port_settings_load(folder);assert(fp_port_setting_get(FP_SETTING_MODEL_DETAIL)==1);
+ assert(fp_port_setting_get(FP_SETTING_BUILDING_MODELS)==4);
+ fp_port_setting_set(FP_SETTING_BUILDING_MODELS,3);
+ fp_port_settings_load(folder);assert(fp_port_setting_get(FP_SETTING_BUILDING_MODELS)==3&&geometry_level==2);
  assert(!unlink(path)&&!rmdir(folder));
- puts("{\"success\":true,\"render_default_100\":true,\"output_default_50\":true,\"phone_and_tablet_default_200\":true,\"saved_ui_150_preserved_at_output_50\":true,\"ui_scale_range_step_10\":true,\"highlight_independent\":true,\"debug_action\":true,\"persistence\":true,\"invalid_settings\":true}");
+ puts("{\"success\":true,\"model_and_building_defaults_lowest\":true,\"render_default_100\":true,\"output_default_50\":true,\"phone_and_tablet_default_200\":true,\"saved_ui_150_preserved_at_output_50\":true,\"ui_scale_range_step_10\":true,\"highlight_independent\":true,\"debug_action\":true,\"persistence\":true,\"invalid_settings\":true}");
 }

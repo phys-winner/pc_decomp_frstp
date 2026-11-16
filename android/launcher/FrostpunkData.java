@@ -27,6 +27,53 @@ public final class FrostpunkData extends Work.Job {
             return result;
         }
     }
+    private static boolean matches(File file, JSONObject pin) throws Exception {
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) throw new IOException("Resource is a symbolic link");
+        if (!file.isFile() || file.length() != pin.getLong("bytes")) return false;
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[65536];
+            for (int n; (n = in.read(buffer)) > 0;) digest.update(buffer, 0, n);
+        }
+        return FrostpunkFiles.hex(digest.digest()).equals(pin.getString("sha256"));
+    }
+    private static synchronized void bundled(Context context, File game) throws Exception {
+        if (!game.isDirectory()) throw new IOException("Game folder is missing");
+        JSONObject expected = manifest(context, "port-ui");
+        JSONObject payloads = expected.getJSONObject("payloads");
+        for (Iterator<String> it = payloads.keys(); it.hasNext();) {
+            String name = it.next();
+            if (!name.startsWith("port-ui.") || name.contains("/") || name.contains("\\"))
+                throw new IOException("Invalid bundled resource name");
+            JSONObject pin = payloads.getJSONObject(name);
+            File target = new File(game, name);
+            if (matches(target, pin)) continue;
+            File part = File.createTempFile("port-ui-", ".part", game);
+            try {
+                try (InputStream in = context.getAssets().open("port-ui/" + name);
+                     FileOutputStream out = new FileOutputStream(part)) {
+                    byte[] buffer = new byte[65536];
+                    for (int n; (n = in.read(buffer)) > 0;) out.write(buffer, 0, n);
+                    out.getFD().sync();
+                }
+                if (!matches(part, pin)) throw new IOException("Bundled resource checksum mismatch: " + name);
+                Os.rename(part.getAbsolutePath(), target.getAbsolutePath());
+            } finally { if (part.exists()) part.delete(); }
+        }
+        File marker = new File(game, "port-ui.json");
+        byte[] text = expected.toString().getBytes("UTF-8");
+        if (java.nio.file.Files.isSymbolicLink(marker.toPath())) throw new IOException("Resource marker is a symbolic link");
+        if (!marker.isFile() || marker.length() != text.length || !Arrays.equals(java.nio.file.Files.readAllBytes(marker.toPath()), text)) {
+            File part = File.createTempFile("port-ui-", ".part", game);
+            try {
+                try (FileOutputStream out = new FileOutputStream(part)) { out.write(text); out.getFD().sync(); }
+                Os.rename(part.getAbsolutePath(), marker.getAbsolutePath());
+            } finally { if (part.exists()) part.delete(); }
+        }
+        if (!State.put(context, "resources", "port-ui", fingerprint(context, game, "port-ui")))
+            throw new IOException("Cannot record bundled UI verification");
+        State.put(context, "resources", "port-ui.error", null);
+    }
     private static String fingerprint(Context context, File game, String kind) throws Exception {
         JSONObject expected = manifest(context, kind);
         JSONObject actual = new JSONObject(new String(FrostpunkFiles.read(game, kind + ".json"), "UTF-8"));
@@ -42,6 +89,7 @@ public final class FrostpunkData extends Work.Job {
         return FrostpunkFiles.hex(digest.digest());
     }
     static boolean packagePresent(Context context, File game, String kind) {
+        if ("port-ui".equals(kind)) return true;
         try { fingerprint(context, game, kind); return true; } catch (Exception failure) { return false; }
     }
     static boolean installed(Context context, File game, String kind) {
@@ -49,6 +97,8 @@ public final class FrostpunkData extends Work.Job {
         catch (Exception failure) { return false; }
     }
     @Override void work() throws Exception {
+        bundled(context, game);
+        FrostpunkFiles.verifyOnce(game, (doneBytes, totalBytes, name) -> { done = doneBytes; total = totalBytes; file = name; check(); });
         for (String kind : KINDS) {
             State.put(context, "resources", kind, "");
             if (!packagePresent(context, game, kind)) continue;
@@ -78,6 +128,7 @@ public final class FrostpunkData extends Work.Job {
         }
         Os.setenv("FROSTPUNK_SYSTEM_LANGUAGE", locales.isEmpty() ? "en" : locales.get(0).toLanguageTag(), true);
         FrostpunkFiles.attach(context); File game = FrostpunkFiles.game(context);
+        bundled(context, game);
         Os.setenv("FROSTPUNK_PORT_DATA", installed(context, game, "port-ui") ? "1" : "0", true);
         Os.setenv("FROSTPUNK_SWITCH_DATA", installed(context, game, "switch-ui") ? "1" : "0", true);
         Os.setenv("FROSTPUNK_TEXTURE_QUALITY", new File(game, ".frostpunk-dxt/conversion.json").isFile()

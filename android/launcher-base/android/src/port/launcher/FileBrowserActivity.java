@@ -223,7 +223,7 @@ public final class FileBrowserActivity extends Activity {
                         for (Spec.Part p : d.parts) if (Install.present(p, item.file)) names.add(Texts.of(this, p.title));
                     if (!names.isEmpty()) text = Texts.fmt(this, Texts.HAS_GAME, String.join(", ", names));
                 } else if (mode == Pickers.ZIP) {
-                    try (FileInputStream in = new FileInputStream(item.file); Zip zip = new Zip(in.getChannel())) {
+                    try (Zip zip = new Zip(new FileInputStream(item.file))) {
                         List<String> names = new ArrayList<>();
                         boolean stored = true;
                         for (Install.ArchivePart part : Install.plan(zip, spec)) {

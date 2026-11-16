@@ -48,8 +48,8 @@ def prepare(work, manifest_text):
     work.mkdir(parents=True, exist_ok=True)
     manifest = work / 'game-manifest.xml'
     manifest_text = manifest_text.replace('android:targetSdkVersion="36"', 'android:targetSdkVersion="37"')
-    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.1.1-dev"')
-    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="3"')
+    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.2-dev"')
+    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="4"')
     manifest_text = manifest_text.replace('<application ', '<application android:appCategory="game" ', 1) if 'android:appCategory=' not in manifest_text else manifest_text
     manifest_text = manifest_text.replace('<uses-sdk ', '<!-- launcher:manifest -->\n  <uses-sdk ', 1)
     manifest_text = manifest_text.replace('<activity ', '<!-- launcher:application -->\n    <activity ', 1)
@@ -57,6 +57,9 @@ def prepare(work, manifest_text):
     manifest_text = manifest_text.replace('android:launchMode="singleTask"', 'android:launchMode="singleTop"')
     manifest.write_text(manifest_text, encoding='utf-8')
     result = launcher.prepare(ROOT / 'android/port.json', manifest, work / 'prepared')
+    from package_game_data import port_ui_patch
+    bundled, _ = port_ui_patch(work / 'bundled-ui')
+    shutil.copytree(bundled, Path(result['assets']) / 'port-ui', dirs_exist_ok=True)
     for kind in ('originals', 'port-ui', 'switch-ui'):
         shutil.copyfile(ROOT / ('android/game-data-' + kind + '.json'), Path(result['assets']) / ('game-data-' + kind + '.json'))
     (Path(result['assets']) / 'game-inputs.tsv').write_text(game_input_manifest(), encoding='utf-8', newline='\n')
@@ -86,6 +89,26 @@ def prepare(work, manifest_text):
     renderer_source.write_text(renderer_text, encoding='utf-8')
     activity = next(Path(p) for p in result['sources'] if Path(p).name == 'LauncherActivity.java')
     activity_text = activity.read_text(encoding='utf-8')
+    releases = 'buttons.add(ui.button(Texts.t(this, Texts.RELEASES), Ui.SECONDARY, () -> open(spec.githubUrl("/releases"))));'
+    assert activity_text.count(releases) == 1
+    activity_text = activity_text.replace(releases,
+        'buttons.add(ui.button("Telegram", Ui.SECONDARY, () -> open("https://t.me/phys_winner_ports")));')
+    cleanup_end = '        card.addView(ui.buttons(ui.button(Texts.t(this, Texts.COPY_DIAGNOSTICS), Ui.SECONDARY, this::copyDiagnostics)));'
+    assert activity_text.count(cleanup_end) == 1
+    activity_text = activity_text.replace(cleanup_end, cleanup_end + '\n        fpDriverCleanup(card);')
+    driver_done = '            } else if (job instanceof Cleanup.Job) {'
+    assert activity_text.count(driver_done) == 1
+    activity_text = activity_text.replace(driver_done, '\n'.join([
+        '            } else if (job instanceof FrostpunkDriverDownload) {',
+        '                note(Texts.RENDERER, Texts.fmt(this, Texts.TURNIP_DRIVER, ((FrostpunkDriverDownload)job).installedTitle), false);',
+        '                checkRenderer();',
+        driver_done]))
+    builtin = 'Texts.t(this, Texts.TURNIP_BUILTIN)'
+    assert activity_text.count(builtin) == 1
+    activity_text = activity_text.replace(builtin, '"purple-turnip T30 (Mesa)"')
+    startup = '        build();\n'
+    assert activity_text.count(startup) == 1
+    activity_text = activity_text.replace(startup, startup + '        fpWarnLowMemory();\n')
     edits = {
         '        String chosen = explicit != null ? explicit : spec.defaultMode;':
             '        String chosen = Renderers.effective(spec.defaultMode, statuses, explicit != null ? explicit : spec.defaultMode, explicit != null);',
@@ -235,6 +258,9 @@ def prepare(work, manifest_text):
     for before, after in edits.items():
         assert activity_text.count(before) == 1, before
         activity_text = activity_text.replace(before, after)
+    turnip_choose = '            TextView choose = ui.button(Texts.t(this, Texts.TURNIP_CHOOSE), Ui.SECONDARY, () -> pick(Pickers.ZIP, ASK_DRIVER, null));'
+    assert activity_text.count(turnip_choose) == 1
+    activity_text = activity_text.replace(turnip_choose, '            fpTurnipSources(card);\n' + turnip_choose)
     activity_text = activity_text.rstrip().removesuffix('}') + '\n' + (ROOT / 'android/launcher/launch_checks.java.inc').read_text(encoding='utf-8') + '\n}\n'
     activity.write_text(activity_text, encoding='utf-8')
     ui = next(Path(p) for p in result['sources'] if Path(p).name == 'Ui.java')

@@ -5,14 +5,21 @@
 extern "C" {
 #endif
 
-/* Android-only rows in the original General and Graphics menus (SettingsConfig ids 21-30).
+/* Android-only rows in the original General and Graphics menus (SettingsConfig ids 21-32).
  * The translated settings getter/setter in recomp_funcs_0959 calls into these; values live
  * in <private>/port-settings.txt, independent of the game's own config.bin.
  * Vulkan driver selection belongs to the shared launcher. */
 enum { FP_SETTING_OUTPUT_SCALE = 21, FP_SETTING_MOBILE_EFFECTS = 22,
        FP_SETTING_OBJECT_HIGHLIGHT = 23, FP_SETTING_UI_SCALE = 24, FP_SETTING_DEBUG_MENU = 25,
        FP_SETTING_TOUCH_OFFSET = 26, FP_SETTING_UPSCALER = 27, FP_SETTING_FRAME_LIMIT = 28,
-       FP_SETTING_GESTURE_HELP = 29, FP_SETTING_SWITCH_UI = 30 };
+       FP_SETTING_GESTURE_HELP = 29, FP_SETTING_SWITCH_UI = 30, FP_SETTING_MODEL_DETAIL = 31,
+       FP_SETTING_BUILDING_MODELS = 32 };
+/* Native landscape size, before output scale. Option labels are "WIDTHxHEIGHT (PERCENT%)". */
+void fp_output_display_size(uint32_t width, uint32_t height);
+int fp_output_resolution_label(uint32_t percent, char *text, size_t text_n);
+/* 0 = automatic (mobile post-processing), 1 = full meshes, then coarser steps. The bridge
+ * rewrites index buffers on the next presents; a missing bridge keeps the value only. */
+void frostpunk_geometry_detail(int level);
 
 void fp_port_settings_load(const char *directory);
 /* Always returns a value that is one of the row's options. */

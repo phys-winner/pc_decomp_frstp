@@ -15,7 +15,7 @@ def main():
     report=ROOT/'research/switch-performance-textures.json';rows=json.loads(report.read_text())['entries']
     cases=out/'switch-cases.inc';cases.write_text('\n'.join('{%s,%u,%u,%u,%u},'%(json.dumps(r['name']),r['width'],r['height'],r['mips'],r['skip']) for r in rows)+'\n')
     fixture=ROOT/'tests/switch_performance_fixture.c';source=ROOT/'android/host/switch_performance.c'
-    transaction=out/'mobile-transaction.inc';transaction.write_text(extract(EDITS[1][1],'if(R32(c->rbx)>=20u&&R32(c->rbx)<=29u)'))
+    transaction=out/'mobile-transaction.inc';transaction.write_text(extract(EDITS[1][1],'if(R32(c->rbx)>=20u&&R32(c->rbx)<=31u)'))
     pins={str(x):sha(x) for x in [report,cases,transaction,fixture,source,ROOT/'android/host/switch_texture_caps.inc',ROOT/'android/host/switch_performance.h',ROOT/'tools/build_port_settings_unit.py']}
     bins,env=windows_toolchain()
     def run(cmd):

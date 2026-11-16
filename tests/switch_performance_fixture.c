@@ -26,8 +26,8 @@ int main(void){
         for(unsigned i=0;i<sizeof(cases)/sizeof(*cases);++i){
             uint32_t h[4]={cases[i].width,cases[i].height,0x36545341u,cases[i].mips};
             assert(fp_switch_texture_skip(cases[i].path,h,0)==(mode?cases[i].skip:0));
-            const uint32_t formats[]={0x36545341u,0x31545844u,0x33545844u,0x35545844u};
-            for(unsigned f=0;f<4;++f){h[2]=formats[f];assert(fp_switch_texture_skip(cases[i].path,h,0)==(mode?cases[i].skip:0));}
+            const uint32_t formats[]={0x36545341u,0x34545341u,0x31545844u,0x33545844u,0x35545844u};
+            for(unsigned f=0;f<5;++f){h[2]=formats[f];assert(fp_switch_texture_skip(cases[i].path,h,0)==(mode?cases[i].skip:0));}
             h[2]=0x36545341u;
             assert(fp_switch_texture_skip(cases[i].path,h,4)==4);
             char path[272];strcpy(path,cases[i].path);char *dot=strrchr(path,'.');strcpy(dot,".DDS|variant");
@@ -82,6 +82,50 @@ int main(void){
         CPU cpu={0};cpu.rbx=id-1;cpu.rdi=(uintptr_t)config;cpu.rsi=(uintptr_t)&dirty;cpu.rsp=(uintptr_t)stack;wr32(cpu.rsp+0x50,value);
         transaction(&cpu);unsigned changed=id==22&&value<=1&&old!=value;
         assert(config[0x2c]==changed&&dirty==changed);assert(mobile==(id==22&&value<=1?value:old));++transactions;
+    }
+    mobile=1;
+#ifdef _WIN32
+    _putenv_s("PORT_OPTION_TEXTURE_LIMIT","256");
+#else
+    setenv("PORT_OPTION_TEXTURE_LIMIT","256",1);
+#endif
+    {
+        uint32_t world[4]={4096,4096,0x35545844u,13};
+        assert(fp_switch_texture_skip("world/buildings/generator_house.dds",world,0)==4);
+        assert(fp_switch_texture_skip("ui/world/generator_house.dds",world,0)==0);
+        assert(fp_switch_texture_skip("fonts/title.dds",world,0)==0);
+        assert(fp_switch_texture_skip("effects/quadtextures/smears/bigsplotch2forfreezingtobbar.dds",shared_ui,0)==2);
+        uint32_t mid[4]={512,512,0x35545844u,10};
+        assert(fp_switch_texture_skip("world/buildings/not_in_the_table.dds",mid,0)==1);
+        uint32_t reduced[4]={1024,1024,0x35545844u,11};
+        assert(fp_switch_texture_skip("world/buildings/generator_house.dds",reduced,0)==2);
+        world[3]=2;assert(fp_switch_texture_skip("world/buildings/generator_house.dds",world,0)==1);
+        int known=0;
+        for(unsigned i=0;i<sizeof(cases)/sizeof(*cases);++i){
+            if(cases[i].width<4096||cases[i].height<2048)continue;
+            uint32_t hknown[4]={cases[i].width,cases[i].height,0x33545844u,cases[i].mips};
+            uint32_t skip=cases[i].skip,big=cases[i].width>cases[i].height?cases[i].width:cases[i].height;
+            while(skip+1u<cases[i].mips&&(big>>skip)>256u)++skip;
+            uint32_t want=cases[i].mips>skip&&skip>0?skip:0;
+            assert(fp_switch_texture_skip(cases[i].path,hknown,0)==want);
+            known=1;break;
+        }
+        assert(known);
+        mobile=0;world[3]=13;assert(fp_switch_texture_skip("world/buildings/generator_house.dds",world,0)==0);
+        assert(fp_switch_texture_skip("effects/quadtextures/smears/bigsplotch2forfreezingtobbar.dds",shared_ui,0)==0);
+        mobile=1;
+#ifdef _WIN32
+        _putenv_s("PORT_OPTION_TEXTURE_LIMIT","512");
+#else
+        setenv("PORT_OPTION_TEXTURE_LIMIT","512",1);
+#endif
+        assert(fp_switch_texture_skip("world/buildings/generator_house.dds",world,0)==3);
+#ifdef _WIN32
+        _putenv_s("PORT_OPTION_TEXTURE_LIMIT","");
+#else
+        unsetenv("PORT_OPTION_TEXTURE_LIMIT");
+#endif
+        assert(fp_switch_texture_skip("world/buildings/generator_house.dds",world,0)==0);
     }
     printf("{\"success\":true,\"texture_mode_cases\":%u,\"gfx_on_off_cycles\":1024,\"mobile_transactions\":%u,\"ui_unchanged\":true,\"original_quality_restored_by_transaction\":true}\n",tested,transactions);
 }

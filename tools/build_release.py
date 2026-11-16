@@ -1,13 +1,14 @@
-"""Build Frostpunk 0.1.1-dev from the validated private AOT/base-APK inputs."""
+"""Build Frostpunk 0.2-dev from the validated private AOT/base-APK inputs."""
 import shutil
 import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'build/release-0.1.1-dev'
+OUT = ROOT / 'build/release-0.2-dev'
 import android_release as builder
 builder.OUT = OUT
 builder.EXTRA_HOST += [name for name in ('android/host/zip_files.c', 'reference/launcher-zipmount/zipmount.c') if name not in json.loads(builder.CANONICAL.read_text())['sources']]
@@ -18,12 +19,15 @@ source_names = sorted(set(json.loads(builder.CANONICAL.read_text())['sources'] +
 source_pins = {name: builder.sha(ROOT / builder.SOURCE_OVERRIDE.get(name, name)) for name in source_names}
 source_pins.update({str(p.relative_to(ROOT)): builder.sha(p) for p in sorted((ROOT / 'android/host').glob('*.h'))})
 source_pins['android/host/switch_texture_caps.inc'] = builder.sha(ROOT / 'android/host/switch_texture_caps.inc')
-sources = [ROOT / 'android/app/app.c', ROOT / 'android/host/port_settings.c', ROOT / 'android/host/switch_performance.c',
+sources = [ROOT / 'android/app/app.c', ROOT / 'android/dxvk/bridge.cpp', ROOT / 'android/dxvk/mobile_geometry.inc', ROOT / 'android/host/port_settings.c', ROOT / 'android/host/switch_performance.c',
            ROOT / 'android/steam/offline_policy.cpp', ROOT / 'android/steam/probe.cpp',
            ROOT / 'android/texconv/texconv.cpp', ROOT / 'tools/android_launcher.py', ROOT / 'android/port.json',
            ROOT / 'android/launcher-compatibility-localization.json', *sorted((ROOT / 'android/launcher').glob('*.java')),
            ROOT / 'android/launcher/launch_checks.java.inc']
 pins = {str(p.relative_to(ROOT)): builder.sha(p) for p in sources}
+subprocess.run([sys.executable, '-X', 'utf8', '-B', str(ROOT / 'tools/fastlift.py'),
+                'bridge', '--out', str(OUT)], check=True)
+builder.ARCHIVES['build/dxvk-bridge/libwin64_d3d11.a'] = str((OUT / 'host/libwin64_d3d11-fastlift.a').relative_to(ROOT))
 builder.build_dex()
 builder.build_app()
 runtime = builder.link('data-flow')
@@ -34,6 +38,10 @@ extra = {p.name: p for p in (OUT / 'launcher-assets').glob('game-data-*.json')}
 extra['game-inputs.tsv'] = OUT / 'launcher-assets/game-inputs.tsv'
 with zipfile.ZipFile(apk) as z:
     provenance = json.loads(z.read('assets/licenses/runtime-provenance.json'))
+    build_metadata = json.loads(z.read('assets/launcher/build.json'))
+    assert build_metadata['commit'] == subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', '--short=8', 'HEAD'], text=True).strip()
+    assert len(build_metadata['commit']) == 8, 'APK commit suffix must contain exactly eight characters'
+    assert (build_metadata['versionName'], build_metadata['versionCode']) == ('0.2-dev', 4)
     public_libraries = {}
     redactions = {}
     home = Path.home().as_posix().encode()
@@ -60,11 +68,14 @@ proof.write_text(json.dumps(provenance, indent=2) + '\n')
 extra['licenses/runtime-provenance.json'] = proof
 extra['licenses/Frostpunk-port-GPL-3.0.txt'] = ROOT / 'LICENSE'
 extra['licenses/Frostpunk-port-NOTICE.txt'] = ROOT / 'NOTICE'
-driver_origin = json.loads((ROOT / 'reference/turnip-sm8250/provenance.json').read_text())
-driver_origin.pop('qa_device', None)
-public_driver = OUT / 'Turnip-SM8250-origin.json'
-public_driver.write_text(json.dumps(driver_origin, indent=2) + '\n')
-extra['licenses/Turnip-SM8250-origin.json'] = public_driver
+extra['licenses/meshoptimizer-MIT.txt'] = ROOT / 'reference/meshoptimizer/LICENSE.md'
+extra['licenses/Turnip-Mesa-MIT.txt'] = ROOT / 'android/licenses/Mesa-MIT.txt'
+extra['licenses/Turnip-LICENSE-NOTE.txt'] = ROOT / 'android/licenses/Turnip-LICENSE-NOTE.txt'
+general_origin = json.loads((ROOT / 'reference/turnip-android/provenance.json').read_text())
+public_general = OUT / 'Turnip-origin.json'
+public_general.write_text(json.dumps({key: general_origin[key] for key in
+    ('publisher_repository', 'release_url', 'release_tag', 'asset_sha256', 'driver_sha256', 'package_metadata')}, indent=2) + '\n')
+extra['licenses/Turnip-origin.json'] = public_general
 with zipfile.ZipFile(apk) as source, zipfile.ZipFile(unsigned, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as target:
     for info in source.infolist():
         if info.filename.startswith(('META-INF/', 'assets/switch-ui/')) or info.filename.removeprefix('assets/') in extra:
@@ -74,7 +85,7 @@ with zipfile.ZipFile(apk) as source, zipfile.ZipFile(unsigned, 'w', zipfile.ZIP_
         target.write(path, 'assets/' + name)
 fb = builder.fb
 subprocess.run([str(fb.BUILD_TOOLS / 'zipalign.exe'), '-P', '16', '-f', '4', str(unsigned), str(aligned)], check=True)
-final = ROOT / 'pub/Frostpunk-0.1.1-dev.apk'
+final = ROOT / 'pub' / ('Frostpunk-0.2-dev-' + build_metadata['commit'] + '.apk')
 final.parent.mkdir(exist_ok=True)
 for name, pin in {**pins, **source_pins}.items():
     assert builder.sha(ROOT / builder.SOURCE_OVERRIDE.get(name, name)) == pin, 'Source changed during build: ' + name
@@ -85,20 +96,34 @@ subprocess.run([str(fb.JAVA), '-jar', str(fb.SIGNER / fb.MACHINE['signer']['apks
 subprocess.run([str(fb.BUILD_TOOLS / 'zipalign.exe'), '-c', '-P', '16', '4', str(final)], check=True)
 with zipfile.ZipFile(final) as packaged:
     metadata = json.loads(packaged.read('assets/launcher/build.json'))
-    assert (metadata['versionName'], metadata['versionCode']) == ('0.1.1-dev', 3)
+    assert metadata == build_metadata
+    assert (metadata['versionName'], metadata['versionCode']) == ('0.2-dev', 4)
     assert packaged.read('assets/licenses/Frostpunk-port-GPL-3.0.txt') == (ROOT / 'LICENSE').read_bytes()
     assert packaged.read('assets/licenses/Frostpunk-port-NOTICE.txt') == (ROOT / 'NOTICE').read_bytes()
+    ui_manifest = json.loads(packaged.read('assets/game-data-port-ui.json'))
+    bundled_names = {'assets/port-ui/' + name for name in ui_manifest['payloads']}
+    for name, pin in ui_manifest['payloads'].items():
+        data = packaged.read('assets/port-ui/' + name)
+        assert len(data) == pin['bytes'] and hashlib.sha256(data).hexdigest() == pin['sha256'], name
+    assert packaged.read('assets/licenses/Turnip-Mesa-MIT.txt') == (ROOT / 'android/licenses/Mesa-MIT.txt').read_bytes()
     assert not any(Path(name).suffix.lower() in ('.exe', '.dll', '.dat', '.idx', '.append', '.pk8', '.pem', '.jks', '.keystore')
-                   or name.startswith('assets/switch-ui/') for name in packaged.namelist()), 'Private payload in APK'
+                   or name.startswith('assets/switch-ui/') for name in packaged.namelist() if name not in bundled_names), 'Private payload in APK'
+    driver_entries = [info.filename for info in packaged.infolist()
+                      if info.filename.endswith('.so') and hashlib.sha256(packaged.read(info)).hexdigest() == fb.TURNIP_SHA256]
+    assert driver_entries == ['lib/arm64-v8a/libpurple_turnip.so'], driver_entries
+    assert not any(name.startswith('assets/turnip/') or name == 'lib/arm64-v8a/libfrostpunk_turnip.so'
+                   for name in packaged.namelist()), 'Duplicate bundled Turnip'
+    assert packaged.read('assets/licenses/meshoptimizer-MIT.txt') == (ROOT / 'reference/meshoptimizer/LICENSE.md').read_bytes()
     assert packaged.testzip() is None, 'APK CRC mismatch'
 unsigned.unlink(); aligned.unlink()
 (final.parent / (final.name + '.sha256')).write_text(builder.sha(final) + '  ' + final.name + '\n', encoding='ascii')
-report = dict(apk_sha256=builder.sha(final), bytes=final.stat().st_size, runtime_sha256=builder.sha(runtime),
+report = dict(apk=str(final.relative_to(ROOT)), apk_sha256=builder.sha(final), bytes=final.stat().st_size, runtime_sha256=builder.sha(runtime),
               sources=pins,
               assets={name: builder.sha(path) for name, path in extra.items()}, runtime_sources=source_pins, runtime_source_manifest_sha256=source_manifest_sha256)
 report['public_binary_redactions'] = redactions
 (OUT / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
-print(json.dumps({key: report[key] for key in ('apk_sha256', 'bytes', 'runtime_sha256')}, indent=2), flush=True)
+print(json.dumps({key: report[key] for key in ('apk', 'apk_sha256', 'bytes', 'runtime_sha256')}, indent=2), flush=True)
 
-shutil.copyfile(final, final.parent / 'Frostpunk.apk')
-(final.parent / 'Frostpunk.apk.sha256').write_text(builder.sha(final) + '  Frostpunk.apk\n', encoding='ascii')
+for alias in ('Frostpunk-0.2-dev.apk', 'Frostpunk.apk'):
+    shutil.copyfile(final, final.parent / alias)
+    (final.parent / (alias + '.sha256')).write_text(builder.sha(final) + '  ' + alias + '\n', encoding='ascii')

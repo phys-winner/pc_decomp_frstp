@@ -13,7 +13,15 @@
     "Frame limit",
     "Auto (display)",
     "Touch controls help",
-    "Switch interface (restart)"
+    "Switch interface (restart)",
+    "Model detail",
+    "Auto",
+    "Full",
+    "High",
+    "Medium",
+    "Low",
+    "Lowest",
+    "Building model quality"
   ],
   "de": [
     "Render-Skalierung",
@@ -29,7 +37,15 @@
     "Bildratenlimit",
     "Automatisch (Bildschirm)",
     "Hilfe zur Touch-Steuerung",
-    "Switch-Oberfläche (Neustart)"
+    "Switch-Oberfläche (Neustart)",
+    "Modelldetail",
+    "Auto",
+    "Voll",
+    "Hoch",
+    "Mittel",
+    "Niedrig",
+    "Minimal",
+    "Qualität der Gebäudemodelle"
   ],
   "pl": [
     "Skala renderowania",
@@ -45,7 +61,15 @@
     "Limit FPS",
     "Auto (wyświetlacz)",
     "Pomoc sterowania dotykowego",
-    "Interfejs Switch (restart)"
+    "Interfejs Switch (restart)",
+    "Szczegółowość modeli",
+    "Auto",
+    "Pełna",
+    "Wysoka",
+    "Średnia",
+    "Niska",
+    "Minimalna",
+    "Jakość modeli budynków"
   ],
   "ru": [
     "Масштаб рендеринга",
@@ -61,7 +85,15 @@
     "Ограничение FPS",
     "Авто (экран)",
     "Справка по сенсорному управлению",
-    "Интерфейс Switch (перезапуск)"
+    "Интерфейс Switch (перезапуск)",
+    "Детальность моделей",
+    "Авто",
+    "Полная",
+    "Высокая",
+    "Средняя",
+    "Низкая",
+    "Минимальная",
+    "Качество моделей зданий"
   ],
   "fr": [
     "Échelle de rendu",
@@ -77,7 +109,15 @@
     "Limite d’IPS",
     "Auto (écran)",
     "Aide aux commandes tactiles",
-    "Interface Switch (redémarrage)"
+    "Interface Switch (redémarrage)",
+    "Détail des modèles",
+    "Auto",
+    "Complet",
+    "Élevé",
+    "Moyen",
+    "Faible",
+    "Minimal",
+    "Qualité des modèles de bâtiments"
   ],
   "es": [
     "Escala de renderizado",
@@ -93,7 +133,15 @@
     "Límite de FPS",
     "Automático (pantalla)",
     "Ayuda de controles táctiles",
-    "Interfaz Switch (reiniciar)"
+    "Interfaz Switch (reiniciar)",
+    "Detalle de los modelos",
+    "Auto",
+    "Completo",
+    "Alto",
+    "Medio",
+    "Bajo",
+    "Mínimo",
+    "Calidad de modelos de edificios"
   ],
   "it": [
     "Scala di rendering",
@@ -109,7 +157,15 @@
     "Limite di FPS",
     "Auto (schermo)",
     "Guida ai comandi touch",
-    "Interfaccia Switch (riavvio)"
+    "Interfaccia Switch (riavvio)",
+    "Dettaglio dei modelli",
+    "Auto",
+    "Completo",
+    "Alto",
+    "Medio",
+    "Basso",
+    "Minimo",
+    "Qualità dei modelli degli edifici"
   ],
   "pt-BR": [
     "Escala de renderização",
@@ -125,7 +181,15 @@
     "Limite de FPS",
     "Automático (tela)",
     "Ajuda dos controles por toque",
-    "Interface Switch (reiniciar)"
+    "Interface Switch (reiniciar)",
+    "Detalhe dos modelos",
+    "Auto",
+    "Completo",
+    "Alto",
+    "Médio",
+    "Baixo",
+    "Mínimo",
+    "Qualidade dos modelos de edifícios"
   ],
   "tr": [
     "İşleme ölçeği",
@@ -141,7 +205,15 @@
     "Kare hızı sınırı",
     "Otomatik (ekran)",
     "Dokunmatik kontrol yardımı",
-    "Switch arayüzü (yeniden başlat)"
+    "Switch arayüzü (yeniden başlat)",
+    "Model ayrıntısı",
+    "Otomatik",
+    "Tam",
+    "Yüksek",
+    "Orta",
+    "Düşük",
+    "En düşük",
+    "Bina modellerinin kalitesi"
   ],
   "ja": [
     "レンダリング倍率",
@@ -157,7 +229,15 @@
     "フレームレート上限",
     "自動（画面）",
     "タッチ操作ガイド",
-    "Switch UI（再起動後）"
+    "Switch UI（再起動後）",
+    "モデルの詳細度",
+    "自動",
+    "最高",
+    "高",
+    "中",
+    "低",
+    "最低",
+    "建物モデルの品質"
   ],
   "ko": [
     "렌더링 배율",
@@ -173,7 +253,15 @@
     "프레임 제한",
     "자동 (디스플레이)",
     "터치 조작 도움말",
-    "Switch UI (재시작 후)"
+    "Switch UI (재시작 후)",
+    "모델 디테일",
+    "자동",
+    "최고",
+    "높음",
+    "중간",
+    "낮음",
+    "최저",
+    "건물 모델 품질"
   ],
   "zh-CN": [
     "渲染比例",
@@ -189,7 +277,15 @@
     "帧率上限",
     "自动（屏幕）",
     "触屏操作帮助",
-    "Switch 界面（重启后生效）"
+    "Switch 界面（重启后生效）",
+    "模型细节",
+    "自动",
+    "完整",
+    "高",
+    "中",
+    "低",
+    "最低",
+    "建筑模型质量"
   ],
   "fa": [
     "مقیاس رندر",
@@ -205,6 +301,14 @@
     "محدودیت نرخ فریم",
     "خودکار (نمایشگر)",
     "راهنمای کنترل لمسی",
-    "رابط Switch (راه‌اندازی مجدد)"
+    "رابط Switch (راه‌اندازی مجدد)",
+    "جزئیات مدل‌ها",
+    "خودکار",
+    "کامل",
+    "بالا",
+    "متوسط",
+    "پایین",
+    "حداقل",
+    "کیفیت مدل ساختمان‌ها"
   ]
 }

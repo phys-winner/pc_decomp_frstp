@@ -9,8 +9,16 @@
 #include <time.h>
 #endif
 #if defined(__ANDROID__)
+#include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 extern void frostpunk_android_presented(void) __attribute__((weak));
 static unsigned char notified;
+static void render_accept(int32_t result, uint64_t gap, uint64_t now);
+static void render_take(char notes[2][160], int *note_count, char *summary, size_t summary_n, int *have_summary, uint64_t now);
 #endif
 
 #define PROFILE_SLOTS 16
@@ -83,6 +91,11 @@ void frostpunk_frame_profile_present(const void *presenter, uint64_t frame_id,
                                     uint64_t now, int32_t result) {
     int saved_errno = errno;
     if (!presenter) return;
+#if defined(__ANDROID__)
+    char notes[2][160];
+    char summary[192];
+    int note_count = 0, have_summary = 0;
+#endif
     acquire();
     profile *p = NULL, *empty = NULL;
     for (unsigned i = 0; i < PROFILE_SLOTS; ++i) {
@@ -109,11 +122,19 @@ void frostpunk_frame_profile_present(const void *presenter, uint64_t frame_id,
                 if (!p->count) p->first_id = frame_id;
                 ++p->count; ++p->total;
                 p->last = now; p->last_id = p->bin_last_id = frame_id;
+#if defined(__ANDROID__)
+                render_accept(result, gap, now);
+#endif
             }
         }
     }
+#if defined(__ANDROID__)
+    render_take(notes, &note_count, summary, sizeof summary, &have_summary, now);
+#endif
     release();
 #if defined(__ANDROID__)
+    for (int i = 0; i < note_count; ++i) frostpunk_render_log(notes[i]);
+    if (have_summary) frostpunk_render_log(summary);
     if (frame_id && (result == VK_SUCCESS_VALUE || result == VK_SUBOPTIMAL_VALUE)
             && !__atomic_test_and_set(&notified, __ATOMIC_RELAXED) && frostpunk_android_presented)
         frostpunk_android_presented();
@@ -157,3 +178,180 @@ void fp_frame_profile_stop(void) {
     release();
     errno = saved_errno;
 }
+
+#if defined(__ANDROID__)
+#define RENDER_CAP ((off_t)16 * 1024 * 1024)
+#define RENDER_KEEP ((off_t)8 * 1024 * 1024)
+static pthread_mutex_t render_mu = PTHREAD_MUTEX_INITIALIZER;
+static char render_keys[8][80];
+static uint64_t render_key_ns[8];
+static uint64_t render_ok, render_sub, render_other, render_max_gap_ms;
+static uint64_t render_sent_ok, render_sent_sub, render_sent_other, render_sent_gap, render_summary_ns, render_stall_ns;
+static int32_t render_last_result;
+static unsigned char render_seen;
+static char render_pending[2][160];
+static int render_pending_n, render_summary_due;
+
+static int render_recent(const char *key, uint64_t now) {
+    unsigned free_slot = 8;
+    for (unsigned i = 0; i < 8; ++i) {
+        if (render_keys[i][0] && !strcmp(render_keys[i], key)) {
+            if (now && now - render_key_ns[i] < SECOND_NS) return 1;
+            render_key_ns[i] = now;
+            return 0;
+        }
+        if (!render_keys[i][0] && free_slot == 8) free_slot = i;
+    }
+    if (free_slot == 8) {
+        memmove(render_keys, render_keys[1], 7 * 80);
+        memmove(render_key_ns, render_key_ns + 1, 7 * sizeof(render_key_ns[0]));
+        free_slot = 7;
+    }
+    snprintf(render_keys[free_slot], sizeof(render_keys[0]), "%s", key);
+    render_key_ns[free_slot] = now;
+    return 0;
+}
+
+/* Rewrites the file down to the last 8 MB. Closes fd when the replacement is in place. */
+static int render_trim(int fd, const char *path) {
+    struct stat st;
+    char chunk[65536], temporary[PATH_MAX], marker[] = "render log trimmed\n";
+    off_t start, pos;
+    ssize_t n;
+    size_t skip = 0;
+    int out;
+    if (fstat(fd, &st) || st.st_size <= RENDER_CAP) return 0;
+    start = st.st_size - RENDER_KEEP;
+    n = pread(fd, chunk, sizeof(chunk), start);
+    if (n <= 0) return -1;
+    while (skip < (size_t)n && chunk[skip] != '\n') ++skip;
+    if (skip < (size_t)n) ++skip;
+    if (snprintf(temporary, sizeof(temporary), "%s.tmp", path) >= (int)sizeof(temporary)) return -1;
+    out = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (out < 0) return -1;
+    if (write(out, marker, sizeof(marker) - 1) < 0) { close(out); unlink(temporary); return -1; }
+    if (skip < (size_t)n && write(out, chunk + skip, (size_t)n - skip) < 0) { close(out); unlink(temporary); return -1; }
+    pos = start + (off_t)n;
+    while (pos < st.st_size) {
+        n = pread(fd, chunk, sizeof(chunk), pos);
+        if (n <= 0) { close(out); unlink(temporary); return -1; }
+        if (write(out, chunk, (size_t)n) != n) { close(out); unlink(temporary); return -1; }
+        pos += n;
+    }
+    if (close(out)) { unlink(temporary); return -1; }
+    close(fd);
+    if (rename(temporary, path)) { unlink(temporary); return -1; }
+    return 1;
+}
+
+static const char *render_result_name(int32_t result) {
+    if (result == VK_SUCCESS_VALUE) return "SUCCESS";
+    if (result == VK_NOT_READY_VALUE) return "NOT_READY";
+    if (result == 2) return "TIMEOUT";
+    if (result == VK_SUBOPTIMAL_VALUE) return "SUBOPTIMAL";
+    if (result == -4) return "DEVICE_LOST";
+    if (result == -1000001004) return "OUT_OF_DATE";
+    if (result == -1000000000) return "SURFACE_LOST";
+    return "OTHER";
+}
+
+static void render_accept(int32_t result, uint64_t gap, uint64_t now) {
+    uint64_t gap_ms = gap / 1000000ull;
+    if (result == VK_SUBOPTIMAL_VALUE) ++render_sub;
+    else ++render_ok;
+    render_last_result = result;
+    if (gap_ms > render_max_gap_ms) render_max_gap_ms = gap_ms;
+    if (!render_seen && render_pending_n < 2) {
+        snprintf(render_pending[render_pending_n++], sizeof(render_pending[0]), "first present result=%d", (int)result);
+        render_seen = 1;
+    }
+    if (gap >= 400000000ull && (!render_stall_ns || now >= render_stall_ns + SECOND_NS) && render_pending_n < 2) {
+        render_stall_ns = now;
+        snprintf(render_pending[render_pending_n++], sizeof(render_pending[0]), "present stall gap_ms=%llu", (unsigned long long)gap_ms);
+    }
+    if (!render_summary_ns) render_summary_ns = now;
+    if (now && now >= render_summary_ns + 10ull * SECOND_NS &&
+        (render_ok != render_sent_ok || render_sub != render_sent_sub || render_other != render_sent_other || render_max_gap_ms != render_sent_gap))
+        render_summary_due = 1;
+}
+
+static void render_take(char notes[2][160], int *note_count, char *summary, size_t summary_n, int *have_summary, uint64_t now) {
+    int count = render_pending_n > 2 ? 2 : render_pending_n;
+    for (int i = 0; i < count; ++i) memcpy(notes[i], render_pending[i], sizeof(render_pending[0]));
+    render_pending_n = 0;
+    *note_count = count;
+    *have_summary = 0;
+    if (!render_summary_due) return;
+    render_summary_due = 0;
+    if (now) render_summary_ns = now;
+    render_sent_ok = render_ok;
+    render_sent_sub = render_sub;
+    render_sent_other = render_other;
+    render_sent_gap = render_max_gap_ms;
+    snprintf(summary, summary_n, "render summary ok=%llu suboptimal=%llu other=%llu last=%d %s max_gap_ms=%llu",
+        (unsigned long long)render_ok, (unsigned long long)render_sub, (unsigned long long)render_other,
+        (int)render_last_result, render_result_name(render_last_result), (unsigned long long)render_max_gap_ms);
+    *have_summary = 1;
+}
+
+void frostpunk_render_log(const char *line) {
+    const char *path;
+    char text[512];
+    uint64_t now;
+    int fd, trimmed, wrote;
+    if (!line || !line[0]) return;
+    path = getenv("FROSTPUNK_RENDER_LOG");
+    if (!path || !path[0]) return;
+    now = monotonic_ns();
+    pthread_mutex_lock(&render_mu);
+    if (render_recent(line, now)) { pthread_mutex_unlock(&render_mu); return; }
+    fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) { pthread_mutex_unlock(&render_mu); return; }
+    trimmed = render_trim(fd, path);
+    if (trimmed > 0) fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    else if (trimmed < 0) { close(fd); fd = -1; }
+    if (fd >= 0) {
+        wrote = snprintf(text, sizeof(text), "%llu %s\n", (unsigned long long)(now / 1000000ull), line);
+        if (wrote > 0) {
+            if (wrote >= (int)sizeof(text)) wrote = (int)sizeof(text) - 1;
+            if (lseek(fd, 0, SEEK_END) >= 0) {
+                ssize_t n = write(fd, text, (size_t)wrote);
+                (void)n;
+            }
+        }
+        close(fd);
+    }
+    pthread_mutex_unlock(&render_mu);
+}
+
+void frostpunk_render_present_result(int32_t result) {
+    char line[96], summary[192];
+    int have_summary = 0;
+    uint64_t now = monotonic_ns();
+    if (result == VK_SUCCESS_VALUE || result == VK_SUBOPTIMAL_VALUE) return;
+    snprintf(line, sizeof(line), "present result=%d %s", (int)result, render_result_name(result));
+    acquire();
+    ++render_other;
+    render_last_result = result;
+    if (!render_summary_ns) render_summary_ns = now;
+    if (now && now >= render_summary_ns + 10ull * SECOND_NS &&
+        (render_ok != render_sent_ok || render_sub != render_sent_sub || render_other != render_sent_other || render_max_gap_ms != render_sent_gap)) {
+        render_summary_ns = now;
+        render_sent_ok = render_ok;
+        render_sent_sub = render_sub;
+        render_sent_other = render_other;
+        render_sent_gap = render_max_gap_ms;
+        render_summary_due = 0;
+        snprintf(summary, sizeof(summary), "render summary ok=%llu suboptimal=%llu other=%llu last=%d %s max_gap_ms=%llu",
+            (unsigned long long)render_ok, (unsigned long long)render_sub, (unsigned long long)render_other,
+            (int)render_last_result, render_result_name(result), (unsigned long long)render_max_gap_ms);
+        have_summary = 1;
+    }
+    release();
+    frostpunk_render_log(line);
+    if (have_summary) frostpunk_render_log(summary);
+}
+#else
+void frostpunk_render_log(const char *line) { (void)line; }
+void frostpunk_render_present_result(int32_t result) { (void)result; }
+#endif

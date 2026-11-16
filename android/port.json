@@ -18,7 +18,9 @@
       "ru",
       "de",
       "pl"
-    ]
+    ],
+    "github": "phys-winner/pc_decomp_frstp",
+    "hooks": "com.frostpunk.staticrecomp.launcher.FrostpunkHooks"
   },
   "theme": {
     "accent": "#9BD9ED",
@@ -84,7 +86,7 @@
           600,
           899
         ],
-        "driver": "libfrostpunk_turnip.so",
+        "driver": "libpurple_turnip.so",
         "libraries": [
           "libadrenotools.so",
           "libdxvk_d3d11.so",
@@ -94,6 +96,48 @@
     ]
   },
   "options": [
+    {
+      "key": "crash_monitor",
+      "type": "bool",
+      "default": "1",
+      "only": ["frostpunk"],
+      "title": {
+        "en": "Crash monitor",
+        "ru": "Монитор вылетов",
+        "de": "Absturzmonitor",
+        "pl": "Monitor awarii"
+      },
+      "hint": {
+        "en": "On: a separate process reports a native crash, a Java crash, or a low-memory kill. A normal exit stays quiet.",
+        "ru": "Вкл.: отдельный процесс сообщает о сбое в коде, ошибке Java или завершении из-за нехватки памяти. Обычный выход остаётся тихим.",
+        "de": "Ein: ein eigener Prozess meldet einen nativen Absturz, einen Java-Fehler oder Speicherende. Ein normaler Ausgang bleibt still.",
+        "pl": "Wł.: osobny proces zgłasza awarię natywną, błąd Javy albo zamknięcie z braku pamięci. Zwykłe wyjście milczy."
+      }
+    },
+    {
+      "key": "memory",
+      "type": "choice",
+      "default": "auto",
+      "only": ["frostpunk"],
+      "title": {
+        "en": "Memory use",
+        "ru": "Расход памяти",
+        "de": "Speicherbedarf",
+        "pl": "Zużycie pamięci"
+      },
+      "hint": {
+        "en": "Auto picks Reduced below 7 GB and Minimal below 5 GB. Reduced caps the picture at 30% and uses Switch graphics. Minimal also drops one more texture mip. The saved graphics settings stay as they are.",
+        "ru": "Авто выбирает «Меньше» ниже 7 ГБ и «Минимум» ниже 5 ГБ. «Меньше» ограничивает картинку 30% и включает графику Switch. «Минимум» дополнительно убирает ещё один mip текстур. Сохранённые настройки графики не переписываются.",
+        "de": "Auto wählt unter 7 GB Weniger und unter 5 GB Minimum. Weniger begrenzt das Bild auf 30 % und nutzt Switch-Grafik. Minimum lässt zusätzlich eine Texturstufe weg. Gespeicherte Grafikeinstellungen bleiben.",
+        "pl": "Auto wybiera Mniej poniżej 7 GB i Minimum poniżej 5 GB. Mniej ogranicza obraz do 30% i włącza grafikę Switch. Minimum usuwa jeszcze jeden mip tekstur. Zapisane ustawienia grafiki zostają."
+      },
+      "choices": [
+        {"value": "auto", "title": {"en": "Auto", "ru": "Авто", "de": "Auto", "pl": "Auto"}},
+        {"value": "normal", "title": {"en": "Normal", "ru": "Обычный", "de": "Normal", "pl": "Zwykłe"}},
+        {"value": "reduced", "title": {"en": "Reduced", "ru": "Меньше", "de": "Weniger", "pl": "Mniej"}},
+        {"value": "minimal", "title": {"en": "Minimal", "ru": "Минимум", "de": "Minimum", "pl": "Minimum"}}
+      ]
+    },
     {
       "key": "switch_graphics",
       "type": "bool",

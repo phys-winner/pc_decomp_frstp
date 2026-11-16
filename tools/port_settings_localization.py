@@ -10,7 +10,9 @@ TABLE_LANGUAGES = {845718737: 'de', 984815035: 'fa', 1017381045: 'ko',
                    3498510465: 'it', 3896553063: 'tr', 4062391267: 'ru',
                    4172357012: 'fr', 4242838552: 'zh-CN'}
 LABELS = ('RenderScale', 'OutputResolution', 'MobileEffects', 'ObjectHighlight',
-          'InterfaceScale', 'DeveloperMenu', 'TouchOffset', 'Upscaling', 'Bilinear', 'FrameLimit', 'FrameLimitAuto', 'GestureHelp', 'SwitchInterface')
+          'InterfaceScale', 'DeveloperMenu', 'TouchOffset', 'Upscaling', 'Bilinear', 'FrameLimit', 'FrameLimitAuto', 'GestureHelp', 'SwitchInterface',
+          'ModelDetail', 'ModelDetailAuto', 'ModelDetailFull', 'ModelDetailHigh', 'ModelDetailMedium', 'ModelDetailLow', 'ModelDetailLowest',
+          'BuildingModels')
 PREFIX = 'UI/Android/'
 PHOTO_PATH_KEY = 'UI/OtherPanels/PhotoMode/Screenshotpatch'
 PHOTO_HELP_KEY = 'UI/OtherPanels/PhotoMode/TooltipCamera'
@@ -19,7 +21,7 @@ PHOTO_HELP_KEY = 'UI/OtherPanels/PhotoMode/TooltipCamera'
 def translations():
     data = json.loads((ROOT / 'android/port-settings-localization.json').read_text(encoding='utf-8'))
     help_text = json.loads((ROOT / 'android/port-help-localization.json').read_text(encoding='utf-8'))
-    if set(data) != set(TABLE_LANGUAGES.values()) or any(len(row) != 14 or not all(row) for row in data.values()):
+    if set(data) != set(TABLE_LANGUAGES.values()) or any(len(row) != 22 or not all(row) for row in data.values()):
         raise ValueError('Incomplete port settings translations')
     if set(help_text) != set(data) or any(len(row) != 3 or not all(row) for row in help_text.values()):
         raise ValueError('Incomplete gesture help translations')

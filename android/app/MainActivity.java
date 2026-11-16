@@ -25,7 +25,13 @@ public final class MainActivity extends NativeActivity {
     private volatile String pending="Frostpunk native window probe\nStarting native Vulkan/window fixture";
     private final AtomicLong pointerSequence=new AtomicLong();
     @Override public void onCreate(Bundle state) {
+        try { CrashReport.configureRenderLog(getIntent().getBooleanExtra("crash.watched", false)); }
+        catch (Exception error) { Log.w("Frostpunk", "Cannot configure render log", error); }
+        allowRotation();
+        installCrashHandler();
+        setResult(RESULT_OK);
         super.onCreate(state);
+        allowRotation();
         PortSupport.capturePreviousExit(this);
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -54,6 +60,25 @@ public final class MainActivity extends NativeActivity {
     }
     @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
         return controls!=null&&controls.gamepadMotion(event) || super.dispatchGenericMotionEvent(event);
+    }
+    /** Allow both landscape directions, including with a telescopic gamepad attached. */
+    public void onGamepadAttached() { allowRotation(); }
+    private void allowRotation() {
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+    }
+    private void installCrashHandler() {
+        final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            try {
+                java.io.StringWriter text = new java.io.StringWriter();
+                error.printStackTrace(new java.io.PrintWriter(text));
+                java.io.File file = new java.io.File(getFilesDir(), "frostpunk-crash.txt");
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(file, true)) {
+                    out.write(("Java " + thread.getName() + "\n" + text).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+            } catch (Throwable ignored) { }
+            if (previous != null) previous.uncaughtException(thread, error);
+        });
     }
     public void onNativeGamepad(int action,int key,int device,int source,float[] axes) {
         runOnUiThread(() -> {

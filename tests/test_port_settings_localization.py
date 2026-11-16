@@ -21,7 +21,7 @@ class PortSettingsLocalizationTest(unittest.TestCase):
         self.assertEqual(after['A'], 'Snow \U0001f328')
         self.assertEqual(after['Z'], '\ud800')
         self.assertEqual(after[PREFIX + 'InterfaceScale'], 'インターフェース倍率')
-        self.assertEqual(len(after), 4 + 24)
+        self.assertEqual(len(after), 4 + 32)
         self.assertEqual(after[PHOTO_PATH_KEY], '写真: Pictures/Frostpunk')
         help_text = json.loads((ROOT / 'android/port-help-localization.json').read_text(encoding='utf-8'))
         self.assertEqual(after[PHOTO_HELP_KEY], help_text['ja'][2])
@@ -40,12 +40,14 @@ class PortSettingsLocalizationTest(unittest.TestCase):
         all_translations = translations()
         expected_labels = ('RenderScale', 'OutputResolution', 'MobileEffects', 'ObjectHighlight',
                            'InterfaceScale', 'DeveloperMenu', 'TouchOffset', 'Upscaling', 'Bilinear',
-                           'FrameLimit', 'FrameLimitAuto', 'GestureHelp', 'SwitchInterface')
+                           'FrameLimit', 'FrameLimitAuto', 'GestureHelp', 'SwitchInterface',
+                           'ModelDetail', 'ModelDetailAuto', 'ModelDetailFull', 'ModelDetailHigh',
+                           'ModelDetailMedium', 'ModelDetailLow', 'ModelDetailLowest', 'BuildingModels')
         self.assertEqual(LABELS, expected_labels)
         expected_keys = {PREFIX + key for key in expected_labels}
         expected_keys.update(PREFIX + 'Offset%d' % value for value in range(0, 129, 16))
         expected_keys.update((PREFIX + 'GestureHelpText', PREFIX + 'GestureHelpClose'))
-        self.assertEqual(len(expected_keys), 24)
+        self.assertEqual(len(expected_keys), 32)
         required = {text[1:] for _, text, _ in ROWS}
         required.add(PREFIX + LABELS[0])
         required.update(name[1:] for _, _, options in ROWS for _, name in options
@@ -104,15 +106,20 @@ class PortSettingsLocalizationTest(unittest.TestCase):
             stream.seek(row[3])
             original = stream.read(row[1])
         result, insert, inserted_bytes = resource(original)
-        self.assertEqual([number for number, _, _ in ROWS], list(range(21, 31)))
-        self.assertEqual(struct.unpack_from('<I', result, 0x160)[0], 29)
+        self.assertEqual([number for number, _, _ in ROWS], list(range(21, 33)))
+        self.assertEqual(struct.unpack_from('<I', result, 0x160)[0], 31)
         self.assertNotIn(b'\1Render scale\0', result)
         self.assertIn(b'\1@UI/Android/RenderScale\0', result)
         for _, label, _ in ROWS:
             self.assertEqual(result.count(b'\1' + label.encode() + b'\0'), 1)
-        self.assertEqual(ROWS[-3], (28, '@UI/Android/FrameLimit', [(0, '@UI/Android/FrameLimitAuto')]))
-        self.assertEqual(ROWS[-2], (29, '@UI/Android/GestureHelp', [(0, '@UI/Menu/Settings/Off'), (1, '@UI/Menu/Settings/On')]))
-        self.assertEqual(ROWS[-1][0], 30)
+        by_id = {number: (number, label, options) for number, label, options in ROWS}
+        self.assertEqual(by_id[28], (28, '@UI/Android/FrameLimit', [(0, '@UI/Android/FrameLimitAuto')]))
+        self.assertEqual(by_id[29], (29, '@UI/Android/GestureHelp', [(0, '@UI/Menu/Settings/Off'), (1, '@UI/Menu/Settings/On')]))
+        self.assertEqual(by_id[30][0], 30)
+        self.assertEqual(by_id[31][1], '@UI/Android/ModelDetail')
+        self.assertEqual([value for value, _ in by_id[31][2]], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(by_id[32][1], '@UI/Android/BuildingModels')
+        self.assertEqual([value for value, _ in by_id[32][2]], [0, 1, 2, 3, 4])
         self.assertEqual(result.count(b'\1@UI/Android/FrameLimitAuto\0'), 1)
         head = b'\1FrostpunkSettingCombo\0'
         for number, label, _ in ROWS:

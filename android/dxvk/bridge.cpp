@@ -29,6 +29,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+extern "C" void frostpunk_render_log(const char *line);
 #include "win64.h"
 #include "../host/texture_formats.h"
 #include "bridge.h"
@@ -1018,10 +1019,15 @@ extern "C" __attribute__((visibility("default"))) int frostpunk_dxvk_surface_sta
     ANativeWindow* native=frostpunk_dxvk_acquire_window(binding.original,&current_generation);
     if(native)ANativeWindow_release(native);
     static unsigned notices=0;
-    if((!native || current_generation!=binding.generation) && notices++<12)
+    if((!native || current_generation!=binding.generation) && notices++<12) {
         fprintf(stderr,"FP_SURFACE_STALE surface=%llx original=%p stored=%llu current=%llu available=%d\n",
             (unsigned long long)surface,binding.original,(unsigned long long)binding.generation,
             (unsigned long long)current_generation,native!=nullptr);
+        char line[160];
+        snprintf(line,sizeof(line),"surface stale stored=%llu current=%llu available=%d",
+            (unsigned long long)binding.generation,(unsigned long long)current_generation,native!=nullptr);
+        frostpunk_render_log(line);
+    }
     return !native || current_generation!=binding.generation;
 }
 extern "C" void win64_d3d11_set_display_mode(uint32_t width,uint32_t height,uint32_t refresh) {
@@ -1042,11 +1048,79 @@ extern "C" void win64_d3d11_set_window_resolver(win64_d3d11_window_acquire_fn ac
     if(acquire_guest_window&&(acquire_guest_window!=acquire||release_guest_window!=release))trap("changing live HWND resolver callbacks");
     acquire_guest_window=acquire;release_guest_window=release;
 }
+extern "C" void frostpunk_render_log(const char *line);
+extern "C" void frostpunk_render_present_result(int32_t result);
+static PFN_vkGetInstanceProcAddr raw_gipa;
+static PFN_vkGetDeviceProcAddr raw_gdpa;
+static PFN_vkQueuePresentKHR raw_present;
+static PFN_vkAcquireNextImageKHR raw_acquire;
+static PFN_vkCreateSwapchainKHR raw_swapchain;
+static PFN_vkDestroySwapchainKHR raw_destroy_swapchain;
+
+static const char* vk_result_name(VkResult result) {
+    if (result == VK_SUCCESS) return "SUCCESS";
+    if (result == VK_NOT_READY) return "NOT_READY";
+    if (result == VK_TIMEOUT) return "TIMEOUT";
+    if (result == VK_SUBOPTIMAL_KHR) return "SUBOPTIMAL";
+    if (result == VK_ERROR_DEVICE_LOST) return "DEVICE_LOST";
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) return "OUT_OF_DATE";
+    if (result == VK_ERROR_SURFACE_LOST_KHR) return "SURFACE_LOST";
+    return "OTHER";
+}
+static VkResult VKAPI_CALL logged_present(VkQueue queue, const VkPresentInfoKHR* info) {
+    VkResult result = raw_present(queue, info);
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) frostpunk_render_present_result((int32_t)result);
+    return result;
+}
+static VkResult VKAPI_CALL logged_acquire(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* index) {
+    VkResult result = raw_acquire(device, swapchain, timeout, semaphore, fence, index);
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        char line[96];
+        snprintf(line, sizeof(line), "acquire result=%d %s", (int)result, vk_result_name(result));
+        frostpunk_render_log(line);
+    }
+    return result;
+}
+static VkResult VKAPI_CALL logged_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR* info, const VkAllocationCallbacks* callbacks, VkSwapchainKHR* swapchain) {
+    VkResult result = raw_swapchain(device, info, callbacks, swapchain);
+    char line[192];
+    unsigned width = info ? info->imageExtent.width : 0, height = info ? info->imageExtent.height : 0;
+    snprintf(line, sizeof(line), "swapchain create result=%d %s %ux%u format=%d images=%u alpha=%d transform=%d",
+        (int)result, vk_result_name(result), width, height, info ? (int)info->imageFormat : 0,
+        info ? info->minImageCount : 0, info ? (int)info->compositeAlpha : 0, info ? (int)info->preTransform : 0);
+    frostpunk_render_log(line);
+    return result;
+}
+static void VKAPI_CALL logged_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* callbacks) {
+    frostpunk_render_log("swapchain destroy");
+    raw_destroy_swapchain(device, swapchain, callbacks);
+}
+static PFN_vkVoidFunction wrap_device_fn(const char* name, PFN_vkVoidFunction fn) {
+    if (!fn || !name) return fn;
+    if (!strcmp(name, "vkQueuePresentKHR")) { raw_present = reinterpret_cast<PFN_vkQueuePresentKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_present); }
+    if (!strcmp(name, "vkAcquireNextImageKHR")) { raw_acquire = reinterpret_cast<PFN_vkAcquireNextImageKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_acquire); }
+    if (!strcmp(name, "vkCreateSwapchainKHR")) { raw_swapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_swapchain); }
+    if (!strcmp(name, "vkDestroySwapchainKHR")) { raw_destroy_swapchain = reinterpret_cast<PFN_vkDestroySwapchainKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_destroy_swapchain); }
+    return fn;
+}
+static PFN_vkVoidFunction VKAPI_CALL logged_gdpa(VkDevice device, const char* name) {
+    return wrap_device_fn(name, raw_gdpa ? raw_gdpa(device, name) : nullptr);
+}
+static PFN_vkVoidFunction VKAPI_CALL logged_gipa(VkInstance instance, const char* name) {
+    PFN_vkVoidFunction fn = raw_gipa ? raw_gipa(instance, name) : nullptr;
+    if (name && fn && !strcmp(name, "vkGetDeviceProcAddr")) {
+        raw_gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(fn);
+        return reinterpret_cast<PFN_vkVoidFunction>(logged_gdpa);
+    }
+    /* DXVK loads vkCreateSwapchainKHR through the instance loader, not only the device one. */
+    return wrap_device_fn(name, fn);
+}
 extern "C" void win64_d3d11_configure(PFN_vkGetInstanceProcAddr get, void* native_window) {
     std::lock_guard lock(mutex);
     if (!get) trap("missing native Vulkan provider");
-    if (provider.load(std::memory_order_relaxed) && provider.load(std::memory_order_relaxed) != get) trap("changing Vulkan provider after configure");
-    provider.store(get,std::memory_order_release); window.store(static_cast<ANativeWindow*>(native_window),std::memory_order_release);
+    if (raw_gipa && raw_gipa != get) trap("changing Vulkan provider after configure");
+    raw_gipa = get;
+    provider.store(logged_gipa,std::memory_order_release); window.store(static_cast<ANativeWindow*>(native_window),std::memory_order_release);
     setenv("DXVK_WSI_DRIVER","Android",1);
     setenv("DXVK_LOG_PATH","none",1);
     { char value[PROP_VALUE_MAX]={0}; if(__system_property_get("debug.fp.dxvk_config",value)>0&&value[0])setenv("DXVK_CONFIG",value,1); }
@@ -1288,12 +1362,15 @@ extern "C" int win64_d3d11_dispatch(CPU* c, uint64_t target) {
     unsigned number=unsigned((target-SENTINEL)/8), slot=number%STRIDE;
     Kind kind=static_cast<Kind>(number/STRIDE);
     { Proxy& object=proxy(arg(c,0));
-      if (kind!=object.kind || slot>=slot_counts[unsigned(kind)]) trap("sentinel/vtable kind mismatch",kind,slot); }
-    if (geometry::enabled()) {
+      if (kind!=object.kind || slot>=slot_counts[unsigned(kind)]) trap("sentinel/vtable kind mismatch",kind,slot);
+    }
+    if (geometry::draws_active()) {
         if (kind>=Kind::ID3D11DeviceContext1&&kind<=Kind::ID3D11DeviceContext4) geometry::context_call(c,slot);
         else if (kind==Kind::ID3D11DeviceContext) geometry::context_call(c,slot);
-        else if ((kind==Kind::IDXGISwapChain||kind==Kind::IDXGISwapChain1)&&slot==8&&!(uint32_t(arg(c,2))&DXGI_PRESENT_TEST)) geometry::present();
     }
+    /* Present always: model detail can turn simplification back on after a frame of full meshes. */
+    if ((kind==Kind::IDXGISwapChain||kind==Kind::IDXGISwapChain1)&&slot==8&&!(uint32_t(arg(c,2))&DXGI_PRESENT_TEST))
+        geometry::present();
     if (__builtin_expect(draw_stats_enabled(),0) && draw_stats(c,kind,slot)) return 1;
     if (slot<3) { unknown(c,slot); return 1; }
     static const unsigned copy_slot=[]{unsigned k=unsigned(Kind::ID3D11DeviceContext);

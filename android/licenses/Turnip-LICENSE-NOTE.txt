@@ -1,0 +1,18 @@
+Bundled driver: purple-turnip T30 (@Mr_Purple_666)
+Upstream: Mesa Turnip / Freedreno
+Publisher: https://github.com/MrPurple666/purple-turnip
+Release: https://github.com/MrPurple666/purple-turnip/releases/tag/vturnip_mrpurple_T30-toasted.adpkg
+Driver SHA-256: 1d80dfa019659b008e4669311db5b1e4a02af59ff1d5458a98e2f5fe18ed013b
+APK library: lib/arm64-v8a/libpurple_turnip.so (unmodified publisher bytes)
+ELF SONAME: vulkan.purple.so
+
+Mesa's core and most code use the MIT license; individual components may use
+other licenses. The Mesa MIT license text is bundled as Turnip-Mesa-MIT.txt.
+License source: https://gitlab.freedesktop.org/mesa/mesa/-/raw/main/licenses/MIT
+License documentation: https://docs.mesa3d.org/license.html
+Copyright belongs to the respective Mesa/Turnip contributors, as identified
+in the source files. The community archive contains meta.json and the driver,
+but no complete binary-specific source/license manifest. That complete manifest
+has not been reconstructed; this notice does not claim otherwise.
+
+adrenotools and linkernsbypass licenses are included separately in this folder.

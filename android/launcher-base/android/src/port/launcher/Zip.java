@@ -2,6 +2,7 @@ package port.launcher;
 
 import java.io.Closeable;
 import java.io.EOFException;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -47,17 +48,33 @@ final class Zip implements Closeable {
         boolean encrypted() { return (flags & 1) != 0; }
     }
 
+    private final FileInputStream input;
     private final FileChannel channel;
     private final long length;
     final List<Entry> entries;
 
-    Zip(FileChannel channel) throws IOException {
-        this.channel = channel;
-        length = channel.size();
-        entries = directory();
+    Zip(FileInputStream input) throws IOException {
+        this.input = input;
+        try {
+            channel = input.getChannel();
+            length = channel.size();
+            entries = directory();
+        } catch (IOException | RuntimeException failure) {
+            try { input.close(); } catch (IOException ignored) { /* the caller sees the original failure */ }
+            throw failure;
+        }
     }
 
-    @Override public void close() throws IOException { channel.close(); }
+    @Override public void close() throws IOException { input.close(); }
+
+    /** st_mtime of the open archive, in seconds. The one-time integrity receipt uses this. */
+    long mtimeSeconds() throws IOException {
+        try {
+            return android.system.Os.fstat(input.getFD()).st_mtime;
+        } catch (android.system.ErrnoException failure) {
+            throw new IOException(failure);
+        }
+    }
 
     private ByteBuffer read(long at, int n) throws IOException {
         if (at < 0 || n < 0 || at + n > length) throw notZip();

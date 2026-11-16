@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -385,38 +386,90 @@ static void request_window_frame_rate(ANativeWindow *window,uint64_t generation)
     char text[192];snprintf(text,sizeof(text),"ANDROID_FRAME_RATE_REQUEST generation=%llu fps=%u compatibility=default result=%d physical_mode_proven=0",(unsigned long long)generation,hz,result);log_text(text);
 }
 #endif
+static void render_note(const char *line);
+static int crash_fd=-1;
+static void crash_signal(int sig) {
+    const char *text="native signal\n";
+    size_t bytes=sizeof("native signal\n")-1;
+    if(sig==SIGSEGV){text="native SIGSEGV\n";bytes=sizeof("native SIGSEGV\n")-1;}
+    else if(sig==SIGABRT){text="native SIGABRT\n";bytes=sizeof("native SIGABRT\n")-1;}
+    else if(sig==SIGBUS){text="native SIGBUS\n";bytes=sizeof("native SIGBUS\n")-1;}
+    if(crash_fd>=0){ssize_t wrote=write(crash_fd,text,bytes);(void)wrote;}
+    raise(sig);
+}
+static void install_crash_log(const char *directory) {
+    char path[PATH_MAX];
+    struct sigaction action;
+    int fd;
+    if(!directory||snprintf(path,sizeof(path),"%s/frostpunk-crash.txt",directory)>=(int)sizeof(path))return;
+    fd=open(path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600);
+    if(fd<0)return;
+    memset(&action,0,sizeof(action));
+    action.sa_handler=crash_signal;
+    action.sa_flags=SA_RESETHAND;
+    sigaction(SIGSEGV,&action,NULL);
+    sigaction(SIGABRT,&action,NULL);
+    sigaction(SIGBUS,&action,NULL);
+    crash_fd=fd;
+    if(ftruncate(fd,0)){/* the watcher treats an empty file as a clean run */}
+}
 static void set_window(app_context *c,ANativeWindow *window) {
     pthread_mutex_lock(&c->mutex);ANativeWindow *old=c->window;if(window)ANativeWindow_acquire(window);c->window=window;++c->generation;pthread_mutex_unlock(&c->mutex);
     if(window){
 #ifdef FP_GAME_RUNTIME
         request_window_frame_rate(window,c->generation);
 #endif
-        c->physical_width=ANativeWindow_getWidth(window);c->physical_height=ANativeWindow_getHeight(window);}if(old)ANativeWindow_release(old);
+        c->physical_width=ANativeWindow_getWidth(window);c->physical_height=ANativeWindow_getHeight(window);
+        char noted[96];snprintf(noted,sizeof(noted),"window init %dx%d",c->physical_width,c->physical_height);render_note(noted);}if(old)ANativeWindow_release(old);
     push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_WINDOW,.width=window?ANativeWindow_getWidth(window):0,.height=window?ANativeWindow_getHeight(window):0});
 }
 static void resize_window(app_context *c,ANativeWindow *window) {
     pthread_mutex_lock(&c->mutex);int same=c->window==window;pthread_mutex_unlock(&c->mutex);
     if(!same){set_window(c,window);return;}
     // Buffer-size changes keep the same consumer; invalidating its Vulkan surface creates a resize loop.
-    if(window){c->physical_width=ANativeWindow_getWidth(window);c->physical_height=ANativeWindow_getHeight(window);}
+    if(window){c->physical_width=ANativeWindow_getWidth(window);c->physical_height=ANativeWindow_getHeight(window);
+        char noted[96];snprintf(noted,sizeof(noted),"window resize %dx%d",c->physical_width,c->physical_height);render_note(noted);}
     push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_WINDOW,.width=window?ANativeWindow_getWidth(window):0,.height=window?ANativeWindow_getHeight(window):0});
+}
+static int write_all(int fd,const char *buffer,size_t bytes);
+static void render_note(const char *line) {
+    const char *path=getenv("FROSTPUNK_RENDER_LOG");
+    char text[320];
+    int fd,n;
+    if(!path||!path[0]||!line||!line[0])return;
+    n=snprintf(text,sizeof(text),"%s\n",line);
+    if(n<=0)return;
+    if(n>=(int)sizeof(text))n=(int)sizeof(text)-1;
+    fd=open(path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600);
+    if(fd<0)return;
+    if(!write_all(fd,text,(size_t)n)){/* the capped writer in the runtime trims the same file */}
+    close(fd);
 }
 static int write_all(int fd,const char *buffer,size_t bytes) {
     while(bytes){ssize_t n=write(fd,buffer,bytes);if(n<0&&errno==EINTR)continue;if(n<=0)return 0;buffer+=n;bytes-=(size_t)n;}return 1;
 }
 static int extract_driver(app_context *c) {
-#if defined(FP_GPU_SYSTEM) && !defined(FP_GAME_RUNTIME)
+#ifdef FP_GAME_RUNTIME
+    const char *custom=getenv("PORT_TURNIP_DRIVER");
+    if(custom && custom[0])return 1;
+    char path[PATH_MAX];
+    int length=snprintf(path,sizeof(path),"%s/libpurple_turnip.so",c->libraries);
+    if(length<0 || (size_t)length>=sizeof(path) || access(path,R_OK))return 0;
+    log_text("FROSTPUNK_TURNIP bundled=purple-T30");
+    return !setenv("PORT_TURNIP_DRIVER",path,0);
+#elif defined(FP_GPU_SYSTEM)
     (void)c;return 1;
 #else
     int root=open(c->private_path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);if(root<0)return 0;
     if(mkdirat(root,"driver",0700)&&errno!=EEXIST){close(root);return 0;}
     int directory=openat(root,"driver",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);close(root);if(directory<0)return 0;
-    AAsset *asset=NULL;char soc[PROP_VALUE_MAX]={0};
+    AAsset *asset=NULL;char soc[PROP_VALUE_MAX]={0};int sm8250=0;
     if(__system_property_get("ro.soc.model",soc)>0&&!strcmp(soc,"SM8250")){
         asset=AAssetManager_open(c->app->activity->assetManager,"turnip/vulkan.sm8250.so",AASSET_MODE_STREAMING);
-        if(asset)log_text("FROSTPUNK_TURNIP_ASSET model=SM8250 mesa=27.0.0-20261111-r4");
+        sm8250=asset!=NULL;
     }
     if(!asset)asset=AAssetManager_open(c->app->activity->assetManager,"turnip/vulkan.ad07xx.so",AASSET_MODE_STREAMING);
+    if(asset)log_text(sm8250?"FROSTPUNK_TURNIP_ASSET model=SM8250 purple=T30":"FROSTPUNK_TURNIP_ASSET model=default purple=T30");
     if(!asset){close(directory);return 0;}
     unlinkat(directory,"driver.tmp",0);int fd=openat(directory,"driver.tmp",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0400);int ok=fd>=0;int64_t count=0;
     char buffer[65536];int bytes;while(ok&&(bytes=AAsset_read(asset,buffer,sizeof(buffer)))>0){ok=write_all(fd,buffer,(size_t)bytes);count+=bytes;}
@@ -771,6 +824,7 @@ void android_main(struct android_app *app) {
     }
     int output=open(log,O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW|O_CLOEXEC,0600);
     if(output>=0){dup2(output,STDOUT_FILENO);dup2(output,STDERR_FILENO);close(output);setvbuf(stderr,NULL,_IOLBF,0);}
+    install_crash_log(c->private_path);
     library_path(c);
     c->api=(FrostpunkAndroidHost){.abi_version=1,.struct_size=sizeof(FrostpunkAndroidHost),.context=c,.acquire_window=acquire_window,.release_window=release_window,
         .poll_event=poll_event,.wait=wait_event,.wake=wake,.is_stopping=stopping,.set_status=set_status,.game_path=c->game,.profile_path=c->profile,.private_path=c->private_path,

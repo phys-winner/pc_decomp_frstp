@@ -8,7 +8,6 @@ import concurrent.futures
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -23,7 +22,6 @@ import android_launcher  # noqa: E402
 
 OUT = ROOT / 'build/release-runtime'
 CANONICAL = ROOT / 'build/fast/runtime-inputs.json'
-FASTLIFT = ROOT / 'build/fastlift'
 BASE_APK = ROOT / 'build/fast/Frostpunk.apk'
 FL18_APK = ROOT / 'build/fastlift/fl18/Frostpunk-fl18.apk'
 EXTRA_HOST = ['android/host/mobile_lod.c', 'android/host/thread_placement.c']
@@ -66,27 +64,7 @@ def compile_sources(sources):
 
 def unit_objects(rows):
     """Canonical object rows with every lifted Frostpunk.exe unit replaced by its fastlift object."""
-    out, units = [], set()
-    for row in rows:
-        normal = row.replace('\\', '/')
-        m = re.search(r'recomp_funcs_(\d{4})[^/]*\.o$', normal)
-        unit = None
-        if m and not normal.startswith('generated/'):
-            unit = int(m[1])
-        elif normal.endswith('bounds-native/production-fallback.o'):
-            unit = 804
-        if unit is None:
-            out.append(str(ROOT / row))
-            continue
-        target = FASTLIFT / 'obj' / ('recomp_funcs_%04d.o' % unit)
-        if not target.exists():
-            raise FileNotFoundError(target)
-        out.append(str(target))
-        units.add(unit)
-    lifted = {int(p.stem[-4:]) for p in (FASTLIFT / 'obj').glob('recomp_funcs_*.o')}
-    if units != lifted:
-        raise ValueError('unit coverage differs: missing %s extra %s' % (sorted(lifted - units)[:10], sorted(units - lifted)[:10]))
-    return out
+    return fb.production_game_objects(rows)
 
 
 def link(name):
@@ -137,7 +115,7 @@ def build_dex():
                     '-R', str(compiled), '-A', str(assets), '-o', str(OUT / 'launcher/resources.apk')], check=True)
     sources = [work / 'src/MainActivity.java']
     sources[0].write_text(main, encoding='utf-8')
-    for name in ('TouchControls', 'NativeLibrary', 'PortSupport', 'PortProfile'):
+    for name in ('TouchControls', 'NativeLibrary', 'PortSupport', 'PortProfile', 'GameWatchActivity', 'CrashReport'):
         target = work / ('src/%s.java' % name)
         target.write_text((ROOT / ('android/app/%s.java' % name)).read_text(encoding='utf-8')
                           .replace('com.frostpunk.staticrecomp.probe', package), encoding='utf-8')
@@ -187,6 +165,11 @@ def package(runtime, name, dxvk=None):
         libraries[services.name] = services
     entries, packaging = payload.prepare(libraries, fb.BIN, folder / 'payload')
     replace = dict(entries)
+    if fb.sha(fb.GPU_RUNTIME / 'vulkan.ad07xx.so') != fb.TURNIP_SHA256:
+        raise RuntimeError('Pinned Turnip driver missing or changed')
+    replace['lib/arm64-v8a/libpurple_turnip.so'] = (fb.GPU_RUNTIME / 'vulkan.ad07xx.so', zipfile.ZIP_STORED)
+    replace.update({'lib/arm64-v8a/' + name: (fb.GPU_RUNTIME / name, zipfile.ZIP_STORED) for name in fb.GPU_LIBS})
+    replace.update({'assets/licenses/' + p.name: (p, zipfile.ZIP_DEFLATED) for p in (fb.GPU_RUNTIME / 'licenses').iterdir()})
     with zipfile.ZipFile(FL18_APK) as fl18:
         for lib in ('lib/arm64-v8a/libdxvk_d3d11.so', 'lib/arm64-v8a/libdxvk_dxgi.so'):
             path = folder / Path(lib).name
@@ -200,7 +183,7 @@ def package(runtime, name, dxvk=None):
     resources = OUT / 'launcher/resources.apk'
     if assets.exists():
         for p in assets.rglob('*'):
-            if p.is_file() and p.relative_to(assets).parts[0] == 'launcher':
+            if p.is_file() and p.relative_to(assets).parts[0] in ('launcher', 'port-ui'):
                 replace['assets/' + p.relative_to(assets).as_posix()] = (p, zipfile.ZIP_DEFLATED)
     unsigned = folder / 'unsigned.apk'
     changed = []
@@ -208,7 +191,9 @@ def package(runtime, name, dxvk=None):
         res = zipfile.ZipFile(resources) if resources.exists() else None
         names = set()
         for info in src.infolist():
-            if info.filename.startswith('META-INF/'):
+            if info.filename.startswith(('META-INF/', 'assets/turnip/')) or info.filename in (
+                    'lib/arm64-v8a/libfrostpunk_turnip.so',
+                    'assets/licenses/Turnip-SM8250-origin.json', 'assets/licenses/Turnip-SM8250-LICENSE-NOTE.txt'):
                 continue
             names.add(info.filename)
             if res is not None and (info.filename in ('AndroidManifest.xml', 'resources.arsc') or info.filename.startswith('res/')) \

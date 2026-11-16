@@ -525,12 +525,15 @@ final class TouchControls extends View {
         gamepadAxes(event.getDeviceId(),event.getSource(),new float[]{event.getAxisValue(MotionEvent.AXIS_X),event.getAxisValue(MotionEvent.AXIS_Y),event.getAxisValue(MotionEvent.AXIS_Z),event.getAxisValue(MotionEvent.AXIS_RZ),event.getAxisValue(MotionEvent.AXIS_LTRIGGER),event.getAxisValue(MotionEvent.AXIS_RTRIGGER),event.getAxisValue(MotionEvent.AXIS_HAT_Y)});
         return true;
     }
+    private void noteGamepad(int id){
+        if(gamepadId==id)return;
+        gamepadId=id;
+        android.util.Log.i("FrostpunkControls","GAMEPAD_CONNECTED id="+gamepadId);
+        if(getContext() instanceof MainActivity)((MainActivity)getContext()).onGamepadAttached();
+    }
     void gamepadAxes(int id,int source,float[] values){
         if(values.length!=7)return;
-        if(gamepadId!=id){
-            gamepadId=id;
-            android.util.Log.i("FrostpunkControls","GAMEPAD_CONNECTED id="+gamepadId+" source="+source);
-        }
+        noteGamepad(id);
         InputDevice device=InputDevice.getDevice(id);
         stickX=axis(values[0],device,source,MotionEvent.AXIS_X);stickY=axis(values[1],device,source,MotionEvent.AXIS_Y);
         cursorStickX=axis(values[2],device,source,MotionEvent.AXIS_Z);cursorStickY=axis(values[3],device,source,MotionEvent.AXIS_RZ);
@@ -548,7 +551,7 @@ final class TouchControls extends View {
         android.util.Log.d("FrostpunkControls","GAMEPAD_KEY key="+key+" down="+down+" state="+(state&8191));
         if((state & 2048)!=0)return true;
         gamepadActive=true;
-        gamepadId=event.getDeviceId();
+        noteGamepad(event.getDeviceId());
         if(key==KeyEvent.KEYCODE_BUTTON_A){
             if(down&&event.getRepeatCount()>0)return true;
             if((state&SWITCH_MENU)!=0){if(down&&event.getRepeatCount()==0)switchChoose(switchItem(cursorX,cursorY));}

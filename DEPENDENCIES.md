@@ -33,12 +33,13 @@ private provenance receipts produced during development.
 
 ## Turnip binary inputs
 
-- General driver: [AdrenoToolsDrivers v26.0.0 R8](https://github.com/K11MCH1/AdrenoToolsDrivers/releases/tag/v26.0.0-rc08),
-  `vulkan.ad07xx.so` SHA-256
-  `fdd378520022f88b0363dd1f77f6989332730271712621523075fe4eb4de2a09`.
-- SM8250 driver: [Banners-Turnip v27.0.0-20261111-r4](https://github.com/The412Banner/Banners-Turnip/releases/tag/v27.0.0-20261111-r4),
-  `vulkan.sm8250.so` SHA-256
-  `25b3757ebbf85cffd7358c8f370aa389c9fbab5e27327d97889695e4bc684569`.
+- Bundled Adreno driver: [purple-turnip T30](https://github.com/MrPurple666/purple-turnip/releases/tag/vturnip_mrpurple_T30-toasted.adpkg).
+  Archive `turnip_mrpurple_T30-toasted.adpkg.zip` SHA-256
+  `f65b2d3353fd4aa7190bb5426b94468e99ffea7a58a830bc0c4651db89353227`.
+  Unpacked `vulkan.purple.so` SHA-256
+  `1d80dfa019659b008e4669311db5b1e4a02af59ff1d5458a98e2f5fe18ed013b`.
+  The APK stores those unmodified bytes once as `lib/arm64-v8a/libpurple_turnip.so`,
+  shared by the launcher probe and the game on supported Adreno devices.
 
 These community driver builds include their own provenance and license notes in
 the APK. Exact rebuilds and a complete source-to-binary license manifest for the

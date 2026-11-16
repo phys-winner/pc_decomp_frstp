@@ -22,8 +22,11 @@
  *  - dynamic buffers, other topologies, other position formats and small ranges are left alone.
  *
  * The error bound is ERROR_PIXELS / (height of the back buffer) in object units (the models are in
- * metres): about one output pixel at the closest zoom.  Default: on with "Mobile post-processing";
- * debug.fp.geometry=N overrides the numerator, 0 turns the module off.
+ * metres): about one output pixel at the closest zoom.  The graphics row "Model detail" picks the
+ * numerator live (0 auto, 1 full, 2..5 coarser).  Auto is 100 with mobile post-processing unless the
+ * buildings group is PC, and 0 otherwise.  debug.fp.geometry=N overrides Auto only.
+ * A change restores original indices and queues the ranges again, so the triangle count moves
+ * without a restart.  debug.fp.geometry is read once per process.
  */
 namespace geometry {
 
@@ -87,17 +90,36 @@ bool worker_started=false;
 std::atomic<uint64_t> stat_jobs{0},stat_ready{0},stat_skipped{0},stat_restored{0},stat_before{0},stat_after{0},stat_micros{0};
 uint64_t stat_frame=0,frame_before=0,frame_after=0;
 
-float error_pixels() {
+/* 0 auto, 1 full meshes, 2 high (25 px), 3 medium (100, the old default), 4 low (250), 5 lowest (500). */
+std::atomic<int> detail_choice{0};
+int draw_on=-1;
+float applied_pixels=0;
+bool detail_primed=false;
+
+float property_pixels() {
     static const float value=[]{
         char text[PROP_VALUE_MAX]={0};
-        if(__system_property_get("debug.fp.geometry",text)>0)return strtof(text,nullptr);
-        /* Launcher group "buildings and objects" (FP_GFX_BUILDINGS = 1): PC keeps the original meshes. */
-        if(frostpunk_mobile_graphics_pc&&frostpunk_mobile_graphics_pc(1))return 0.0f;
-        return frostpunk_dxvk_mobile_effects&&frostpunk_dxvk_mobile_effects()?DEFAULT_ERROR_PIXELS:0.0f;
+        return __system_property_get("debug.fp.geometry",text)>0?strtof(text,nullptr):-1.0f;
     }();
     return value;
 }
+float error_pixels() {
+    int level=detail_choice.load(std::memory_order_relaxed);
+    if(level>=1&&level<=5){
+        static const float table[]={0.0f,0.0f,25.0f,100.0f,250.0f,500.0f};
+        return table[level];
+    }
+    float forced=property_pixels();
+    if(forced>=0.0f)return forced;
+    /* Launcher group "buildings and objects" (FP_GFX_BUILDINGS = 1): PC keeps the original meshes. */
+    if(frostpunk_mobile_graphics_pc&&frostpunk_mobile_graphics_pc(1))return 0.0f;
+    return frostpunk_dxvk_mobile_effects&&frostpunk_dxvk_mobile_effects()?DEFAULT_ERROR_PIXELS:0.0f;
+}
 bool enabled() { return error_pixels()>0; }
+bool draws_active() {
+    if(draw_on<0)draw_on=error_pixels()>0?1:0;
+    return draw_on>0;
+}
 float error_bound() {
     unsigned height=unsigned(display_extent.load(std::memory_order_relaxed)&0xffffffffu);
     if(!height)height=720;
@@ -441,8 +463,81 @@ void draw_unknown_range(ID3D11DeviceContext* context) {
     }
     for(auto& range:restore)write_range(context,target,range.first,range.second);
 }
+/* Put every remembered range back on `want` pixels.  False when a GPU write is required and the
+ * immediate context is not known yet: the caller retries on the next present. */
+bool retarget(ID3D11DeviceContext* context, float want) {
+    struct Restore { IUnknown* buffer; uint32_t first; std::vector<uint8_t> bytes; };
+    std::vector<Restore> restores;
+    std::vector<Job> queued;
+    float bound=0;
+    if(want>0){
+        unsigned height=unsigned(display_extent.load(std::memory_order_relaxed)&0xffffffffu);
+        if(!height)height=720;
+        bound=want/float(height);
+        if(bound<0.01f)bound=0.01f; else if(bound>1.0f)bound=1.0f;
+    }
+    if(!context){
+        std::lock_guard guard(lock);
+        for(auto& entry:index_buffers)
+            for(auto& atom_entry:entry.second.atoms){
+                const Atom& atom=atom_entry.second;
+                if(atom.state==Atom::Ready&&atom.reduced&&atom.reduced<atom.count&&!atom.original.empty())return false;
+            }
+    }
+    {
+        std::lock_guard guard(queue_lock);
+        jobs.clear();
+    }
+    {
+        std::lock_guard guard(lock);
+        for(auto& entry:index_buffers) {
+            IndexBuffer& buffer=entry.second;
+            for(auto& atom_entry:buffer.atoms) {
+                Atom& atom=atom_entry.second;
+                if(atom.original.empty()||!atom.count||atom.original.size()%atom.count)continue;
+                unsigned width=unsigned(atom.original.size()/atom.count);
+                bool simplified=atom.state==Atom::Ready&&atom.reduced&&atom.reduced<atom.count;
+                if(simplified){
+                    if(!context)return false;
+                    uint32_t first_byte=atom.first*width;
+                    if(buffer.copy&&size_t(first_byte)+atom.original.size()<=buffer.copy->bytes.size())
+                        memcpy(buffer.copy->bytes.data()+first_byte,atom.original.data(),atom.original.size());
+                    restores.push_back({entry.first,first_byte,atom.original});
+                }
+                atom.ticket=next_ticket++;
+                if(!(want>0)){atom.state=Atom::Ready;atom.reduced=atom.count;continue;}
+                const Layout* layout=nullptr;
+                auto known=layouts.find(atom.source.layout);
+                if(known!=layouts.end()&&known->second.position.present)layout=&known->second;
+                auto vertices=vertex_copies.find(atom.source.buffer);
+                if(!layout||vertices==vertex_copies.end()||width<2||width>4||atom.count%3){
+                    atom.state=Atom::Ready;atom.reduced=atom.count;continue;
+                }
+                Job job;job.ticket=atom.ticket;job.buffer=entry.first;job.first=atom.first;job.count=atom.count;
+                job.vertices=vertices->second;job.source=atom.source;job.layout=*layout;job.error=bound;
+                job.indices.resize(atom.count);
+                for(uint32_t i=0;i<atom.count;++i){uint32_t index=0;memcpy(&index,atom.original.data()+size_t(i)*width,width);job.indices[i]=index;}
+                atom.state=Atom::Pending;
+                queued.push_back(std::move(job));
+            }
+        }
+    }
+    for(auto& range:restores)write_range(context,range.buffer,range.first,range.bytes);
+    for(auto& job:queued){stat_jobs.fetch_add(1,std::memory_order_relaxed);submit(std::move(job));}
+    fprintf(stderr,"FP_GEOMETRY_RETARGET pixels=%.1f restores=%zu jobs=%zu\n",double(want),restores.size(),queued.size());
+    return true;
+}
 void present() {
-    if(!enabled())return;
+    float want=error_pixels();
+    ID3D11DeviceContext* context=nullptr;
+    if(state_context)state_context->QueryInterface(__uuidof(ID3D11DeviceContext),reinterpret_cast<void**>(&context));
+    if(!detail_primed){applied_pixels=want;detail_primed=true;draw_on=want>0?1:0;}
+    else if(want!=applied_pixels){
+        if(!retarget(context,want)){if(context)context->Release();return;}
+        applied_pixels=want;draw_on=want>0?1:0;
+    }
+    if(context)context->Release();
+    if(!(want>0))return;
     if(++stat_frame%600==300)
         fprintf(stderr,"FP_GEOMETRY frame=%llu error=%.3f jobs=%llu ready=%llu skipped=%llu restored=%llu indices_before=%llu indices_after=%llu "
             "frame_indices_before=%llu frame_indices_after=%llu worker_ms=%llu copies_mb=%zu foreign_context=%d\n",
@@ -549,4 +644,10 @@ void context_call(CPU* c,unsigned slot) {
     uint32_t reduced=draw(native.p,count,start,base);
     if(reduced!=count)c->rdx=reduced;                         /* IndexCount / IndexCountPerInstance */
 }
+}
+extern "C" void frostpunk_geometry_detail(int level) {
+    if(level<0)level=0;
+    if(level>5)level=5;
+    geometry::detail_choice.store(level,std::memory_order_relaxed);
+    fprintf(stderr,"FP_GEOMETRY_DETAIL level=%d\n",level);
 }

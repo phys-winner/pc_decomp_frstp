@@ -8,6 +8,15 @@ import java.util.zip.Deflater;
 
 public final class FrostpunkLauncherTest {
     static void need(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
+    static void memoryWarning() {
+        long threshold = 15L * 1024 * 1024 * 1024 / 2;
+        need(!FrostpunkDevice.lowMemory(0), "unknown RAM does not warn");
+        need(!FrostpunkDevice.lowMemory(-1), "invalid RAM does not warn");
+        need(FrostpunkDevice.lowMemory(6L * 1024 * 1024 * 1024), "6 GiB warns");
+        need(FrostpunkDevice.lowMemory(threshold), "7.5 GiB warns");
+        need(!FrostpunkDevice.lowMemory(threshold + 1), "above threshold does not warn");
+        need(!FrostpunkDevice.lowMemory(8L * 1024 * 1024 * 1024), "8 GiB does not warn");
+    }
     static final String[] PAIR = {"textures-s3.dat", "textures-s3.idx"};
     static void storedZip(File root) throws Exception {
         File original = game(root, "zip-original", new byte[][]{texture(0x35545844, 8)}, true);
@@ -52,6 +61,35 @@ public final class FrostpunkLauncherTest {
             if (phase > 1) Files.write(new File(sidecar, PAIR[1]).toPath(), new byte[]{42});
             FrostpunkTextures.recover(sidecar); need(!new File(sidecar, PAIR[0]).exists() && !new File(sidecar, PAIR[1]).exists(), "interrupted ZIP conversion rolls back");
         }
+        FrostpunkFiles.verifyOnce(sidecar);
+        File receipt = new File(index.getPath() + ".ok");
+        need(receipt.isFile(), "one-time ZIP integrity receipt");
+        byte[] receiptBytes = Files.readAllBytes(receipt.toPath());
+        FrostpunkFiles.verifyOnce(sidecar);
+        need(Arrays.equals(receiptBytes, Files.readAllBytes(receipt.toPath())), "ZIP integrity check does not repeat");
+        long dataAt = ByteBuffer.wrap(Files.readAllBytes(index.toPath())).order(ByteOrder.LITTLE_ENDIAN).getLong(48);
+        need(dataAt > 0 && dataAt < archive.length, "stored payload offset");
+        try (RandomAccessFile flipped = new RandomAccessFile(zip, "rw")) {
+            flipped.seek(dataAt);
+            int value = flipped.read();
+            need(value >= 0, "payload byte");
+            flipped.seek(dataAt);
+            flipped.write(value ^ 1);
+            need(receipt.delete(), "drop ZIP integrity receipt");
+            boolean rejected = false;
+            try { FrostpunkFiles.verifyOnce(sidecar); }
+            catch (IOException failure) {
+                rejected = failure.getMessage() != null && failure.getMessage().contains("CRC") && failure.getMessage().contains(PAIR[0]);
+                if (!rejected) throw failure;
+            }
+            need(rejected, "damaged ZIP rejected");
+            TextureBackend.Scan broken = new FrostpunkTextures().scan(sidecar);
+            need(broken.failure != null && broken.failure.contains("CRC"), "texture check names the damaged ZIP: " + broken.failure);
+            flipped.seek(dataAt);
+            flipped.write(value);
+        }
+        if (receipt.exists()) need(receipt.delete(), "receipt cleared after the damage test");
+        FrostpunkFiles.verifyOnce(sidecar);
         need(Arrays.equals(archive, Files.readAllBytes(zip.toPath())), "original stored ZIP unchanged");
     }
     static byte[] texture(int format, int width) {
@@ -194,12 +232,13 @@ public final class FrostpunkLauncherTest {
         File parallel = game(root, "four-threads", new byte[][]{texture(0x35545844, 128)}, false);
         need(new FrostpunkTextures().convert(serial, TextureBackend.ASTC, 1) == 0, "single-thread encoding");
         need(new FrostpunkTextures().convert(parallel, TextureBackend.ASTC, 4) == 0, "four-thread encoding"); same(pair(serial), pair(parallel));
+        memoryWarning();
         storedZip(root);
         mipQuality(root);
         File paddedAtlas = game(root, "padded-8196-atlas", new byte[][]{texture(0x35545844, 8196)}, true);
         FrostpunkTextures atlas = new FrostpunkTextures(); need(atlas.scan(paddedAtlas).failure == null, "8196 atlas preflight");
         need(atlas.convert(paddedAtlas, TextureBackend.ASTC, 4) == 0, atlas.message());
         need(atlas.scan(paddedAtlas).converted == TextureBackend.ASTC, "8196 atlas converted");
-        System.out.println("FROSTPUNK_LAUNCHER_TEST profiles=10 conversions=14 recoveries=8 cancellation=1 malformed=1 ownership=1 folder_and_zip_undo=PASS zip_source_unchanged=PASS threads_1_vs_4_byte_exact=PASS quality_switch_vs_pc=PASS skipped_mips_byte_exact=PASS unchanged_entries_stay_compressed=PASS atlas_8196=PASS");
+        System.out.println("FROSTPUNK_LAUNCHER_TEST profiles=10 conversions=14 recoveries=8 cancellation=1 malformed=1 ownership=1 folder_and_zip_undo=PASS zip_source_unchanged=PASS zip_integrity=PASS threads_1_vs_4_byte_exact=PASS quality_switch_vs_pc=PASS skipped_mips_byte_exact=PASS unchanged_entries_stay_compressed=PASS atlas_8196=PASS");
     }
 }

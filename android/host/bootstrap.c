@@ -267,6 +267,10 @@ void (*frostpunk_static_target(uint64_t target))(CPU *) {
 }
 /* switch_performance.c: graphics defaults of a new profile (absent from host-only test builds). */
 extern void fp_graphics_first_run_defaults(void) __attribute__((weak));
+extern void fp_graphics_budget_note(uint64_t self, uint64_t target, int after, uint64_t result) __attribute__((weak));
+static int fp_budget_target(uint64_t target) {
+    return target == UINT64_C(0x140E5DA20) || target == UINT64_C(0x140E65A50);
+}
 static void dispatch_resolved(CPU *c, uint64_t target, void (*linked)(CPU *)) {
     if (__builtin_expect(dispatch_budget || trace_calls,0)) {
         uint64_t calls=atomic_fetch_add_explicit(&dispatch_calls,1,memory_order_relaxed)+1;
@@ -330,11 +334,19 @@ static_invoke:
         if (fp_graphics_first_run_defaults) fp_graphics_first_run_defaults();
     }
     if (__builtin_expect(trace_calls,0)) fprintf(stderr, "STATIC_CALL target=0x%" PRIx64 "\n", target);
+    uint64_t budget_self = 0;
+    int budget = fp_budget_target(target);
+    if (budget) budget_self = c->rcx;
+    if (budget && target == UINT64_C(0x140E65A50) && fp_graphics_budget_note)
+        fp_graphics_budget_note(budget_self, target, 0, 0);
     function(c);
+    if (budget && fp_graphics_budget_note)
+        fp_graphics_budget_note(budget_self, target, 1, c->rax);
 }
 
 void dispatch(CPU *c, uint64_t target) { dispatch_resolved(c,target,NULL); }
 __attribute__((visibility("hidden"))) void fp_dispatch_main(CPU *c, uint64_t target, void (*linked)(CPU *)) {
+    if (__builtin_expect(fp_budget_target(target), 0)) { dispatch_resolved(c, target, linked); return; }
 #if !defined(FP_PERF_COUNTERS)
     unsigned h=dispatch_special_hash(target);
     if(__builtin_expect(dispatch_fast_ready&&!((dispatch_special_filter[h>>6]>>(h&63u))&1u),1)){

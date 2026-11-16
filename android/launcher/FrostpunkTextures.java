@@ -210,6 +210,7 @@ public final class FrostpunkTextures implements TextureBackend {
         Scan result = new Scan();
         try {
             recover(game);
+            FrostpunkFiles.verifyOnce(game);
             try (Archive archive = new Archive(game, switchMips)) {
                 plannedBytes = archive.outputBytes;
                 result.textures = archive.dxt; result.bytes = archive.decodedBytes;

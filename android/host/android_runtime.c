@@ -4,6 +4,8 @@
 #include "process.h"
 #include "frame_profile.h"
 #include "port_settings.h"
+#include "switch_performance.h"
+#include "cpu64.h"
 #include "../dxvk/bridge.h"
 #include <android/native_window.h>
 #include <sys/system_properties.h>
@@ -21,6 +23,25 @@ static uint32_t display_width,display_height;
 float frostpunk_display_aspect(void){return display_width&&display_height?(float)display_width/(float)display_height:16.f/9.f;}
 extern uint32_t frostpunk_android_frame_rates(uint32_t*,uint32_t) __attribute__((weak));
 extern void frostpunk_android_request_frame_rate(uint32_t) __attribute__((weak));
+void fp_mobile_output_config(uint64_t config,uint32_t percent);
+
+void fp_port_debug_apply(void) {
+    fp_fx_apply();
+    static char seen[PROP_VALUE_MAX];
+    char value[PROP_VALUE_MAX]={0};
+    int saved=errno;
+    if(__system_property_get("debug.fp.set",value)<=0){seen[0]=0;errno=saved;return;}
+    if(!strcmp(seen,value)){errno=saved;return;}
+    snprintf(seen,sizeof(seen),"%s",value);
+    unsigned id=0,chosen=0;
+    if(sscanf(value,"%u=%u",&id,&chosen)==2){
+        fp_port_setting_set(id,chosen);
+        uint64_t root=rd64(UINT64_C(0x142985AB0));
+        if(root && id==FP_SETTING_OUTPUT_SCALE && fp_port_setting_get(id)==chosen) fp_mobile_output_config(root+0xB0u,chosen);
+        if(root && id==FP_SETTING_MOBILE_EFFECTS && chosen<=1u) wr8(root+0xB0u+0x2cu,1);
+    }
+    errno=saved;
+}
 
 void fp_mobile_output_config(uint64_t config,uint32_t percent) {
     if (!display_width || !display_height || percent<20 || percent>100) return;
@@ -70,13 +91,13 @@ __attribute__((visibility("default"))) int frostpunk_android_run(const Frostpunk
         setenv("DXVK_STATE_CACHE_PATH",cache_path,1) ||
         (disable_state_cache && setenv("DXVK_STATE_CACHE","0",1)) ||
         setenv("FROSTPUNK_GAME_ROOT",host->game_path,1)) { host->release_window(window);return 71; }
-    /* The guest desktop is the real surface in landscape, so any aspect ratio renders unscaled;
-     * the resolution-config overlay then selects this one advertised mode at game start. */
+    /* The guest desktop matches the real surface, including a portrait quarter-turn. A 180 degree
+     * flip keeps the same size, so an already-running swapchain does not have to be rebuilt. */
     int32_t surface_width=ANativeWindow_getWidth(window),surface_height=ANativeWindow_getHeight(window);
-    uint32_t width=(uint32_t)(surface_width>surface_height?surface_width:surface_height);
-    uint32_t height=(uint32_t)(surface_width>surface_height?surface_height:surface_width);
-    if (surface_width<=0 || surface_height<=0 || width>16384) { host->release_window(window);return 69; }
+    if (surface_width<=1 || surface_height<=1 || surface_width>16384 || surface_height>16384) { host->release_window(window);return 69; }
+    uint32_t width=(uint32_t)surface_width,height=(uint32_t)surface_height;
     display_width=width;display_height=height;
+    fp_output_display_size(width, height);
     /* Graphics menu "Output resolution" (debug.frostpunk.display_scale 0.2-1 overrides it for tests)
      * shrinks the desktop for GPU budget; DXVK presents the smaller back buffer and the Android
      * compositor scales it to the surface. The graphics transaction also applies it live. */
@@ -90,6 +111,9 @@ __attribute__((visibility("default"))) int frostpunk_android_run(const Frostpunk
     double scale=__system_property_get("debug.frostpunk.display_scale",scale_text)>0?strtod(scale_text,NULL):
                  fp_port_setting_get(FP_SETTING_OUTPUT_SCALE)/100.0;
     if (scale>=0.2 && scale<1.0) { width=(uint32_t)(width*scale)&~1u; height=(uint32_t)(height*scale)&~1u; } else scale=1.0;
+    char render_line[160];
+    snprintf(render_line,sizeof(render_line),"display surface=%dx%d guest=%ux%u scale=%.2f",surface_width,surface_height,width,height,scale);
+    frostpunk_render_log(render_line);
     win64_window_configure(host);
     uint32_t refresh=frostpunk_android_frame_limit();
     win64_display_configure(width,height,refresh);

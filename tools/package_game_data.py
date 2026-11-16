@@ -37,8 +37,8 @@ def packed(payload):
     return (result, 1) if len(result) * 100 <= len(payload) * 85 else (payload, 0)
 
 
-def resource_patch(kind, changes):
-    folder = OUT / 'bundle-resources' / kind
+def resource_patch(kind, changes, output=None):
+    folder = (output or OUT / 'bundle-resources') / kind
     folder.mkdir(parents=True, exist_ok=True)
     manifest = dict(schema=1, kind=kind, original_exe_sha256=HOST['original_exe_sha256'], archives=[], payloads={})
     for stem, replacements in changes.items():
@@ -79,6 +79,17 @@ def resource_patch(kind, changes):
     write_json(folder / marker, manifest)
     write_json(ROOT / ('android/game-data-' + kind + '.json'), manifest)
     return folder, manifest
+
+
+def port_ui_patch(output):
+    from prepare_android_port_settings_asset import resource, SOURCE, KEY
+    from port_settings_localization import localize_table, TABLE_LANGUAGES
+    original = Archive(STEAM / 'localizations')
+    setting = resource(Archive(SOURCE / 'common').read(KEY))[0]
+    return resource_patch('port-ui', {
+        'common': {KEY: setting},
+        'localizations': {key: localize_table(original.read(key), language)
+                          for key, language in TABLE_LANGUAGES.items()}}, output)
 
 
 def package(sources, expected, originals):
@@ -147,12 +158,6 @@ def package(sources, expected, originals):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     PUB.mkdir(exist_ok=True)
-    common = Archive(ROOT / 'build/android-mobile-settings-v7-switch-asset/common')
-    localized = Archive(ROOT / 'build/android-mobile-settings-v7-switch-asset/localizations')
-    original_localized = Archive(STEAM / 'localizations')
-    port = {'common': {3500207806: common.read(3500207806)},
-            'localizations': {key: localized.read(key) for key in localized.rows
-                              if localized.read(key) != original_localized.read(key)}}
     pc_templates = Archive(ROOT / 'build/switch-ui-20261112/assets-v6/templates')
     switch_index = (ROOT / 'build/switch-ui-20261112/assets-v6/templates-switch.idx').read_bytes()
     switch = {}
@@ -163,7 +168,7 @@ def main():
                 data.seek(offset)
                 switch[key] = data.read(stored)
     assert len(switch) == 63
-    patches = [resource_patch('port-ui', port), resource_patch('switch-ui', {'templates': switch})]
+    patches = [port_ui_patch(OUT / 'bundle-resources'), resource_patch('switch-ui', {'templates': switch})]
     originals = {name: {key: row[key] for key in ('bytes', 'sha256')} for name, row in sorted(HOST['original_files'].items())}
     assert len(originals) == 38 and all((STEAM / name).parent == STEAM for name in originals)
     write_json(ROOT / 'android/game-data-originals.json', originals)

@@ -162,7 +162,11 @@ def main():
         manifest = OUT / "AndroidManifest.xml"
         manifest.write_text((SOURCE / "AndroidManifest.xml").read_text().replace("Frostpunk native window probe", "Frostpunk Win64 COM DXVK present probe"), encoding="utf-8")
         if args.portrait_control:
-            manifest.write_text(manifest.read_text().replace('android:screenOrientation="landscape"', 'android:screenOrientation="portrait"'), encoding="utf-8")
+            text = manifest.read_text()
+            updated = text.replace('android:screenOrientation="landscape"', 'android:screenOrientation="portrait"', 1)
+            if updated == text:
+                updated = text.replace('android:screenOrientation="sensorLandscape"', 'android:screenOrientation="portrait"', 1)
+            manifest.write_text(updated, encoding="utf-8")
     compiled = OUT / "resources.zip"
     checked([build_tools / "aapt2.exe", "compile", "--dir", SOURCE / "res", "-o", compiled])
     checked([build_tools / "aapt2.exe", "link", "-I", platform, "--manifest", manifest, "-R", compiled, "-A", assets, "-o", base])

@@ -47,6 +47,8 @@ final class Work {
 
         abstract void work() throws Exception;
 
+        void cancel() { cancelled = true; }
+
         void check() throws Failure {
             if (cancelled) throw new Failure(Failure.CANCELLED, null);
         }

@@ -438,8 +438,10 @@ def run(args):
             key(dev, 'SPACE', 300)
             time.sleep(2)
         if args.simpleperf:
-            key(dev, 'SPACE', 300)
-            time.sleep(2)
+            # The paused window is the one just measured. SPACE would leave it and record the running city.
+            if args.perf_while != 'paused':
+                key(dev, 'SPACE', 300)
+                time.sleep(2)
             remote = '/data/local/tmp/fp-fastlift-%s.data' % args.label
             perf = subprocess.Popen(dev.adb + ['shell', 'simpleperf record --app %s -e cpu-clock -f %d --call-graph fp --duration %d -o %s'
                                                % (PKG, args.perf_hz, args.simpleperf, remote)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -489,6 +491,8 @@ if __name__ == '__main__':
     ap.add_argument('--popup-wait', type=int, default=45)
     ap.add_argument('--timeout', type=int, default=300)
     ap.add_argument('--simpleperf', type=int, default=0)
+    ap.add_argument('--perf-while', choices=('running', 'paused'), default='running',
+                    help='record simpleperf in the running city (unpause first) or in the pause that was just measured')
     ap.add_argument('--game-settings', choices=('keep', 'player', 'default'), default='keep',
                     help="the game's own options in the QA profile: keep what is there, copy the player's config.bin (read only), or engine defaults")
     ap.add_argument('--zoom', type=int, default=0, help='mouse-wheel steps towards the city in the paused state, then zoom.png and a short window')

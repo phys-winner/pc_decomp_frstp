@@ -37,7 +37,7 @@ EDITS = [
         SET32(c->rdx,rs_percent(rd32(c->rdi+0x1a4u)));
         goto L_000141A17E2F;
     }
-''', '''    if(R32(c->rcx)>=21u&&R32(c->rcx)<=30u) {
+''', '''    if(R32(c->rcx)>=21u&&R32(c->rcx)<=32u) {
         SET32(c->rdx,fp_port_setting_get(R32(c->rcx)));
         goto L_000141A17E2F;
     }
@@ -46,7 +46,7 @@ EDITS = [
     ('''        wr8(c->rsi,1);
         goto L_000141A17706;
     }
-''', '''    if(R32(c->rbx)>=20u&&R32(c->rbx)<=29u) {
+''', '''    if(R32(c->rbx)>=20u&&R32(c->rbx)<=31u) {
         uint32_t fp_mobile_changed=R32(c->rbx)==21u&&rd32(c->rsp+0x50u)<=1u&&fp_port_setting_get(22u)!=rd32(c->rsp+0x50u);
         fp_port_setting_set(R32(c->rbx)+1u,rd32(c->rsp+0x50u));
         if(fp_mobile_changed){wr8(c->rdi+0x2cu,1);wr8(c->rsi,1);}
@@ -64,7 +64,9 @@ uint32_t fp_port_setting_get(uint32_t id);
 void fp_port_setting_set(uint32_t id, uint32_t value);
 void fp_mobile_output_config(uint64_t config, uint32_t percent);
 uint32_t fp_port_frame_rates(uint32_t rates[32]);
+int fp_output_resolution_label(uint32_t percent, char *text, size_t text_n);
 #include <stdio.h>
+#include <string.h>
 #include "port_help.inc"
 static void fp_frame_options(CPU *cpu,uint64_t row) {
     if(!row||rd32(row+0x20)!=28u)return;
@@ -85,6 +87,64 @@ static void fp_frame_options(CPU *cpu,uint64_t row) {
         c.rcx=string;c.rdx=text;push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x140E538C0));
         c.rcx=row;c.rdx=rates[i];c.r8=string;push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x141A14E20));
     }
+}
+static int fp_label_matches(uint64_t text, const char *want) {
+    const unsigned char *bytes;
+    size_t i;
+    if (!text || !want) return 0;
+    /* Option slots may hold a guest string object. Read only the label length, never scan for NUL. */
+    bytes = (const unsigned char *)(uintptr_t)text;
+    for (i = 0; want[i]; ++i) {
+        if (i >= 47 || bytes[i] != (unsigned char)want[i]) return 0;
+    }
+    return bytes[i] == 0;
+}
+static void fp_output_labels(CPU *cpu, uint64_t row) {
+    /* The closed combo reads strings installed by the option append (the same path as "60 FPS").
+     * Asset strings are left allocated: the append overwrites the slot and must see a null there. */
+    static int done, waits;
+    if (done || !row || rd32(row + 0x20) != 21u) return;
+    uint64_t options = rd64(row + 0x28);
+    uint32_t count = rd32(row + 0x30);
+    if (!options || !count || count > 16) return;
+    char want[16][48];
+    uint32_t values[16];
+    unsigned same = 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        values[i] = rd32(options + (uint64_t)i * 16);
+        uint64_t text = rd64(options + (uint64_t)i * 16 + 8);
+        if (!fp_output_resolution_label(values[i], want[i], sizeof want[i])) {
+            if (waits < 4) fprintf(stderr, "FP_OUTPUT_LABEL wait i=%u value=%u\\n", i, values[i]);
+            ++waits;
+            return;
+        }
+        if (!fp_label_matches(text, want[i])) same = 0;
+    }
+    if (same) { done = 1; return; }
+    CPU c = *cpu;
+    c.rsp = (c.rsp - 512) & ~UINT64_C(15);
+    for (uint32_t i = 0; i < count; ++i) wr64(options + (uint64_t)i * 16 + 8, 0);
+    wr32(row + 0x30, 0);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint64_t string = c.rsp + 0x60, chars = c.rsp + 0x80;
+        wr64(string, 0);
+        snprintf((char *)(uintptr_t)chars, sizeof want[i], "%s", want[i]);
+        c.rcx = string;
+        c.rdx = chars;
+        push64(&c, UINT64_C(0xe5ee0010));
+        dispatch(&c, UINT64_C(0x140E538C0));
+        if (!rd64(string)) {
+            fprintf(stderr, "FP_OUTPUT_LABEL create_failed i=%u\\n", i);
+            return;
+        }
+        c.rcx = row;
+        c.rdx = values[i];
+        c.r8 = string;
+        push64(&c, UINT64_C(0xe5ee0010));
+        dispatch(&c, UINT64_C(0x141A14E20));
+    }
+    done = rd32(row + 0x30) == count;
+    fprintf(stderr, "FP_OUTPUT_LABEL wrote count=%u first=%s\\n", rd32(row + 0x30), want[0]);
 }
 '''),
 ]
@@ -123,7 +183,7 @@ def main():
     getter = 'void L_000141A17C60(CPU *c)\n{\n'
     if text.count(getter) != 1:
         raise SystemExit('settings getter anchor drift')
-    text = text.replace(getter, getter + '    fp_frame_options(c,c->rdx);\n')
+    text = text.replace(getter, getter + '    fp_frame_options(c,c->rdx);\n    fp_output_labels(c,c->rdx);\n')
     obj = compile_unit(text, OUT)
     inputs = json.loads(INPUTS.read_text())
     old, new = 'build/arm64/eh-overlay-objects/recomp_funcs_0959.o', obj.relative_to(ROOT).as_posix()

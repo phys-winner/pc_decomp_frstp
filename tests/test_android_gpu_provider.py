@@ -29,9 +29,14 @@ rejected({},system,{'gpu_provider':'turnip'})
 rejected({},system,{'gpu_provider':'automatic'})
 driver=b'pinned-custom-driver'
 turnip={'native_d3d11_bridge':{},'runtime_dependencies':{'vulkan.ad07xx.so':{'sha256':hashlib.sha256(driver).hexdigest()}}}
-with archive({'assets/turnip/vulkan.ad07xx.so':driver})as z:assert verify_provider_assets(z,turnip,{})=='turnip'
-rejected({'assets/turnip/vulkan.ad07xx.so':b'changed'},turnip,{})
-print('GPU_PROVIDER_ASSETS tests=7 PASS')
+with archive({'lib/arm64-v8a/libpurple_turnip.so':driver})as z:assert verify_provider_assets(z,turnip,{})=='turnip'
+rejected({'lib/arm64-v8a/libpurple_turnip.so':b'changed'},turnip,{})
+
+rejected({'lib/arm64-v8a/libpurple_turnip.so':driver},system,{'gpu_provider':'system'})
+rejected({'lib/arm64-v8a/libpurple_turnip.so':driver,'assets/turnip/vulkan.sm8250.so':driver},turnip,{})
+rejected({'lib/arm64-v8a/libpurple_turnip.so':driver,'lib/arm64-v8a/libfrostpunk_turnip.so':driver},turnip,{})
+
+print('GPU_PROVIDER_ASSETS tests=10 PASS')
 
 # Execute the production environment block, including its setenv failure boundary.
 import json
@@ -63,8 +68,8 @@ static int test_setenv(const char *key,const char *value,int overwrite){
     return 0;
 }
 static int run(void){
-    struct Host {const char *game_path,*profile_path,*native_library_path,*gpu_driver_path;void (*release_window)(void*);};
-    const struct Host value={"game","profile","libraries","driver",release_window},*host=&value;
+    struct Host {const char *game_path,*profile_path,*native_library_path,*gpu_driver_path,*private_path;void (*release_window)(void*);};
+    const struct Host value={"game","profile","libraries","driver",NULL,release_window},*host=&value;
     void *window=(void*)1;
 POLICY
     return 0;

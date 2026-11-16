@@ -9,6 +9,9 @@ import org.json.JSONObject;
 
 final class FrostpunkDevice {
     private static JSONObject translations;
+    static boolean lowMemory(long totalBytes) {
+        return totalBytes > 0 && totalBytes <= 15L * 1024 * 1024 * 1024 / 2;
+    }
     static String language(Context context) {
         String chosen = State.get(context, State.CHOICES, "language", "");
         String code = chosen.isEmpty() ? Locale.getDefault().toLanguageTag() : chosen;

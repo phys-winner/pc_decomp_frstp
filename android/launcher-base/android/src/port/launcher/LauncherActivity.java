@@ -1070,7 +1070,7 @@ public final class LauncherActivity extends Activity {
         File path = file != null ? file : Storage.fileOf(uri, fd);
         setBusy(Texts.t(this, Texts.READING));
         background(() -> {
-            Zip zip = new Zip(new ParcelFileDescriptor.AutoCloseInputStream(fd).getChannel());
+            Zip zip = new Zip(new ParcelFileDescriptor.AutoCloseInputStream(fd));
             try {
                 List<Install.ArchivePart> plan = Install.plan(zip, spec);
                 if (plan.isEmpty()) throw new Failure(Failure.NOT_FOUND, null);
@@ -1237,8 +1237,24 @@ public final class LauncherActivity extends Activity {
         @Override void work() throws IOException {
             try {
                 StoredArchive.Plan plan = StoredArchive.plan(zip, part.root, part.part.needed);
+                total = plan.storedBytes + plan.sidecarBytes;
                 if (sidecar.exists()) Install.delete(sidecar);
                 byte[] buffer = new byte[1 << 20];
+                for (StoredArchive.Item item : plan.items) {
+                    if (!item.stored()) continue;
+                    file = item.path;
+                    java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+                    long left = item.entry.size;
+                    try (java.io.InputStream in = zip.open(item.entry)) {
+                        for (int n; left > 0 && (n = in.read(buffer)) > 0;) {
+                            check();
+                            crc.update(buffer, 0, n);
+                            done += n;
+                            left -= n;
+                        }
+                    }
+                    if (left != 0 || crc.getValue() != item.entry.crc) throw new Failure(Failure.CORRUPT, item.path);
+                }
                 for (StoredArchive.Item item : plan.items) {
                     if (item.stored()) continue;
                     file = item.path;
@@ -1256,6 +1272,14 @@ public final class LauncherActivity extends Activity {
                     if (crc.getValue() != item.entry.crc) throw new Failure(Failure.CORRUPT, item.path);
                 }
                 StoredArchive.writeIndex(plan, zip.length(), StoredArchive.fingerprint(zip), index);
+                byte[] raw = java.nio.file.Files.readAllBytes(index.toPath());
+                String identity;
+                try {
+                    identity = ZipIntegrity.hex(java.security.MessageDigest.getInstance("SHA-256").digest(raw));
+                } catch (java.security.NoSuchAlgorithmException failure) {
+                    throw new AssertionError(failure);
+                }
+                ZipIntegrity.write(index, ZipIntegrity.stamp(identity, zip.length(), zip.mtimeSeconds()));
                 record.run();
             } finally {
                 closeQuietly(zip);
@@ -1374,7 +1398,7 @@ public final class LauncherActivity extends Activity {
         if (job == null || job.finished) return;
         ui.show(ui.dialog().setMessage(Texts.t(this, Texts.STOP_ASK))
             .setPositiveButton(Texts.t(this, Texts.STOP), (d, w) -> {
-                job.cancelled = true;
+                job.cancel();
                 if (textures != null && job.section == Texts.TEXTURES) textures.cancel();
             })
             .setNegativeButton(Texts.t(this, Texts.CONTINUE), null));
@@ -1459,6 +1483,7 @@ public final class LauncherActivity extends Activity {
     }
 
     private void checkRenderer() {
+        refresh(Texts.ABOUT);
         if (hasWindowFocus()) Probe.start(this, spec);
         if (Probe.running(this)) {
             handler.removeCallbacks(probeWatch);
@@ -1818,9 +1843,18 @@ public final class LauncherActivity extends Activity {
             + "; GLES DXT=" + (gpu.probed ? Boolean.toString(gpu.s3tc) : "unknown") + "; Vulkan=" + Gpu.version(gpu.vulkan);
         String mode = effectiveRenderer(selected);
         String report = Diagnostics.report(this, Texts.of(this, selected.title), gpuText,
-            mode == null ? "not checked" : mode, textureState(), lastError);
+            mode == null ? "not checked" : mode, textureState(), lastError, installKind());
         boolean copied = Diagnostics.copy(this, report);
         note(Texts.ABOUT, Texts.t(this, copied ? Texts.DIAGNOSTICS_COPIED : Texts.E_CLIPBOARD), !copied);
+    }
+
+    /** "ZIP archive" when any part of the selected edition is played from a stored ZIP, otherwise
+     *  "unpacked folder". The path itself stays out of the report. */
+    private String installKind() {
+        if (selected == null) return "unknown";
+        for (Spec.Part part : selected.parts)
+            if (!Install.mount(this, selected, part).isEmpty()) return "ZIP archive";
+        return "unpacked folder";
     }
 
     private void chooseLanguage() {

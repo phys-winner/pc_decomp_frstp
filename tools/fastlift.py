@@ -439,6 +439,108 @@ def unit_path(index):
     return overlay if overlay.exists() else GENERATED / name
 
 
+OUTPUT_LABEL_DECL = 'int fp_output_resolution_label(uint32_t percent, char *text, size_t text_n);\n'
+OUTPUT_LABEL_CALL = '    fp_output_labels(c,c->rdx);\n'
+FRAME_CALL = '    fp_frame_options(c,c->rdx);\n'
+FRAME_FN = 'static void fp_frame_options(CPU *cpu,uint64_t row) {'
+GETTER_OPEN = 'void L_000141A17C60(CPU *c)\n{\n'
+OUTPUT_LABEL_FN = '''static int fp_label_matches(uint64_t text, const char *want) {
+    const unsigned char *bytes;
+    size_t i;
+    if (!text || !want) return 0;
+    /* Option slots may hold a guest string object. Read only the label length. */
+    bytes = (const unsigned char *)(uintptr_t)text;
+    for (i = 0; want[i]; ++i) {
+        if (i >= 47 || bytes[i] != (unsigned char)want[i]) return 0;
+    }
+    return bytes[i] == 0;
+}
+static void fp_output_labels(CPU *cpu, uint64_t row) {
+    /* The closed combo reads strings installed by the option append (the same path as "60 FPS").
+     * Asset strings are left allocated: the append overwrites the slot and must see a null there. */
+    static int done, waits;
+    if (done || !row || rd32(row + 0x20) != 21u) return;
+    uint64_t options = rd64(row + 0x28);
+    uint32_t count = rd32(row + 0x30);
+    if (!options || !count || count > 16) return;
+    char want[16][48];
+    uint32_t values[16];
+    unsigned same = 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        values[i] = rd32(options + (uint64_t)i * 16);
+        uint64_t text = rd64(options + (uint64_t)i * 16 + 8);
+        if (!fp_output_resolution_label(values[i], want[i], sizeof want[i])) {
+            if (waits < 4) fprintf(stderr, "FP_OUTPUT_LABEL wait i=%u value=%u\\n", i, values[i]);
+            ++waits;
+            return;
+        }
+        if (!fp_label_matches(text, want[i])) same = 0;
+    }
+    if (same) { done = 1; return; }
+    CPU c = *cpu;
+    c.rsp = (c.rsp - 512) & ~UINT64_C(15);
+    for (uint32_t i = 0; i < count; ++i) wr64(options + (uint64_t)i * 16 + 8, 0);
+    wr32(row + 0x30, 0);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint64_t string = c.rsp + 0x60, chars = c.rsp + 0x80;
+        wr64(string, 0);
+        snprintf((char *)(uintptr_t)chars, sizeof want[i], "%s", want[i]);
+        c.rcx = string;
+        c.rdx = chars;
+        push64(&c, UINT64_C(0xe5ee0010));
+        dispatch(&c, UINT64_C(0x140E538C0));
+        if (!rd64(string)) {
+            fprintf(stderr, "FP_OUTPUT_LABEL create_failed i=%u\\n", i);
+            return;
+        }
+        c.rcx = row;
+        c.rdx = values[i];
+        c.r8 = string;
+        push64(&c, UINT64_C(0xe5ee0010));
+        dispatch(&c, UINT64_C(0x141A14E20));
+    }
+    done = rd32(row + 0x30) == count;
+    fprintf(stderr, "FP_OUTPUT_LABEL wrote count=%u first=%s\\n", rd32(row + 0x30), want[0]);
+}
+
+'''
+
+
+def port_settings_patch(text):
+    """Keep pixel output-resolution labels when unit 959 is regenerated.
+
+    The closed combo shows strings installed by the option append. A raw pointer
+    write does not: "60 FPS" is visible only because frame options use that append.
+    """
+    if FRAME_FN not in text:
+        return text
+    if 'static void fp_output_labels' not in text:
+        if text.count(FRAME_FN) != 1:
+            raise ValueError('port settings frame helper drifted')
+        text = text.replace(FRAME_FN, OUTPUT_LABEL_FN + FRAME_FN, 1)
+    if OUTPUT_LABEL_DECL not in text:
+        decl = 'uint32_t fp_port_frame_rates(uint32_t rates[32]);\n'
+        if text.count(decl) != 1:
+            raise ValueError('port settings declaration drifted')
+        text = text.replace(decl, decl + OUTPUT_LABEL_DECL, 1)
+    if 'fp_output_labels(c,c->rdx)' not in text:
+        if text.count(FRAME_CALL) == 1:
+            text = text.replace(FRAME_CALL, FRAME_CALL + OUTPUT_LABEL_CALL, 1)
+        elif text.count(GETTER_OPEN) == 1:
+            text = text.replace(GETTER_OPEN, GETTER_OPEN + FRAME_CALL + OUTPUT_LABEL_CALL, 1)
+        else:
+            raise ValueError('port settings getter drifted')
+    # Row ids 31 and 32 are model detail and building quality. The guest compares
+    # the setter index one below the row id, so 31 covers building quality.
+    text = text.replace(
+        'if(R32(c->rcx)>=21u&&R32(c->rcx)<=30u)',
+        'if(R32(c->rcx)>=21u&&R32(c->rcx)<=32u)', 1)
+    text = text.replace(
+        'if(R32(c->rbx)>=20u&&R32(c->rbx)<=29u)',
+        'if(R32(c->rbx)>=20u&&R32(c->rbx)<=31u)', 1)
+    return text
+
+
 def unit_text(index):
     """Source text of a unit, with the functional patches that are applied as text overlays."""
     text = unit_path(index).read_text(encoding='utf-8').replace(chr(13) + chr(10), chr(10))
@@ -1417,6 +1519,8 @@ def build(args):
     totals, reports, notes = collections.Counter(), collections.Counter(), []
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs, initializer=_init, initargs=(plan,)) as pool:
         for index, text, stats, report, unit_notes in pool.map(generate_unit, selected, chunksize=2):
+            if index == 959:
+                text = port_settings_patch(text)
             (src / ('recomp_funcs_%04d.c' % index)).write_text(text, encoding='utf-8', newline='\n')
             totals.update(stats); reports.update(report); notes.extend(unit_notes)
     print('generated %d units in %.1fs: %s %s' % (len(selected), time.monotonic() - started, dict(totals), dict(reports)), flush=True)

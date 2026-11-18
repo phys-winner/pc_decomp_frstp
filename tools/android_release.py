@@ -151,9 +151,23 @@ def build_app():
     print('app', target, sha(target), flush=True)
 
 
-def package(runtime, name, dxvk=None):
+def panvk_payload():
+    directory = fb.GPU_RUNTIME.parent / 'panvk'
+    driver = directory / 'libvulkan_panfrost-fixed.so'
+    notice = directory / 'NOTICE-fixed.txt'
+    source_patch = ROOT / 'android/gpu/panvk-r10.patch'
+    recipe = ROOT / 'tools/build_panvk.sh'
+    stamp = directory / 'fixed.sha256'
+    if not all(path.is_file() for path in (driver, notice, stamp)) or \
+            stamp.read_text(encoding='ascii').splitlines() != [sha(path) for path in (source_patch, recipe, driver, notice)]:
+        raise RuntimeError('Build the patched PanVK driver with tools/build_panvk.sh before packaging')
+    return {'lib/arm64-v8a/libvulkan_panfrost.so': (driver, zipfile.ZIP_DEFLATED),
+            'assets/licenses/PanVK-JimVulkan-NOTICE.txt': (notice, zipfile.ZIP_DEFLATED)}
+
+
+def package(runtime, name, dxvk=None, native_libraries=()):
     folder = OUT / name
-    libraries = {runtime.name: runtime}
+    libraries = {p.name: p for p in (runtime, *native_libraries)}
     app = OUT / 'app/libfrostpunk_app.so'
     if app.exists():
         libraries[app.name] = app
@@ -165,20 +179,25 @@ def package(runtime, name, dxvk=None):
         libraries[services.name] = services
     entries, packaging = payload.prepare(libraries, fb.BIN, folder / 'payload')
     replace = dict(entries)
+    replace.update(panvk_payload())
     if fb.sha(fb.GPU_RUNTIME / 'vulkan.ad07xx.so') != fb.TURNIP_SHA256:
         raise RuntimeError('Pinned Turnip driver missing or changed')
-    replace['lib/arm64-v8a/libpurple_turnip.so'] = (fb.GPU_RUNTIME / 'vulkan.ad07xx.so', zipfile.ZIP_STORED)
-    replace.update({'lib/arm64-v8a/' + name: (fb.GPU_RUNTIME / name, zipfile.ZIP_STORED) for name in fb.GPU_LIBS})
+    # Android extracts native libraries at install time (extractNativeLibs=true).
+    replace['lib/arm64-v8a/libpurple_turnip.so'] = (fb.GPU_RUNTIME / 'vulkan.ad07xx.so', zipfile.ZIP_DEFLATED)
+    replace.update({'lib/arm64-v8a/' + name: (fb.GPU_RUNTIME / name, zipfile.ZIP_DEFLATED) for name in fb.GPU_LIBS})
     replace.update({'assets/licenses/' + p.name: (p, zipfile.ZIP_DEFLATED) for p in (fb.GPU_RUNTIME / 'licenses').iterdir()})
     with zipfile.ZipFile(FL18_APK) as fl18:
         for lib in ('lib/arm64-v8a/libdxvk_d3d11.so', 'lib/arm64-v8a/libdxvk_dxgi.so'):
             path = folder / Path(lib).name
             # --dxvk: libraries relinked by build/ui-20261114/dxvk_cache/build.py (pipeline cache fix)
             path.write_bytes((Path(dxvk) / path.name).read_bytes() if dxvk else fl18.read(lib))
-            replace[lib] = (path, zipfile.ZIP_STORED)
+            replace[lib] = (path, zipfile.ZIP_DEFLATED)
     dex = OUT / 'dex/classes.dex'
     if dex.exists():
         replace['classes.dex'] = (dex, None)
+    probe = OUT / 'launcher/probe/libportprobe.so'
+    if probe.is_file():
+        replace['lib/arm64-v8a/libportprobe.so'] = (probe, zipfile.ZIP_DEFLATED)
     assets = OUT / 'launcher-assets'
     resources = OUT / 'launcher/resources.apk'
     if assets.exists():
@@ -214,9 +233,10 @@ def package(runtime, name, dxvk=None):
                 dst.writestr(info, (json.dumps(row, indent=1) + '\n').encode())
                 changed.append(info.filename)
             else:
-                dst.writestr(info, src.read(info.filename), compress_type=info.compress_type)
+                compression = zipfile.ZIP_DEFLATED if info.filename.startswith('lib/') else info.compress_type
+                dst.writestr(info, src.read(info.filename), compress_type=compression)
         for entry, (path, compress) in sorted(replace.items()):
-            dst.write(path, entry, compress_type=compress or zipfile.ZIP_DEFLATED)
+            dst.write(path, entry, compress_type=zipfile.ZIP_DEFLATED if compress is None else compress)
             changed.append(entry)
         if res is not None:
             for entry in res.namelist():

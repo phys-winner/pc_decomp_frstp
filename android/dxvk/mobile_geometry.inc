@@ -645,6 +645,8 @@ void context_call(CPU* c,unsigned slot) {
     if(reduced!=count)c->rdx=reduced;                         /* IndexCount / IndexCountPerInstance */
 }
 }
+/* The "Model detail" level for the native Vulkan device (android/vulkan/lib/geometry.cpp). */
+extern "C" int frostpunk_geometry_detail_level(void) { return geometry::detail_choice.load(std::memory_order_relaxed); }
 extern "C" void frostpunk_geometry_detail(int level) {
     if(level<0)level=0;
     if(level>5)level=5;

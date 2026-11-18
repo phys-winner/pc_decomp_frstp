@@ -1,0 +1,288 @@
+"""Native Vulkan rendering device (android/vulkan): hook objects, runtime stubs, backend library.
+
+    python -X utf8 -B tools/build_rdvk.py hooks          # weakened fastlift units + generated stubs
+    python -X utf8 -B tools/build_rdvk.py lib            # build/vulkan-native/lib/libfrostpunk_rdvk.so
+    python -X utf8 -B tools/build_rdvk.py push SERIAL    # development copy into files/rdvk-dev/
+
+hooks: every VA of android/vulkan/rdvk_hooks.txt is a lifted function L_<VA> of a fastlift unit.
+In a copy of that unit the symbol becomes weak and an alias fp_d3d11_L_<VA> keeps the original
+body; the generated stub L_<VA> (strong) calls the library's implementation when the Vulkan
+device is active, else the original.  Same-unit calls reach the stub as well: fastlift objects
+reference their functions through the global symbols (R_AARCH64_CALL26/JUMP26).
+"""
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+import fastbuild as fb  # noqa: E402
+
+WORK = ROOT / 'build/vulkan-native'
+HOOKS = WORK / 'hooks'
+LIB = WORK / 'lib'
+LIST = ROOT / 'android/vulkan/rdvk_hooks.txt'
+FASTLIFT_SRC = ROOT / 'build/fastlift/src'
+FASTLIFT_OBJ = ROOT / 'build/fastlift/obj'
+MESHOPTIMIZER = ROOT / 'reference/meshoptimizer/src'   # v0.25 (reference/meshoptimizer.provenance.json)
+DXVK = ROOT / 'build/dxvk-source'   # overlaid DXVK 2.4.1 tree of tools/build_dxvk.py (compiler sources only)
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def hook_list():
+    rows = []
+    for line in LIST.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        fields = line.split()
+        rows.append((int(fields[0], 16), fields[1]))
+    vas = [va for va, _ in rows]
+    if len(set(vas)) != len(vas):
+        raise ValueError('duplicate hook VA')
+    return rows
+
+
+def symbol(va):
+    return 'L_%012X' % va
+
+
+def find_units(rows):
+    wanted = {symbol(va): va for va, _ in rows}
+    found = {}
+    pattern = re.compile(r'^void (L_[0-9A-F]{12})\(CPU \*restrict c\)$', re.M)
+    for src in sorted(FASTLIFT_SRC.glob('recomp_funcs_*.c')):
+        text = src.read_text(encoding='utf-8', errors='replace')
+        for match in pattern.finditer(text):
+            name = match.group(1)
+            if name in wanted:
+                if name in found:
+                    raise ValueError('symbol defined twice: ' + name)
+                found[name] = int(src.stem[-4:])
+    missing = sorted(set(wanted) - set(found))
+    if missing:
+        raise ValueError('hooked functions without a fastlift unit: %s' % missing[:8])
+    return found
+
+
+def symbols_of(obj):
+    out = subprocess.check_output([str(fb.BIN / 'llvm-readelf.exe'), '-sS', '--wide', str(obj)], text=True)
+    sections = {}
+    for line in out.splitlines():
+        m = re.match(r'\s*\[\s*(\d+)\]\s+(\S+)\s+\S+', line)
+        if m:
+            sections[int(m.group(1))] = m.group(2)
+    syms = {}
+    for line in out.splitlines():
+        m = re.match(r'\s*\d+:\s+([0-9a-f]+)\s+\d+\s+FUNC\s+(GLOBAL|WEAK)\s+(\S+)\s+(\d+)\s+(\S+)$', line)
+        if m:
+            syms[m.group(5)] = (int(m.group(1), 16), sections[int(m.group(4))], m.group(2), m.group(3))
+    return syms
+
+
+def build_hooks():
+    rows = hook_list()
+    units = find_units(rows)
+    by_unit = {}
+    for va, _ in rows:
+        by_unit.setdefault(units[symbol(va)], []).append(va)
+    (HOOKS / 'obj').mkdir(parents=True, exist_ok=True)
+    replaced = {}
+
+    def one(unit):
+        source = FASTLIFT_OBJ / ('recomp_funcs_%04d.o' % unit)
+        syms = symbols_of(source)
+        args = []
+        for va in by_unit[unit]:
+            name = symbol(va)
+            if name not in syms or syms[name][2] != 'GLOBAL':
+                raise ValueError('%s: %s is not a global function' % (source.name, name))
+            value, section, _, visibility = syms[name]
+            args += ['--weaken-symbol=' + name,
+                     '--add-symbol=fp_d3d11_%s=%s:0x%x,global,function,%s' % (name, section, value, 'hidden' if visibility == 'HIDDEN' else 'default')]
+        target = HOOKS / 'obj' / source.name
+        subprocess.run([str(fb.BIN / 'llvm-objcopy.exe'), *args, str(source), str(target)], check=True)
+        check = symbols_of(target)
+        for va in by_unit[unit]:
+            name = symbol(va)
+            if check[name][2] != 'WEAK' or check['fp_d3d11_' + name][:2] != check[name][:2]:
+                raise ValueError('objcopy did not produce the alias of ' + name)
+        return unit, target
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for unit, target in pool.map(one, sorted(by_unit)):
+            replaced[unit] = str(target.relative_to(ROOT)).replace('\\', '/')
+    lines = ['/* generated by tools/build_rdvk.py hooks from android/vulkan/rdvk_hooks.txt - do not edit */',
+             '#include "cpu64.h"', 'typedef void (*rdvk_fn)(CPU *);',
+             '__attribute__((visibility("hidden"))) extern rdvk_fn fp_rdvk_table[];']
+    for index, (va, name) in enumerate(rows):
+        s = symbol(va)
+        lines.append('void fp_d3d11_%s(CPU *c);' % s)
+        lines.append('/* %d %s */ void %s(CPU *c) { rdvk_fn f = fp_rdvk_table[%d]; if (__builtin_expect(f != 0, 0)) { f(c); return; } '
+                     '__attribute__((musttail)) return fp_d3d11_%s(c); }' % (index, name, s, index, s))
+    lines.append('const unsigned fp_rdvk_hook_count = %d;' % len(rows))
+    lines.append('const uint64_t fp_rdvk_hook_vas[] = {%s};' % ','.join('UINT64_C(0x%x)' % va for va, _ in rows))
+    lines.append('rdvk_fn const fp_rdvk_originals[] = {%s};' % ','.join('fp_d3d11_%s' % symbol(va) for va, _ in rows))
+    stubs = HOOKS / 'rdvk_hooks_generated.c'
+    stubs.write_text('\n'.join(lines) + '\n', newline='\n')
+    names = HOOKS / 'rdvk_hooks.h'
+    names.write_text('/* generated by tools/build_rdvk.py - hook table indices */\n#pragma once\n' +
+                     ''.join('#define RDVK_HOOK_%s %d /* 0x%x */\n' % (name.upper(), i, va) for i, (va, name) in enumerate(rows)) +
+                     '#define RDVK_HOOK_COUNT %d\n' % len(rows), newline='\n')
+    (HOOKS / 'rdvk_hook_names.inc').write_text(''.join('"%s",\n' % name for _, name in rows), newline='\n')
+    manifest = dict(hooks=len(rows), units=replaced, list_sha256=sha(LIST), stubs=str(stubs.relative_to(ROOT)))
+    (HOOKS / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n')
+    print('hooks %d in %d units -> %s' % (len(rows), len(replaced), HOOKS), flush=True)
+    return manifest
+
+
+# ---------------------------------------------------------------- backend library
+COMPAT = ROOT / 'android/vulkan/lib/compat'
+TREE = WORK / 'dxbc/src'   # DXVK's DXBC -> SPIR-V compiler with stand-ins for its backend headers
+CXX_FLAGS = ['--target=aarch64-linux-android30', '-std=c++17', '-O2', '-fPIC', '-fvisibility=hidden', '-g0',
+             '-ffunction-sections', '-fdata-sections', '-Wall', '-Wno-unused-function', '-Wno-missing-field-initializers',
+             '-DVK_NO_PROTOTYPES', '-DVK_USE_PLATFORM_ANDROID_KHR', '-DNDEBUG']
+
+
+def compiler_tree():
+    """src/{dxbc,spirv,util} of the overlaid DXVK tree, then the stand-ins of android/vulkan/lib/compat."""
+    files = {}
+    for sub in ('dxbc', 'spirv', 'util'):
+        for p in (DXVK / 'src' / sub).rglob('*'):
+            if p.is_file() and p.suffix in ('.h', '.cpp', '.c'):
+                files[p.relative_to(DXVK / 'src').as_posix()] = p.read_bytes()
+    for p in COMPAT.rglob('*'):
+        if p.is_file() and p.suffix in ('.h', '.cpp') and p.parent != COMPAT:
+            files[p.relative_to(COMPAT).as_posix()] = p.read_bytes()
+    for name, data in files.items():
+        target = TREE / name
+        if not target.exists() or target.read_bytes() != data:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    sources = sorted(TREE / n for n in files if n.endswith('.cpp') and n.split('/')[0] in ('dxbc', 'spirv'))
+    return sources + [COMPAT / 'util_log.cpp']
+
+
+def lib_includes():
+    """The device library holds no DXBC compiler: only Khronos' Vulkan headers come from the DXVK tree."""
+    return [ROOT / 'android/vulkan', ROOT / 'android/vulkan/lib', HOOKS, ROOT / 'native/runtime64', ROOT / 'android/vulkan/shaderlib',
+            MESHOPTIMIZER, DXVK / 'include/vulkan/include']
+
+
+FSR1 = ROOT / 'reference/fsr1/ffx-fsr'
+FSR1_SHA256 = {'ffx_a.h': 'c82c2092e0739121f9c26aee5b6afec765d44466f010518cbc43fdbc6dcbc7b7',
+               'ffx_fsr1.h': '6d16231b29f0537f7737aebdb4affabba6da114247fecb8da93b060511659ce0'}
+
+
+def shaders():
+    """SPIR-V of android/vulkan/shaders (NDK glslc) as C arrays in build/vulkan-native/hooks/rdvk_shaders.h."""
+    for name, digest in FSR1_SHA256.items():
+        if sha(FSR1 / name) != digest:
+            raise RuntimeError('AMD FSR 1 input changed: ' + name)
+    glslc = fb.NDK / 'shader-tools/windows-x86_64/glslc.exe'
+    source_dir = ROOT / 'android/vulkan/shaders'
+    rows = ['/* Generated by tools/build_rdvk.py from android/vulkan/shaders (glslc of the NDK). */', '#pragma once',
+            '#include <cstdint>', 'namespace rdvk {']
+    for source, symbol in (('fullscreen.vert', 'kFullscreenVert'), ('fsr1_easu.frag', 'kFsr1EasuFrag')):
+        done = subprocess.run([str(glslc), '--target-env=vulkan1.1', '-O', '-I', str(FSR1), '-mfmt=num',
+                               str(source_dir / source), '-o', '-'], capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError('glslc %s:\n%s' % (source, done.stderr[-4000:]))
+        rows.append('static const uint32_t %s[] = {%s};' % (symbol, done.stdout.strip().rstrip(',')))
+    rows += ['}  // namespace rdvk', '']
+    text = '\n'.join(rows)
+    target = HOOKS / 'rdvk_shaders.h'
+    if not target.exists() or target.read_bytes() != text.encode():
+        target.write_bytes(text.encode())
+
+
+def build_lib(jobs=12):
+    if not (HOOKS / 'rdvk_hooks.h').exists():
+        build_hooks()
+    shaders()
+    import build_shaderlib   # DXBC -> SPIR-V on the PC; the APK carries the result (assets/shaders)
+    _, key = build_shaderlib.ensure()
+    key_header = ('/* Generated by tools/build_rdvk.py: key of build/vulkan-native/shaderlib/rdvk_shaderlib.bin. */\n'
+                  '#pragma once\n#include <cstdint>\nnamespace rdvk { constexpr uint64_t kShaderlibKey = UINT64_C(0x%016x); }\n' % key).encode()
+    target_key = HOOKS / 'rdvk_shaderlib_key.h'
+    if not target_key.exists() or target_key.read_bytes() != key_header:
+        target_key.write_bytes(key_header)
+    out = LIB / 'obj'
+    out.mkdir(parents=True, exist_ok=True)
+    includes = ['-I' + str(p) for p in lib_includes()]
+    headers = hashlib.sha256()
+    for d in lib_includes()[:5]:
+        for p in sorted(Path(d).rglob('*.h')):
+            headers.update(p.as_posix().encode() + sha(p).encode())
+    digest = headers.hexdigest()
+    # The simplifier of the mobile geometry module (geometry.cpp), meshoptimizer v0.25, MIT licence.
+    meshopt = [MESHOPTIMIZER / 'simplifier.cpp', MESHOPTIMIZER / 'allocator.cpp']
+    sources = [Path(s) for s in sorted((ROOT / 'android/vulkan/lib').glob('*.cpp'))] + meshopt
+
+    def one(src):
+        flags = CXX_FLAGS + (['-w', '-I' + str(src.parent)] if src.parent == MESHOPTIMIZER else [])
+        key = hashlib.sha256((sha(src) + json.dumps(flags) + digest).encode()).hexdigest()[:16]
+        obj = out / ('%s-%s.o' % (src.stem, key))
+        if obj.exists():
+            return obj, False
+        done = subprocess.run([str(fb.BIN / 'clang++.exe'), *flags, *includes, '-c', str(src), '-o', str(obj.with_suffix('.tmp'))],
+                              capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError('compile failed: %s\n%s' % (src, done.stderr[-6000:]))
+        obj.with_suffix('.tmp').replace(obj)
+        return obj, True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        results = list(pool.map(one, sources))
+    print('rdvk objects %d, compiled %s' % (len(results), [o.name for o, fresh in results if fresh]), flush=True)
+    target = LIB / 'libfrostpunk_rdvk.so'
+    done = subprocess.run([str(fb.BIN / 'clang++.exe'), '--target=aarch64-linux-android30', '-shared', '-fPIC',
+                           *[str(o) for o, _ in results], '-Wl,--gc-sections', '-Wl,--no-undefined', '-Wl,-z,max-page-size=16384',
+                           '-Wl,--build-id=sha1', '-Wl,-soname,libfrostpunk_rdvk.so', '-static-libstdc++', '-landroid', '-llog', '-ldl', '-lm', '-lz',
+                           '-o', str(target)], capture_output=True, text=True)
+    if done.returncode:
+        raise RuntimeError('link failed:\n' + done.stderr[-6000:])
+    print('lib', target, target.stat().st_size, sha(target), flush=True)
+    return target
+
+
+def push(serial):
+    target = LIB / 'libfrostpunk_rdvk.so'
+    env = dict(os.environ, MSYS_NO_PATHCONV='1')
+    pkg = 'com.frostpunk.staticrecomp'
+    subprocess.run(['adb', '-s', serial, 'push', str(target), '/data/local/tmp/libfrostpunk_rdvk.so'], check=True, env=env)
+    subprocess.run(['adb', '-s', serial, 'shell', 'run-as %s mkdir -p files/rdvk-dev && run-as %s rm -f files/rdvk-dev/libfrostpunk_rdvk.so && run-as %s cp /data/local/tmp/libfrostpunk_rdvk.so '
+                    'files/rdvk-dev/libfrostpunk_rdvk.so && run-as %s chmod 500 files/rdvk-dev/libfrostpunk_rdvk.so && '
+                    'rm /data/local/tmp/libfrostpunk_rdvk.so && run-as %s sha256sum files/rdvk-dev/libfrostpunk_rdvk.so' % (pkg, pkg, pkg, pkg, pkg)],
+                   check=True, env=env)
+    print('local', sha(target))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest='command', required=True)
+    sub.add_parser('hooks')
+    p = sub.add_parser('lib')
+    p.add_argument('--jobs', type=int, default=12)
+    p = sub.add_parser('push')
+    p.add_argument('serial')
+    args = ap.parse_args()
+    if args.command == 'hooks':
+        build_hooks()
+    elif args.command == 'lib':
+        build_lib(args.jobs)
+    else:
+        push(args.serial)
+
+
+if __name__ == '__main__':
+    main()

@@ -1458,7 +1458,13 @@ fast_import_fn win64_import_fast(const char *dll, const char *name) {
     return e && atomic_load_explicit(&e->ready,memory_order_acquire) ? e->fast : NULL;
 }
 
+/* android/vulkan/rdvk_runtime.c: COM proxies of the native Vulkan rendering device. */
+extern int frostpunk_rdvk_dispatch(CPU *c,uint64_t target) __attribute__((weak));
+extern int frostpunk_vorbisfile_dispatch(CPU *c,uint64_t target) __attribute__((weak));
 int win64_dispatch_dynamic(CPU *c,uint64_t address) {
+    if (frostpunk_rdvk_dispatch && frostpunk_rdvk_dispatch(c,address)) { FP_PERF(FP_PERF_D3D11); c->rsp+=8; return 1; }
+    /* android/host/vorbisfile_native.c: the read callback of its verification mode (0xE6300000). */
+    if (address==UINT64_C(0xE6300000) && frostpunk_vorbisfile_dispatch && frostpunk_vorbisfile_dispatch(c,address)) { c->rsp+=8; return 1; }
     if (win64_dinput_dispatch(c,address)) { FP_PERF(FP_PERF_DINPUT); c->rsp+=8; return 1; }
     if (win64_openal_dispatch(c,address)) { FP_PERF(FP_PERF_OPENAL); c->rsp+=8; return 1; }
     if (win64_shader_dispatch(c,address)) { FP_PERF(FP_PERF_SHADER); c->rsp+=8; return 1; }

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <vulkan/vulkan_core.h>
 #include "vulkan_requirements.h"
+#include "panvk_identity.h"
 
 #ifndef PORT_PROBE_CLASS
 #define PORT_PROBE_CLASS "port/launcher/Probe"
@@ -47,7 +48,7 @@ static int port_has(const VkExtensionProperties *list, uint32_t count, const cha
     return 0;
 }
 
-static void port_probe(PFN_vkGetInstanceProcAddr gipa, const char *prefix, int turnip, port_report *r)
+static void port_probe(PFN_vkGetInstanceProcAddr gipa, const char *prefix, int turnip, const char *panvk_path, port_report *r)
 {
     PFN_vkEnumerateInstanceVersion instance_version =
         (PFN_vkEnumerateInstanceVersion)gipa(NULL, "vkEnumerateInstanceVersion");
@@ -183,7 +184,19 @@ static void port_probe(PFN_vkGetInstanceProcAddr gipa, const char *prefix, int t
         *bc_found[i] = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
     }
     char missing[1024];
-    int gaps = port_vk_missing(&caps, 1, missing, sizeof missing);
+    int gaps;
+    if (panvk_path) {
+        missing[0] = 0;
+        port_vk_list native = { missing, sizeof missing, 0, 0 };
+        port_vk_need(&native, p.apiVersion >= VK_API_VERSION_1_3, "vulkan13");
+        port_vk_need(&native, caps.android_surface, "androidSurface");
+        port_vk_need(&native, caps.swapchain, "swapchain");
+        port_vk_need(&native, caps.synchronization2, "synchronization2");
+        port_vk_need(&native, caps.dynamic_rendering, "dynamicRendering");
+        port_vk_need(&native, p.vendorID == 0x13b5 && driver_id == VK_DRIVER_ID_MESA_PANVK &&
+                    port_panvk_mapped(panvk_path), "notPanVK");
+        gaps = native.count;
+    } else gaps = port_vk_missing(&caps, 1, missing, sizeof missing);
     /* Mesa Turnip, not the system's Qualcomm driver: builds of it rename the device ("PurpleVK..."),
      * never the driver id. */
     if (turnip && !(p.vendorID == 0x5143 && (driver_id == VK_DRIVER_ID_MESA_TURNIP || strstr(p.deviceName, "Turnip")))) {
@@ -213,12 +226,12 @@ static void port_probe(PFN_vkGetInstanceProcAddr gipa, const char *prefix, int t
 
 typedef void *(*port_adrenotools_open)(int, int, const char *, const char *, const char *, const char *, const char *, void **);
 
-/* The port's Turnip from the native library directory through adrenotools (extractNativeLibs is
+/* A custom driver from the native library directory through adrenotools (extractNativeLibs is
  * what adrenotools requires): its hooks load the driver in a linker namespace of its own, so the
  * system driver stays untouched. 1 = ADRENOTOOLS_DRIVER_CUSTOM; no temporary directory (API 29+
  * uses memfd), no file redirection, no GPU mapping import. A driver given as a full path (the
- * player's own, TurnipDriver.java) is loaded from its folder with the same hooks. */
-static PFN_vkGetInstanceProcAddr port_open_turnip(const char *directory, const char *driver, char *error, size_t size)
+ * player's own, VulkanDriver.java) is loaded from its folder with the same hooks. */
+static PFN_vkGetInstanceProcAddr port_open_custom(const char *directory, const char *driver, char *error, size_t size)
 {
     char path[1024], hooks[1024], folder[1024];
     snprintf(path, sizeof path, "%s/libadrenotools.so", directory ? directory : "");
@@ -237,8 +250,8 @@ static PFN_vkGetInstanceProcAddr port_open_turnip(const char *directory, const c
     return get;
 }
 
-/* driver null: the system driver (libvulkan.so); else the Turnip library of that name, or at that full path. */
-static jstring JNICALL port_native_probe(JNIEnv *env, jclass cls, jstring directory, jstring driver)
+/* Driver null uses the system loader. Custom drivers use an APK library name or an absolute path. */
+static jstring JNICALL port_native_probe(JNIEnv *env, jclass cls, jstring directory, jstring driver, jboolean panvk)
 {
     (void)cls;
     port_report report = { calloc(1, 8192), 8192, 0 };
@@ -248,18 +261,21 @@ static jstring JNICALL port_native_probe(JNIEnv *env, jclass cls, jstring direct
     if (!name) {
         void *vulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
         PFN_vkGetInstanceProcAddr gipa = vulkan ? (PFN_vkGetInstanceProcAddr)dlsym(vulkan, "vkGetInstanceProcAddr") : NULL;
-        if (gipa) port_probe(gipa, "stock", 0, &report);
+        if (gipa) port_probe(gipa, "stock", 0, NULL, &report);
         else {
             port_line(&report, "stock", "status", "error");
             port_line(&report, "stock", "error", "no system Vulkan loader");
         }
     } else {
         char error[512] = "";
-        PFN_vkGetInstanceProcAddr gipa = port_open_turnip(dir, name, error, sizeof error);
-        if (gipa) port_probe(gipa, "turnip", 1, &report);
+        const char *prefix = panvk ? "panvk" : "turnip";
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s", dir ? dir : "", name);
+        PFN_vkGetInstanceProcAddr gipa = port_open_custom(dir, name, error, sizeof error);
+        if (gipa) port_probe(gipa, prefix, !panvk, panvk ? (name[0] == '/' ? name : path) : NULL, &report);
         else {
-            port_line(&report, "turnip", "status", "error");
-            port_line(&report, "turnip", "error", error);
+            port_line(&report, prefix, "status", "error");
+            port_line(&report, prefix, "error", error);
         }
     }
     if (dir) (*env)->ReleaseStringUTFChars(env, directory, dir);
@@ -278,7 +294,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
     jclass cls = (*env)->FindClass(env, PORT_PROBE_CLASS);
     if (!cls) return JNI_ERR;
     static const JNINativeMethod methods[] = {
-        { "nativeProbe", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", (void *)port_native_probe },
+        { "nativeProbe", "(Ljava/lang/String;Ljava/lang/String;Z)Ljava/lang/String;", (void *)port_native_probe },
     };
     if ((*env)->RegisterNatives(env, cls, methods, 1) != JNI_OK) return JNI_ERR;
     return JNI_VERSION_1_6;

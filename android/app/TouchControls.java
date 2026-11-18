@@ -7,6 +7,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.RectF;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.drawable.ColorDrawable;
@@ -19,6 +20,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.PopupWindow;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -37,6 +39,7 @@ final class TouchControls extends View {
     private static native boolean nativeCamera(int action, float dx, float dy, float zoom, float angle);
     private static native int nativeContext(float x, float y);
     private static native long nativeSwipeTarget(float x,float y,int direction);
+    private static native int nativeConstructionView(float[] corners,char[] detail,int painter);
     private final Gesture gesture = new Gesture();
     private final Map<Integer, Runnable> keyReleases = new HashMap<>();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG|Paint.FILTER_BITMAP_FLAG);
@@ -46,7 +49,6 @@ final class TouchControls extends View {
     private int buttons, timeSpeed = 1, timeBase;
     private float cursorX, cursorY, timeX, timeY, timeOrigin, wheelZoom;
     private boolean timeVisible, placementCursor, gamepadActive, loading=true, hasFrame, speedHintSeen, startupFailed;
-    private long speedHintReadyAt;
     private static final int SWITCH_MENU=1<<25, SWITCH_AVAILABLE=1<<26;
     /* The next zoom-out step leaves the city for the world map (native map gate). */
     private static final int MAP_NEXT=1<<27;
@@ -58,29 +60,75 @@ final class TouchControls extends View {
     private boolean switchTouch,switchImagesTried;
     private Bitmap switchRing,switchHalo;
     private final Bitmap[] switchIcons=new Bitmap[5];
+    /* Holding the corner button opens the five actions as a fan around it; sliding onto one and
+     * lifting the finger chooses it (a quick tap still opens the full ring). */
+    private boolean switchFan;
+    private final Runnable switchFanHold=()->{if(switchTouch&&switchSelection==-2)openSwitchFan();};
+    /* Touch construction aims at the world below the screen centre and pans the camera under it. */
+    private static final int CONSTRUCTION_OPEN=1<<28;
+    private static final int BUILD_ROAD=0,REMOVE_ROAD=1,CONFIRM=2,CANCEL=3;
+    private static final Path CONSTRUCTION_OUTLINE=constructionOutline();
+    private static final float[] CONSTRUCTION_CORNERS={-1,-1,1,-1,1,1,-1,1};
+    private final Matrix constructionProjection=new Matrix();
+    private final Path projectedOutline=new Path();
+    private final float[] constructionQuad=new float[8],nextConstructionQuad=new float[8];
+    private final char[] streetDetailText=new char[256];
+    private String streetDetail="";
+    private boolean centerMode,centerTouch,mouseConstruction,touchAim,constructionProjected;
+    private int painterKind,constructionPressed=-1;
+    /* Game localization (native): construction, economy, search, laws, technology, build street,
+     * dismantle street, OK, cancel, dismantle building, building streets, dismantling streets, building pipes. */
+    private static String[] gameLabels=new String[0];
     void presented(){hasFrame=true;}
     void failed(){startupFailed=true;loading=false;removeCallbacks(loadingPoll);cancel();hideKeyboard();if(popup!=null)popup.dismiss();}
-    private void updateLoading(){
-        int state=mode(getWidth()*.5f,getHeight()*.5f);
-        if(loading&&hasFrame&&(state&2048)==0){loading=false;invalidate();}
-        if(!loading&&(state&(1|2|256|2048))==(1|256)){
-            long timestamp=android.os.SystemClock.uptimeMillis();
-            if(speedHintReadyAt==0)speedHintReadyAt=timestamp+5000;
-            else if(timestamp>=speedHintReadyAt)showSpeedHint();
-        }else speedHintReadyAt=0;
-    }
     private final Runnable loadingPoll=new Runnable(){@Override public void run(){
         if(gamepadActive&&gamepadId>=0&&InputDevice.getDevice(gamepadId)==null){
             cancel();gamepadId=-1;invalidate();
         }
-        updateLoading();
-        int next=mode(getWidth()*.5f,getHeight()*.5f);
+        int next=mode(centerX(),centerY());
+        if(loading&&hasFrame&&(next&2048)==0){loading=false;invalidate();}
+        updateCenterMode(next);
         if(((next^switchAnnouncedState)&(SWITCH_MENU|SWITCH_AVAILABLE))!=0){
             invalidate();sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
         }
         switchState=switchAnnouncedState=next;
-        postDelayed(this,200);
+        postDelayed(this,centerMode?32:200);
     }};
+    /* Construction state (native context bits 28-31) without position: the menu is open or one of the
+     * construction tools is active, the city camera works and no menu, loading or ring covers the city. */
+    private void updateCenterMode(int state){
+        int painter=(state>>>29)&7;
+        boolean touch=!loading&&!startupFailed&&!gamepadActive&&!mouseConstruction&&((Activity)getContext()).hasWindowFocus();
+        if(touch!=touchAim&&nativeCamera(8,touch?1:0,0,0,0))touchAim=touch;
+        boolean next=touch&&(state&2048)==0&&(state&1)!=0&&(state&SWITCH_MENU)==0
+            &&((state&CONSTRUCTION_OPEN)!=0||painter!=0);
+        int view=next?nativeConstructionView(nextConstructionQuad,streetDetailText,painter):0;
+        boolean projected=(view&1)!=0;
+        boolean projectionChanged=projected!=constructionProjected
+            ||projected&&!Arrays.equals(constructionQuad,nextConstructionQuad);
+        if(projected&&projectionChanged)System.arraycopy(nextConstructionQuad,0,constructionQuad,0,constructionQuad.length);
+        constructionProjected=projected;
+        int units=view>>>1;
+        boolean detailChanged=streetDetail.length()!=units;
+        for(int i=0;!detailChanged&&i<units;++i)detailChanged=streetDetail.charAt(i)!=streetDetailText[i];
+        if(detailChanged)streetDetail=new String(streetDetailText,0,units);
+        boolean changed=next!=centerMode||painter!=painterKind;
+        // A tool picked in the construction menu goes back to that menu when it is cancelled (the
+        // Switch layout hides the menu's buttons as soon as the tool starts).
+        if(painterKind==0&&painter!=0)toolFromMenu=(lastConstructionState&CONSTRUCTION_OPEN)!=0;
+        else if(painter==0&&(state&CONSTRUCTION_OPEN)==0&&!reopening)toolFromMenu=false;
+        lastConstructionState=state;
+        centerMode=next;painterKind=painter;
+        if(!next){constructionPressed=-1;centerTouch=false;}
+        // The tool follows the mouse: park it on the centre cursor unless a finger or click owns it.
+        if(changed&&next&&!gesture.active())recenter();
+        if(changed||projectionChanged||detailChanged)invalidate();
+    }
+    private float centerX(){return getWidth()*.5f;}
+    private float centerY(){return getHeight()*.5f;}
+    private void recenter(){
+        if(centerMode&&painterKind!=0&&getWidth()>0&&getHeight()>0&&pointerRelease==null)pointer(0,centerX(),centerY(),0);
+    }
     private PopupWindow popup;
     private View keyboard;
     private volatile boolean keyboardVisible;
@@ -159,15 +207,24 @@ final class TouchControls extends View {
         setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
     }
     void localize(String loading,String description){
+        // The runtime appends the game's own button names: help text, U+001E, labels split by U+001F.
+        int split=description.indexOf('\u001e');
+        if(split>=0){gameLabels=description.substring(split+1).split("\u001f",-1);description=description.substring(0,split);}
         loadingLabel=loading;controlsDescription=description;setContentDescription(description);invalidate();
         preferences.edit().putString("loading",loading).apply();
     }
+    private static String gameLabel(int index){return index>=0&&index<gameLabels.length?gameLabels[index]:"";}
+    /* Once, after the first tap on the time bar: its speed is changed by swiping along it. */
     private void showSpeedHint(){
         if(speedHintSeen||controlsDescription.isEmpty())return;
         // shortcut: speed help is paragraph five of GestureHelpText; use its own key if that format changes.
         String[] paragraphs=controlsDescription.split("\n\n");
         if(paragraphs.length<=4)return;
         android.widget.Toast.makeText(getContext(),paragraphs[4],android.widget.Toast.LENGTH_LONG).show();
+        speedHintSeen=true;preferences.edit().putBoolean("speed_hint_seen",true).apply();
+    }
+    private void speedHintKnown(){
+        if(speedHintSeen)return;
         speedHintSeen=true;preferences.edit().putBoolean("speed_hint_seen",true).apply();
     }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -218,7 +275,24 @@ final class TouchControls extends View {
     }
     private void camera(float dx, float dy, float zoom, float turn) {
         if (getHeight() > 0) nativeCamera(0, dx / getHeight(), dy / getHeight(), 0, turn);
-        zoomWheel(zoom);
+        smoothZoom(zoom);
+    }
+    private static final int ZOOM_LIMIT=1<<7;
+    /* Pinch zoom follows the fingers between the city zoom levels (native action 7) and ends on the
+     * nearest level.  At the farthest city level a zoom-out takes the original wheel step with the
+     * world-map gate; the world map and camera transitions keep the wheel as well. */
+    private void smoothZoom(float zoom){
+        if(zoom==0)return;
+        int state=mode(cursorX,cursorY);
+        if(zoom<0&&(state&MAP_NEXT)!=0){zoomWheel(zoom);return;}
+        if(!nativeCamera(7,0,0,zoom,0)){zoomWheel(zoom);return;}
+        if(zoom<0&&(state&ZOOM_LIMIT)!=0&&!mapGestureCounted){
+            // Pushed past the farthest level: the first of the two map gestures, as the wheel counts it.
+            mapGestureCounted=true;
+            long now=android.os.SystemClock.uptimeMillis();
+            mapAttempts=now-mapAttemptAt<6000?mapAttempts+1:1;mapAttemptAt=now;
+            if(mapAttempts<2){performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);mapHint();}
+        }
     }
     private long zoomOutAt, zoomOutTicket;
     private void zoomWheel(float zoom){
@@ -248,7 +322,10 @@ final class TouchControls extends View {
                 }
                 if(!mapAllowed){wheelZoom=0;return;}
             }
-            // The original wheel command enforces scenario zoom levels and the distant-view gate.
+            // The original wheel command enforces scenario zoom levels and the distant-view gate.  It is
+            // ignored over UI (a building marker left under the cursor by the first finger kept a
+            // pinch from opening the map): the step then uses the screen centre.
+            if((mode(cursorX,cursorY)&2)!=0&&(mode(getWidth()*.5f,getHeight()*.5f)&2)==0){cursorX=getWidth()*.5f;cursorY=getHeight()*.5f;}
             nativePointer(buttons,cursorX/getWidth(),cursorY/getHeight(),direction);
             if(direction<0)zoomOutTicket=nativeClickToken();
             wheelZoom-=direction*.14f;
@@ -280,6 +357,8 @@ final class TouchControls extends View {
                 if(phase==0){pointer(button,cursorX,cursorY,0);ticket=nativeClickToken();phase=1;postDelayed(this,160);return;}
                 if(phase==1){pointer(0,cursorX,cursorY,0);if(editor||radial){ticket=nativeClickToken();phase=2;postDelayed(this,16);return;}}
                 pointerRelease=null;if(radial)switchMenu(false);if(editor&&nativeEditorActive())showKeyboard();
+                // A menu click left the mouse on a card or button: the active tool returns to the centre cursor.
+                if(centerMode&&!gesture.active())postDelayed(TouchControls.this::recenter,16);
             }
         };
         pointerRelease.run();
@@ -297,7 +376,7 @@ final class TouchControls extends View {
         releasePointer();
         nativeCamera(2, 0, 0, 0, 0);
         timeEnd();
-        placementCursor=false;
+        placementCursor=false;centerTouch=false;
         wheelZoom=0;
         mapGestureCounted=mapAllowed=false;
         stopGamepad();
@@ -309,6 +388,7 @@ final class TouchControls extends View {
     }
     void close() { cancel(); removeCallbacks(loadingPoll); if (popup != null) popup.dismiss(); }
     private void timeStart(float x, float y) {
+        speedHintKnown();
         int state = mode(x, y);
         if ((state & 256) != 0) timeSpeed = (state >> 9) & 3;
         timeVisible = true;
@@ -341,6 +421,7 @@ final class TouchControls extends View {
             postInvalidateDelayed(40);return;
         }
         drawSwitchMenu(canvas);
+        if(centerMode)drawConstruction(canvas);
         if (placementCursor || gamepadActive) {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(4)); paint.setColor(0xcc000000);
@@ -373,6 +454,159 @@ final class TouchControls extends View {
             }
         }
     }
+    /* Right edge, under the world-map button and over the population box (scouts fold away meanwhile). */
+    private float constructionX(){return getWidth()-dp(46);}
+    private float constructionY(int index){
+        float top=Math.max(dp(88),getHeight()*.23f);
+        return top+index*dp(58)+(index>=CONFIRM?dp(14):0);
+    }
+    private int constructionButtonAt(float x,float y){
+        if(!centerMode)return -1;
+        for(int i=0;i<4;i++)if((i!=CONFIRM||painterKind!=0)&&Math.hypot(x-constructionX(),y-constructionY(i))<=dp(29))return i;
+        return -1;
+    }
+    private void drawLabel(Canvas canvas,String text,float x,float y,boolean alignRight){
+        if(text==null||text.isEmpty())return;
+        paint.setStyle(Paint.Style.FILL);paint.setTextSize(dp(12));paint.setTextAlign(Paint.Align.LEFT);
+        float width=paint.measureText(text),left=alignRight?x-width-dp(16):x,top=y-dp(12);
+        paint.setColor(0xd914232d);canvas.drawRoundRect(left,top,left+width+dp(16),top+dp(24),dp(6),dp(6),paint);
+        paint.setColor(0xffe8eef2);canvas.drawText(text,left+dp(8),y+dp(4.5f),paint);
+    }
+    private static Path constructionOutline(){
+        Path outline=new Path();outline.moveTo(0,-1);
+        outline.cubicTo(.25f,-1,.37f,-.84f,.53f,-.79f);
+        outline.cubicTo(.71f,-.84f,.88f,-.60f,.86f,-.45f);
+        outline.cubicTo(.9f,-.32f,1,-.25f,1,0);
+        outline.cubicTo(1,.25f,.9f,.32f,.86f,.45f);
+        outline.cubicTo(.88f,.60f,.71f,.84f,.53f,.79f);
+        outline.cubicTo(.37f,.84f,.25f,1,0,1);
+        outline.cubicTo(-.25f,1,-.37f,.84f,-.53f,.79f);
+        outline.cubicTo(-.71f,.84f,-.88f,.60f,-.86f,.45f);
+        outline.cubicTo(-.9f,.32f,-1,.25f,-1,0);
+        outline.cubicTo(-1,-.25f,-.9f,-.32f,-.86f,-.45f);
+        outline.cubicTo(-.88f,-.60f,-.71f,-.84f,-.53f,-.79f);
+        outline.cubicTo(-.37f,-.84f,-.25f,-1,0,-1);
+        outline.close();return outline;
+    }
+    private void drawConstruction(Canvas canvas){
+        if(constructionProjected&&constructionProjection.setPolyToPoly(CONSTRUCTION_CORNERS,0,constructionQuad,0,4)){
+            constructionProjection.postScale(getWidth(),getHeight());
+            CONSTRUCTION_OUTLINE.transform(constructionProjection,projectedOutline);
+            // Composite after the scene so a building cannot occlude the mark on the ground.
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(4.5f));paint.setColor(0xb8000000);canvas.drawPath(projectedOutline,paint);
+            paint.setStrokeWidth(dp(2.3f));paint.setColor(0xfffafcff);canvas.drawPath(projectedOutline,paint);
+        }
+        for(int i=0;i<4;i++){
+            if(i==CONFIRM&&painterKind==0)continue;
+            float x=constructionX(),y=constructionY(i);
+            boolean active=(i==BUILD_ROAD&&(painterKind==2||painterKind==3))||(i==REMOVE_ROAD&&painterKind==5);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(i==constructionPressed?0xf0526f7c:i==CONFIRM?0xeb27563a:i==CANCEL?0xeb5c2626:0xe614232d);
+            canvas.drawCircle(x,y,dp(25),paint);
+            paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(dp(active?3:1.5f));
+            paint.setColor(active?0xffffb04c:0xb4d7edf6);canvas.drawCircle(x,y,dp(25),paint);
+            drawConstructionIcon(canvas,i,x,y);
+            String hint=gameLabel(5+i), status=active?gameLabel(painterKind==3?12:10+i):"";
+            drawLabel(canvas,status.isEmpty()?hint:status,x-dp(31),y,true);
+            if(active&&!streetDetail.isEmpty()){
+                String resources=streetDetail.replace("|_|"," ").replace('\r',' ').replace('\n',' ');
+                drawLabel(canvas,resources,x-dp(31),y+dp(25),true);
+            }
+        }
+        paint.setStyle(Paint.Style.FILL);
+    }
+    private void drawRoadIcon(Canvas canvas,float x,float y,float size){
+        paint.setStyle(Paint.Style.STROKE);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeWidth(dp(2.2f));paint.setColor(0xfff2eee4);
+        canvas.drawLine(x-size,y+size,x-size*.35f,y-size,paint);canvas.drawLine(x+size,y+size,x+size*.35f,y-size,paint);
+        paint.setStrokeWidth(dp(1.8f));
+        for(int i=0;i<3;i++){float a=y+size-(i+.25f)*size*.7f;canvas.drawLine(x,a,x,a-size*.35f,paint);}
+        paint.setStrokeCap(Paint.Cap.BUTT);
+    }
+    private void drawConstructionIcon(Canvas canvas,int index,float x,float y){
+        paint.setStyle(Paint.Style.STROKE);paint.setStrokeCap(Paint.Cap.ROUND);paint.setColor(0xfff2eee4);
+        if(index==BUILD_ROAD)drawRoadIcon(canvas,x,y,dp(11));
+        else if(index==REMOVE_ROAD){
+            drawRoadIcon(canvas,x-dp(3),y+dp(2),dp(9));
+            paint.setStyle(Paint.Style.STROKE);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeWidth(dp(3));paint.setColor(0xffe2574a);
+            canvas.drawLine(x+dp(4),y-dp(12),x+dp(13),y-dp(3),paint);canvas.drawLine(x+dp(13),y-dp(12),x+dp(4),y-dp(3),paint);
+        } else if(index==CONFIRM){
+            paint.setStrokeWidth(dp(3.5f));Path check=new Path();
+            check.moveTo(x-dp(11),y+dp(1));check.lineTo(x-dp(3),y+dp(9));check.lineTo(x+dp(12),y-dp(8));canvas.drawPath(check,paint);
+        } else {
+            paint.setStrokeWidth(dp(3.5f));
+            canvas.drawLine(x-dp(9),y-dp(9),x+dp(9),y+dp(9),paint);canvas.drawLine(x+dp(9),y-dp(9),x-dp(9),y+dp(9),paint);
+        }
+        paint.setStrokeCap(Paint.Cap.BUTT);paint.setStyle(Paint.Style.FILL);
+    }
+    private boolean closeConstructionMenu(){
+        long target=nativeSwipeTarget(.5f,.5f,11);if(target==0)return false;
+        pointer(0,Float.intBitsToFloat((int)(target>>>32))*getWidth(),Float.intBitsToFloat((int)target)*getHeight(),0);
+        click(1);return true;
+    }
+    /* Ends the active tool through the game's input system (it leaves the paint mode as the game does);
+     * a right click is the fallback when the tool is still active. */
+    private boolean toolFromMenu,reopening;private int lastConstructionState;
+    private void cancelConstructionTool(){
+        final boolean menu=toolFromMenu||(mode(getWidth()*.5f,getHeight()*.5f)&CONSTRUCTION_OPEN)!=0;
+        reopening=menu;
+        if(!nativeCamera(6,0,0,0,0)){recenter();click(2);return;}
+        postDelayed(()->{
+            if(painterKind!=0){reopening=false;recenter();click(2);return;}
+            if(menu)reopenConstruction();else reopening=false;
+        },350);
+    }
+    /* The Switch layout closes the construction menu when the paint mode ends: open it again through
+     * the radial menu (its construction item, target 7), then continue once the menu reports open. */
+    private void reopenConstruction(){
+        if((mode(centerX(),centerY())&CONSTRUCTION_OPEN)!=0){reopening=false;recenter();return;}
+        if((mode(getWidth()*.5f,getHeight()*.5f)&SWITCH_AVAILABLE)==0||!switchMenu(true)){reopening=false;recenter();return;}
+        final long started=android.os.SystemClock.uptimeMillis();
+        post(new Runnable(){
+            private boolean chosen;
+            @Override public void run(){
+                if(android.os.SystemClock.uptimeMillis()-started>2500){reopening=false;if(!chosen)switchMenu(false);recenter();return;}
+                if(!chosen){
+                    if(nativeSwipeTarget(.5f,.5f,7)!=0&&switchActivate(4))chosen=true;
+                    postDelayed(this,50);return;
+                }
+                if((mode(getWidth()*.5f,getHeight()*.5f)&CONSTRUCTION_OPEN)!=0){
+                    reopening=false;
+                    recenter();
+                    return;
+                }
+                postDelayed(this,50);
+            }
+        });
+    }
+    private void constructionAction(int index){
+        performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+        if(index==BUILD_ROAD){
+            if(painterKind==2||painterKind==3)cancelConstructionTool();
+            else nativeCamera(9,2,0,0,0);
+        } else if(index==REMOVE_ROAD){
+            if(painterKind==5)cancelConstructionTool();
+            else nativeCamera(9,4,0,0,0);
+        }
+        else if(index==CONFIRM){if(getWidth()>0){pointer(0,centerX(),centerY(),0);click(1);}}
+        else if(painterKind!=0)cancelConstructionTool();
+        else if(!closeConstructionMenu())pulse(KeyEvent.KEYCODE_B);
+    }
+    private boolean constructionTouch(MotionEvent event){
+        int action=event.getActionMasked();
+        if(action==MotionEvent.ACTION_DOWN){
+            constructionPressed=-1;
+            int button=constructionButtonAt(event.getX(),event.getY());if(button<0)return false;
+            gesture.cancel();releasePointer();constructionPressed=button;invalidate();return true;
+        }
+        if(constructionPressed<0)return false;
+        if(action==MotionEvent.ACTION_UP){
+            int button=constructionPressed;constructionPressed=-1;
+            if(constructionButtonAt(event.getX(),event.getY())==button)constructionAction(button);
+            performClick();
+        } else if(action==MotionEvent.ACTION_CANCEL||action==MotionEvent.ACTION_POINTER_DOWN)constructionPressed=-1;
+        invalidate();return true;
+    }
     private void switchImages(){
         if(switchImagesTried)return;
         switchImagesTried=true;
@@ -395,6 +629,7 @@ final class TouchControls extends View {
             paint.setColor(Color.WHITE);switchBitmap(canvas,switchRing,x,y,dp(72));
             switchBitmap(canvas,switchIcons[4],x,y,dp(30));return;
         }
+        if(switchFan){drawSwitchFan(canvas);postInvalidateDelayed(33);return;}
         canvas.drawColor(0xb0000b12);
         float x=getWidth()*.5f,y=getHeight()*.48f,radius=getHeight()*.29f;
         paint.setColor(Color.WHITE);
@@ -407,7 +642,43 @@ final class TouchControls extends View {
             paint.setColor(i==switchSelection?0xee526f7c:0xee14232d);canvas.drawCircle(cx,cy,size*.58f,paint);
             paint.setColor(Color.WHITE);switchBitmap(canvas,switchIcons[i],cx,cy,size);
         }
+        if(switchSelection>=0){
+            String label=switchLabel(switchSelection);
+            paint.setTextSize(dp(12));
+            drawLabel(canvas,label,x-(paint.measureText(label)+dp(16))*.5f,y,false);
+        }
         postInvalidateDelayed(33);
+    }
+    /* Radial order: economy, search, laws, technology, construction (switch_button_index). */
+    private static String switchLabel(int index){return gameLabel(index==4?0:index+1);}
+    private float fanX(int index){return dp(32)+(float)Math.cos(Math.toRadians(-90+index*22.5))*dp(142);}
+    private float fanY(int index){return getHeight()-dp(32)+(float)Math.sin(Math.toRadians(-90+index*22.5))*dp(142);}
+    private int fanItem(float x,float y){
+        int result=-1;float nearest=dp(40);
+        for(int i=0;i<5;i++){
+            float distance=(float)Math.hypot(x-fanX(i),y-fanY(i));
+            if(distance<nearest){nearest=distance;result=i;}
+        }
+        return result;
+    }
+    private void drawSwitchFan(Canvas canvas){
+        float ox=dp(32),oy=getHeight()-dp(32);
+        paint.setStyle(Paint.Style.FILL);paint.setColor(0x9a000b12);canvas.drawCircle(ox,oy,dp(178),paint);
+        paint.setColor(0xe614232d);canvas.drawCircle(ox,oy,dp(23),paint);
+        paint.setColor(Color.WHITE);switchBitmap(canvas,switchRing,ox,oy,dp(72));switchBitmap(canvas,switchIcons[4],ox,oy,dp(30));
+        for(int i=0;i<5;i++){
+            float cx=fanX(i),cy=fanY(i);
+            paint.setColor(i==switchSelection?0xf0526f7c:0xee14232d);canvas.drawCircle(cx,cy,dp(24),paint);
+            paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(dp(i==switchSelection?2.5f:1.2f));
+            paint.setColor(i==switchSelection?0xffffd68c:0x99d7edf6);canvas.drawCircle(cx,cy,dp(24),paint);
+            paint.setStyle(Paint.Style.FILL);paint.setColor(Color.WHITE);switchBitmap(canvas,switchIcons[i],cx,cy,dp(38));
+        }
+        if(switchSelection>=0)drawLabel(canvas,switchLabel(switchSelection),fanX(switchSelection)+dp(32),fanY(switchSelection),false);
+    }
+    private void openSwitchFan(){
+        if(switchFan||!switchMenu(true))return;
+        switchFan=true;switchSelection=-1;
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);invalidate();
     }
     private int switchItem(float x,float y){
         int result=-1;float nearest=getHeight()*.1f;
@@ -421,7 +692,10 @@ final class TouchControls extends View {
     }
     private float switchX(int index){return getWidth()*.5f+(float)Math.cos(-Math.PI/2+index*2*Math.PI/5)*getHeight()*.29f;}
     private float switchY(int index){return getHeight()*.48f+(float)Math.sin(-Math.PI/2+index*2*Math.PI/5)*getHeight()*.29f;}
-    private boolean switchChoose(int index){return index>=0?switchActivate(index):switchMenu(false);}
+    private boolean switchChoose(int index){
+        if(index>=0&&switchActivate(index))return true;
+        switchMenu(false);return false;
+    }
     private boolean switchActivate(int index){
         long target=nativeSwipeTarget(.5f,.5f,index+3);if(target==0)return false;
         pointer(0,Float.intBitsToFloat((int)(target>>>32))*getWidth(),Float.intBitsToFloat((int)target)*getHeight(),0);
@@ -451,33 +725,46 @@ final class TouchControls extends View {
     }
     private boolean switchTouch(MotionEvent event){
         int action=event.getActionMasked();
+        float opener=(float)Math.hypot(event.getX()-dp(32),event.getY()-(getHeight()-dp(32)));
         if(action==MotionEvent.ACTION_DOWN){
-            switchTouch=false;switchState=mode(event.getX(),event.getY());
+            switchTouch=false;switchFan=false;removeCallbacks(switchFanHold);switchState=mode(event.getX(),event.getY());
             if((switchState&SWITCH_AVAILABLE)==0)return false;
             boolean open=(switchState&SWITCH_MENU)!=0;
-            if(!open&&Math.hypot(event.getX()-dp(32),event.getY()-(getHeight()-dp(32)))>dp(28))return false;
+            if(!open&&opener>dp(28))return false;
             gesture.cancel();releasePointer();stopGamepad();switchTouch=true;
             switchSelection=open?switchItem(event.getX(),event.getY()):-2;
+            if(!open)postDelayed(switchFanHold,260);
         }
         if(!switchTouch)return false;
-        if(action==MotionEvent.ACTION_MOVE&&switchSelection!=-2)switchSelection=switchItem(event.getX(),event.getY());
+        if(action==MotionEvent.ACTION_MOVE){
+            // Holding the corner button or sliding off it opens the fan; the finger then picks an action.
+            if(switchSelection==-2&&opener>dp(40)){removeCallbacks(switchFanHold);openSwitchFan();}
+            if(switchFan)switchSelection=fanItem(event.getX(),event.getY());
+            else if(switchSelection!=-2)switchSelection=switchItem(event.getX(),event.getY());
+        }
         if(action==MotionEvent.ACTION_UP){
+            removeCallbacks(switchFanHold);
             if(switchSelection==-2)switchMenu(true);
             else switchChoose(switchSelection);
-            switchTouch=false;switchSelection=-1;performClick();
+            switchTouch=false;switchFan=false;switchSelection=-1;performClick();
         } else if(action==MotionEvent.ACTION_CANCEL||action==MotionEvent.ACTION_POINTER_DOWN){
-            switchMenu(false);switchSelection=-1;
+            removeCallbacks(switchFanHold);switchMenu(false);switchSelection=-1;switchFan=false;switchTouch=false;
         }
         invalidate();return true;
     }
     private boolean mouse(MotionEvent event) {
         if (getWidth() <= 0 || getHeight() <= 0) return true;
+        if(!mouseConstruction){mouseConstruction=true;updateCenterMode(mode(centerX(),centerY()));}
         return nativeMouse(event.getActionMasked(), event.getButtonState(), event.getMetaState(),
             event.getX() / getWidth(), event.getY() / getHeight(),
             event.getAxisValue(MotionEvent.AXIS_HSCROLL), event.getAxisValue(MotionEvent.AXIS_VSCROLL));
     }
     @Override public boolean onTouchEvent(MotionEvent event) {
-        return event.isFromSource(InputDevice.SOURCE_MOUSE) ? mouse(event) : switchTouch(event)||gesture.touch(event);
+        if(event.isFromSource(InputDevice.SOURCE_MOUSE))return mouse(event);
+        if(event.getActionMasked()==MotionEvent.ACTION_DOWN){
+            stopGamepad();mouseConstruction=false;updateCenterMode(mode(centerX(),centerY()));
+        }
+        return constructionTouch(event)||switchTouch(event)||gesture.touch(event);
     }
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         if (gamepadMotion(event)) return true;
@@ -541,7 +828,7 @@ final class TouchControls extends View {
         int hat=Math.round(values[6]);
         if(hat!=hatY&&hat!=0){int state=mode(cursorX,cursorY);if((state&256)!=0)nativeCamera(4,Math.max(0,Math.min(3,((state>>9)&3)-hat)),0,0,0);}
         hatY=hat;
-        gamepadActive=true;
+        if(!gamepadActive){gamepadActive=true;updateCenterMode(mode(centerX(),centerY()));}
         if(!gamepadScheduled){gamepadScheduled=true;postOnAnimation(gamepadTick);}
     }
     boolean gamepadKey(KeyEvent event){
@@ -550,7 +837,7 @@ final class TouchControls extends View {
         int state=mode(cursorX,cursorY),key=event.getKeyCode();
         android.util.Log.d("FrostpunkControls","GAMEPAD_KEY key="+key+" down="+down+" state="+(state&8191));
         if((state & 2048)!=0)return true;
-        gamepadActive=true;
+        if(!gamepadActive){gamepadActive=true;updateCenterMode(mode(centerX(),centerY()));}
         noteGamepad(event.getDeviceId());
         if(key==KeyEvent.KEYCODE_BUTTON_A){
             if(down&&event.getRepeatCount()>0)return true;
@@ -581,6 +868,7 @@ final class TouchControls extends View {
         private long started;
         private Runnable hold;
         private final Map<Integer, float[]> contactStarts = new HashMap<>();
+        boolean active(){return first>=0;}
         void cancel() {
             stopHold();
             first = second = -1;
@@ -671,6 +959,17 @@ final class TouchControls extends View {
             startControlDrag(1,origin,y,origin+x-downX,y);
         }
         private void moveSingle(float x, float y) {
+            if(centerTouch){
+                // Construction: the finger moves the camera; the tool stays on the centre cursor.
+                if(!pan&&Math.hypot(x-downX,y-downY)>dp(10)){moved=true;pan=(context&1)!=0;}
+                if(pan)camera(x-lastX,y-lastY,0,0);
+                lastX=x;lastY=y;return;
+            }
+            // A sideways swipe along the time bar changes the speed at once (holding it still works).
+            if(!timeline&&!held&&(context&8)!=0){
+                float dx=Math.abs(x-downX),dy=Math.abs(y-downY);
+                if(dx>dp(12)&&dx>1.2f*dy){stopHold();held=true;moved=true;timeline=true;timeStart(downX,downY);}
+            }
             if (timeline) { timeMove(x); lastX = x; lastY = y; return; }
             if(settingSwipe){settingMove(x);lastX=x;lastY=y;return;}
             if(controlDragging){if(settingsScroll&&(context&32)==0)controlY+=y-lastY;else controlX+=x-lastX;lastX=x;lastY=y;return;}
@@ -714,6 +1013,7 @@ final class TouchControls extends View {
             float zoom = span > dp(16) && distance > dp(16) ? (float)Math.log(distance / span) : 0;
             if (building) {
                 nativeCamera(3, 0, 0, 0, delta);
+                if(centerMode)smoothZoom(zoom);
             } else if ((context & 3) == 1) camera(0, 0, zoom, delta);
             span = distance; angle = radians;
         }
@@ -735,8 +1035,10 @@ final class TouchControls extends View {
                 context = mode(downX, downY);
                 settingWanted=settingSent=0;controlEnding=false;
                 offset=dp((context >>> 16)&255);
-                placementCursor=(context & 20)!=0 && (context & 2)==0;
+                centerTouch=centerMode&&(context&2)==0;
+                placementCursor=!centerTouch&&(context & 20)!=0 && (context & 2)==0;
                 if ((context & 2048) != 0) { cancel(); return true; }
+                if(centerTouch)return true;
                 pointer(0, downX, placementCursor ? downY-offset : downY, 0);
                 hold = () -> {
                     hold = null;
@@ -784,6 +1086,11 @@ final class TouchControls extends View {
                 else if (maximum == 3 && !moved && android.os.SystemClock.uptimeMillis() - started <= 300)
                     nativeCamera(1, 0, 0, 0, 0);
                 else if (multi) { releasePointer(); if (maximum == 2 && !moved) click(2); }
+                else if(centerTouch){
+                    // With only the menu open a tap still selects in the city; a tool acts on the centre
+                    // cursor through the buttons on the right, so a stray tap never places or demolishes.
+                    if(!moved&&!pan&&painterKind==0){pointer(0,downX,downY,0);click(1);performClick();}
+                }
                 else {
                     if (!drag && !held && !pan && !((context & 20) != 0 && moved)) {
                         long target=nativeSwipeTarget(downX/getWidth(),downY/getHeight(),2);
@@ -791,6 +1098,7 @@ final class TouchControls extends View {
                             if(target!=0)pointer(0,Float.intBitsToFloat((int)(target>>>32))*getWidth(),Float.intBitsToFloat((int)target)*getHeight(),0);
                             click(1);performClick();
                             if((context&32768)==0)hideKeyboard();
+                            if((context&8)!=0)postDelayed(TouchControls.this::showSpeedHint,450);
                         }
                     }
                     else {

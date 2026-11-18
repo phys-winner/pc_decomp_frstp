@@ -48,8 +48,8 @@ def prepare(work, manifest_text):
     work.mkdir(parents=True, exist_ok=True)
     manifest = work / 'game-manifest.xml'
     manifest_text = manifest_text.replace('android:targetSdkVersion="36"', 'android:targetSdkVersion="37"')
-    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.2-dev"')
-    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="4"')
+    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.3-dev"')
+    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="5"')
     manifest_text = manifest_text.replace('<application ', '<application android:appCategory="game" ', 1) if 'android:appCategory=' not in manifest_text else manifest_text
     manifest_text = manifest_text.replace('<uses-sdk ', '<!-- launcher:manifest -->\n  <uses-sdk ', 1)
     manifest_text = manifest_text.replace('<activity ', '<!-- launcher:application -->\n    <activity ', 1)
@@ -76,7 +76,7 @@ def prepare(work, manifest_text):
 ''' + renderer_text[end:]
     edits = {
         '        if (converted) return new Status(mode, false, false, Texts.t(context, Texts.R_CONVERTED));\n': '',
-        'if (mode != null) result.add(': 'if (mode != null && FrostpunkDevice.applies(gpu.qualcomm(), mode.kind)) result.add(',
+        'if (mode != null) result.add(': 'if (mode != null && FrostpunkDevice.applies(gpu, mode)) result.add(',
         '        return chosen;': '        return status(statuses, chosen) != null || statuses.isEmpty() ? chosen : statuses.get(0).mode.id;',
         'Texts.fmt(context, Texts.R_ANDROID, version(mode.minSdk), Build.VERSION.SDK_INT)': 'FrostpunkDevice.text(context, "android", version(mode.minSdk), Build.VERSION.SDK_INT)',
         'Texts.fmt(context, Texts.R_LIBRARIES, String.join(", ", missing))': 'FrostpunkDevice.text(context, "libraries", String.join(", ", missing))',
@@ -89,10 +89,6 @@ def prepare(work, manifest_text):
     renderer_source.write_text(renderer_text, encoding='utf-8')
     activity = next(Path(p) for p in result['sources'] if Path(p).name == 'LauncherActivity.java')
     activity_text = activity.read_text(encoding='utf-8')
-    releases = 'buttons.add(ui.button(Texts.t(this, Texts.RELEASES), Ui.SECONDARY, () -> open(spec.githubUrl("/releases"))));'
-    assert activity_text.count(releases) == 1
-    activity_text = activity_text.replace(releases,
-        'buttons.add(ui.button("Telegram", Ui.SECONDARY, () -> open("https://t.me/phys_winner_ports")));')
     cleanup_end = '        card.addView(ui.buttons(ui.button(Texts.t(this, Texts.COPY_DIAGNOSTICS), Ui.SECONDARY, this::copyDiagnostics)));'
     assert activity_text.count(cleanup_end) == 1
     activity_text = activity_text.replace(cleanup_end, cleanup_end + '\n        fpDriverCleanup(card);')
@@ -100,12 +96,12 @@ def prepare(work, manifest_text):
     assert activity_text.count(driver_done) == 1
     activity_text = activity_text.replace(driver_done, '\n'.join([
         '            } else if (job instanceof FrostpunkDriverDownload) {',
-        '                note(Texts.RENDERER, Texts.fmt(this, Texts.TURNIP_DRIVER, ((FrostpunkDriverDownload)job).installedTitle), false);',
+        '                note(Texts.RENDERER, Texts.fmt(this, Texts.DRIVER_LABEL, VulkanDriver.TURNIP.label, ((FrostpunkDriverDownload)job).installedTitle), false);',
         '                checkRenderer();',
         driver_done]))
-    builtin = 'Texts.t(this, Texts.TURNIP_BUILTIN)'
+    builtin = 'Texts.t(this, Texts.DRIVER_BUILTIN)'
     assert activity_text.count(builtin) == 1
-    activity_text = activity_text.replace(builtin, '"purple-turnip T30 (Mesa)"')
+    activity_text = activity_text.replace(builtin, 'driver == VulkanDriver.TURNIP ? "purple-turnip T30 (Mesa)" : ' + builtin)
     startup = '        build();\n'
     assert activity_text.count(startup) == 1
     activity_text = activity_text.replace(startup, startup + '        fpWarnLowMemory();\n')
@@ -137,7 +133,8 @@ def prepare(work, manifest_text):
     activity_text = activity_text.replace(etc2_button, '')
     group_loop = '        for (Spec.Option o : list) {'
     assert activity_text.count(group_loop) == 1
-    activity_text = activity_text.replace(group_loop, group_loop + '\n            if (fpGraphicsGroup(o.key)) continue;')
+    activity_text = activity_text.replace(group_loop, group_loop + '\n            if (fpGraphicsGroup(o.key)) continue;'
+        '\n            if (o.key.equals("memory")) { fpMemoryOption(card, o); continue; }')
     options_hint = '        String hint = Texts.of(this, spec.optionsHint);'
     assert activity_text.count(options_hint) == 1
     activity_text = activity_text.replace(options_hint, '''        TextView advanced = ui.button(FrostpunkDevice.tr(this, "Advanced graphics settings", "Дополнительные настройки"), Ui.SECONDARY, this::fpGraphicsAdvanced);
@@ -258,9 +255,9 @@ def prepare(work, manifest_text):
     for before, after in edits.items():
         assert activity_text.count(before) == 1, before
         activity_text = activity_text.replace(before, after)
-    turnip_choose = '            TextView choose = ui.button(Texts.t(this, Texts.TURNIP_CHOOSE), Ui.SECONDARY, () -> pick(Pickers.ZIP, ASK_DRIVER, null));'
+    turnip_choose = '        TextView choose = ui.button(Texts.t(this, Texts.DRIVER_CHOOSE), Ui.SECONDARY, () -> pick(Pickers.DRIVER, request, null));'
     assert activity_text.count(turnip_choose) == 1
-    activity_text = activity_text.replace(turnip_choose, '            fpTurnipSources(card);\n' + turnip_choose)
+    activity_text = activity_text.replace(turnip_choose, '        if (driver == VulkanDriver.TURNIP) fpTurnipSources(card);\n' + turnip_choose)
     activity_text = activity_text.rstrip().removesuffix('}') + '\n' + (ROOT / 'android/launcher/launch_checks.java.inc').read_text(encoding='utf-8') + '\n}\n'
     activity.write_text(activity_text, encoding='utf-8')
     ui = next(Path(p) for p in result['sources'] if Path(p).name == 'Ui.java')
@@ -341,6 +338,7 @@ def build_probe(launcher, work, package):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding='utf-8')
     shutil.copyfile(source.parent / 'vulkan_requirements.h', path.parent / 'vulkan_requirements.h')
+    shutil.copyfile(source.parent / 'panvk_identity.h', path.parent / 'panvk_identity.h')
     launcher.PROBE_SOURCE = path
     try:
         return launcher.build_probe(path.parent, package, ndk=ndk_root())

@@ -33,6 +33,10 @@ final class FrostpunkDevice {
     static boolean applies(boolean qualcomm, String kind) {
         return qualcomm == "turnip".equals(kind);
     }
+    static boolean applies(Gpu gpu, Spec.Mode mode) {
+        if (FrostpunkHooks.panvkRenderer(mode.id)) return Gpu.panvkCandidate(gpu.renderer);
+        return FrostpunkHooks.NATIVE_RENDERER.equals(mode.id) || applies(gpu.qualcomm(), mode.kind);
+    }
     static Set<String> missing(Map<String, String> report, String driver, boolean needsBC) {
         Set<String> tokens = new LinkedHashSet<>();
         for (String token : report.getOrDefault(driver + ".missing", "").split(","))
@@ -46,7 +50,7 @@ final class FrostpunkDevice {
         return tokens;
     }
     static Renderers.Status judge(Context context, Spec.Mode mode, Map<String, String> report) {
-        String driver = "turnip".equals(mode.kind) ? "turnip" : "stock";
+        String driver = driver(report, mode.id);
         String status = report.getOrDefault(driver + ".status", "");
         if (!status.equals("ok") && !status.equals("missing")) {
             String reason = status.equals("crash") ? text(context, "crash")
@@ -84,7 +88,9 @@ final class FrostpunkDevice {
             if (!"18".equals(id) || vendor != 0x5143) return "driver";
             if (!yes(report, driver, "bcFeature") || !"111".equals(report.get(driver + ".bc"))) return "bc";
         } else {
-            if (!(vendor == 0x13b5 && "9".equals(id)) && !(vendor == 0x1010 && "7".equals(id))) return "driver";
+            if ("panvk".equals(driver)) {
+                if (vendor != 0x13b5 || !"20".equals(id)) return "driver_panvk";
+            } else if (!(vendor == 0x13b5 && "9".equals(id)) && !(vendor == 0x1010 && "7".equals(id))) return "driver";
             if (!yes(report, driver, "astc")) return "astc";
             if (!yes(report, driver, "bgra")) return "bgra";
             if (vendor == 0x13b5 && !yes(report, driver, "robustBufferAccess2") && !yes(report, driver, "partiallyBound"))
@@ -95,11 +101,16 @@ final class FrostpunkDevice {
     static String explain(Context context, String problem) {
         return text(context, problem);
     }
+    private static String driver(Map<String, String> report, String renderer) {
+        if (FrostpunkHooks.panvkRenderer(renderer)) return "panvk";
+        return "turnip".equals(renderer) || FrostpunkHooks.NATIVE_RENDERER.equals(renderer)
+            && Probe.vendor(report, "stock") == Probe.QUALCOMM ? "turnip" : "stock";
+    }
     static boolean dxt(Map<String, String> report, String renderer) {
-        String driver = "turnip".equals(renderer) ? "turnip" : "stock";
-        return yes(report, driver, "bcFeature") && "111".equals(report.get(driver + ".bc"));
+        String driver = driver(report, renderer);
+        return !"panvk".equals(driver) && yes(report, driver, "bcFeature") && "111".equals(report.get(driver + ".bc"));
     }
     static boolean astc(Map<String, String> report, String renderer) {
-        return yes(report, "turnip".equals(renderer) ? "turnip" : "stock", "astc");
+        return yes(report, driver(report, renderer), "astc");
     }
 }

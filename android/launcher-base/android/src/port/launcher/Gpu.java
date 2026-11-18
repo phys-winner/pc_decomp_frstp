@@ -52,6 +52,12 @@ final class Gpu {
         return new File("/dev/kgsl-3d0").exists();
     }
 
+    static long pageSize() { return android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE); }
+
+    static boolean panvkCandidate(String device) {
+        return device != null && (device.contains("Mali-G615") || device.contains("Mali-G715")) && pageSize() == 4096;
+    }
+
     static String version(int v) { return v == 0 ? "—" : (v >>> 22) + "." + ((v >>> 12) & 0x3FF); }
 
     private void probeGles() {

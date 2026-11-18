@@ -33,6 +33,22 @@
         "K11MCH1/AdrenoToolsDrivers"
     };
 
+    private void fpMemoryOption(LinearLayout card, Spec.Option option) {
+        String title = Texts.of(this, option.title);
+        int current = option.choices.indexOf(Launch.option(this, option));
+        if (current < 0) current = option.choices.indexOf(option.value);
+        String[] labels = new String[option.choices.size()];
+        for (int i = 0; i < labels.length; ++i) labels[i] = Texts.of(this, option.choiceTitles.get(i));
+        String label = current < 0 ? title : title + ": " + labels[current];
+        TextView button = ui.button(label, Ui.QUIET, () -> ui.show(ui.dialog().setTitle(title)
+            .setItems(labels, (dialog, which) -> {
+                State.put(this, State.CHOICES, "option." + option.key, option.choices.get(which));
+                refresh(Texts.OPTIONS);
+            })));
+        button.setTooltipText(Texts.of(this, option.hint));
+        card.addView(ui.buttons(button));
+    }
+
     private boolean fpReducedTextureQuality() {
         boolean enabled = true, reduced = true;
         for (Spec.Option option : spec.options(selected.id)) {
@@ -178,7 +194,31 @@
         }, failure -> { setBusy(null); note(Texts.TEXTURES, String.valueOf(failure.getMessage()), true); });
     }
     private void fpStart(Spec.Distribution distribution) {
-        try { Launch.start(this, distribution, effectiveRenderer(distribution), hooks); finish(); }
+        String renderer = effectiveRenderer(distribution);
+        if (("dxvk".equals(renderer) || "turnip".equals(renderer))
+                && !"1".equals(State.get(this, State.CHOICES, FrostpunkHooks.ASKED_NATIVE, ""))) {
+            String nativeMode = FrostpunkHooks.NATIVE_RENDERER;
+            Renderers.Status nativeStatus = Renderers.status(Renderers.evaluate(this, spec, distribution, gpu, convertedTextures()), nativeMode);
+            if (nativeStatus != null && nativeStatus.verified) {
+                ui.show(ui.dialog().setTitle(FrostpunkDevice.tr(this, "Try Native Vulkan?", "Попробовать нативный Vulkan?"))
+                    .setMessage(FrostpunkDevice.tr(this,
+                        "Native Vulkan is experimental. You can change the renderer in the launcher.",
+                        "Нативный Vulkan работает в экспериментальном режиме. Рендерер можно сменить в лаунчере."))
+                    .setPositiveButton(FrostpunkDevice.tr(this, "Use Native Vulkan", "Включить нативный Vulkan"), (dialog, which) -> {
+                        Renderers.choose(this, distribution, hooks, nativeMode);
+                        State.put(this, State.CHOICES, FrostpunkHooks.ASKED_NATIVE, "1");
+                        fpLaunch(distribution, nativeMode);
+                    }).setNegativeButton(FrostpunkDevice.tr(this, "Keep DXVK", "Оставить DXVK"), (dialog, which) -> {
+                        State.put(this, State.CHOICES, FrostpunkHooks.ASKED_NATIVE, "1");
+                        fpLaunch(distribution, renderer);
+                    }));
+                return;
+            }
+        }
+        fpLaunch(distribution, renderer);
+    }
+    private void fpLaunch(Spec.Distribution distribution, String renderer) {
+        try { Launch.start(this, distribution, renderer, hooks); finish(); }
         catch (ActivityNotFoundException failure) { note(Texts.PLAY, Texts.t(this, Texts.NOT_IN_BUILD), true); }
     }
     private void fpTexturesFinished(Work.Job job) {
@@ -332,11 +372,15 @@
     }
 
     private void fpDriverCleanup(LinearLayout card) {
-        if (TurnipDriver.unused(this).isEmpty()) return;
+        if (VulkanDriver.TURNIP.unused(this).isEmpty() && VulkanDriver.PANVK.unused(this).isEmpty()) return;
         TextView clear = ui.button(FrostpunkDevice.tr(this, "Delete unused external drivers", "Удалить неиспользуемые внешние драйверы"),
             Ui.SECONDARY, () -> {
                 if (!idle()) return;
-                try { TurnipDriver.removeUnused(this); refresh(Texts.ABOUT); }
+                try {
+                    VulkanDriver.TURNIP.removeUnused(this);
+                    VulkanDriver.PANVK.removeUnused(this);
+                    refresh(Texts.ABOUT);
+                }
                 catch (java.io.IOException failure) { note(Texts.ABOUT, failure.getMessage(), true); }
             });
         Ui.enable(clear, idle());

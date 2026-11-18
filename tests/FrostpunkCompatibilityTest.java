@@ -31,11 +31,29 @@ public final class FrostpunkCompatibilityTest {
         Context context = new ContextWrapper(app) { @Override public File getFilesDir() { return root; } };
         JSONObject translations = new JSONObject(Spec.asset(context, "launcher/compatibility.json"));
         Spec spec = Spec.get(context); Spec.Mode turnip = spec.mode("turnip"), stock = spec.mode("dxvk");
+        Spec.Mode nativeVulkan = spec.mode(FrostpunkHooks.NATIVE_RENDERER);
+        Spec.Mode panvk = spec.mode(FrostpunkHooks.NATIVE_PANVK_RENDERER);
+        Spec.Mode dxvkPanvk = spec.mode(FrostpunkHooks.DXVK_PANVK_RENDERER);
         need(FrostpunkDevice.applies(true, "turnip") && !FrostpunkDevice.applies(true, "vulkan"), "Adreno uses only Turnip");
         need(!FrostpunkDevice.applies(false, "turnip") && FrostpunkDevice.applies(false, "vulkan"), "other GPUs use only system Vulkan");
         Gpu gpu = Gpu.get(context);
+        need(Gpu.panvkCandidate("Mali-G615") == (Gpu.pageSize() == 4096)
+            && Gpu.panvkCandidate("Mali-G715") == (Gpu.pageSize() == 4096)
+            && !Gpu.panvkCandidate("Adreno 750"), "PanVK requires a supported Mali and 4 KiB kernel pages");
         List<Renderers.Status> visible = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false);
-        need(visible.size() == 1 && visible.get(0).mode.id.equals(gpu.qualcomm() ? "turnip" : "dxvk"), "actual device exposes only its renderer");
+        boolean supportsPanvk = Gpu.panvkCandidate(gpu.renderer);
+        need(visible.size() == (supportsPanvk ? 4 : 2) && visible.get(0).mode.id.equals(gpu.qualcomm() ? "turnip" : "dxvk")
+            && visible.get(1).mode == nativeVulkan, "native Vulkan is listed alongside the device's DXVK mode");
+        if (supportsPanvk) need(visible.get(2).mode == panvk && visible.get(3).mode == dxvkPanvk, "both PanVK renderers are listed");
+        Map<String, String> panvkReport = Probe.parse("panvk.status=ok\npanvk.vendor=13b5\npanvk.driverId=9\n"
+            + "panvk.astc=1\npanvk.bgra=1\npanvk.robustBufferAccess2=1\npanvk.bcFeature=1\npanvk.bc=111\n");
+        need(!Renderers.judge(context, panvk, panvkReport).available, "a system driver cannot impersonate PanVK");
+        need(!Renderers.judge(context, dxvkPanvk, panvkReport).available, "DXVK PanVK also verifies the driver");
+        panvkReport.put("panvk.driverId", "20");
+        need(Renderers.judge(context, panvk, panvkReport).verified, "Mesa PanVK with ASTC is accepted");
+        need(Renderers.judge(context, dxvkPanvk, panvkReport).verified && !FrostpunkDevice.dxt(panvkReport, dxvkPanvk.id),
+            "DXVK PanVK uses the verified driver and existing ASTC data");
+        need(!FrostpunkDevice.dxt(panvkReport, panvk.id), "PanVK keeps the Mali ASTC texture data");
         List<Renderers.Status> converted = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, true);
         need(converted.get(0).available == visible.get(0).available && converted.get(0).verified == visible.get(0).verified,
             "native ASTC data does not invalidate the port renderer");
@@ -50,11 +68,34 @@ public final class FrostpunkCompatibilityTest {
         String libraries = app.getApplicationInfo().nativeLibraryDir;
         System.load(new File(libraries, "libc++_shared.so").getAbsolutePath());
         System.load(new File(libraries, Probe.FILE).getAbsolutePath());
-        java.lang.reflect.Method nativeProbe = Probe.class.getDeclaredMethod("nativeProbe", String.class, String.class);
+        java.lang.reflect.Method nativeProbe = Probe.class.getDeclaredMethod("nativeProbe", String.class, String.class, boolean.class);
         nativeProbe.setAccessible(true);
-        String live = (String) nativeProbe.invoke(null, libraries, null);
-        if (gpu.qualcomm()) live += (String) nativeProbe.invoke(null, libraries, turnip.driver);
+        String live = (String) nativeProbe.invoke(null, libraries, null, false);
+        if (gpu.qualcomm()) live += (String) nativeProbe.invoke(null, libraries, turnip.driver, false);
+        if (supportsPanvk && new File(libraries, panvk.driver).isFile()) {
+            String result = (String) nativeProbe.invoke(null, libraries, panvk.driver, true);
+            live += result;
+            need("20".equals(Probe.parse(result).get("panvk.driverId")), "the actual PanVK library reports its driver ID");
+        }
         Probe.write(probe, Probe.key(context) + "\n" + live);
+        File bundledPanvk = new File(libraries, panvk.driver);
+        if (bundledPanvk.isFile()) {
+            String bundledKey = Probe.key(context);
+            VulkanDriver.PANVK.install(context, null, bundledPanvk);
+            File selectedPanvk = VulkanDriver.PANVK.chosen(context);
+            need(selectedPanvk != null && selectedPanvk.getParentFile().equals(VulkanDriver.PANVK.folder(context))
+                && VulkanDriver.TURNIP.chosen(context) == null, "PanVK has independent storage");
+            need(Probe.report(context) == null, "the imported library invalidates the bundled probe report");
+            try {
+                VulkanDriver.PANVK.install(context, null, probe);
+                throw new AssertionError("the driver picker accepted a text file");
+            } catch (java.io.IOException expected) {
+                need(selectedPanvk.equals(VulkanDriver.PANVK.chosen(context)), "a rejected import preserves the selection");
+            }
+            VulkanDriver.PANVK.reset(context);
+            need(Probe.key(context).equals(bundledKey) && Probe.report(context) != null,
+                "reset returns to the bundled PanVK and its probe identity");
+        }
         Renderers.Status actual = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false).get(0);
         String problem = launchProblem(context, spec, gpu);
         need((problem == null) == (actual.available && actual.verified), "Play card agrees with the real driver check");
@@ -88,17 +129,31 @@ public final class FrostpunkCompatibilityTest {
         report.put("turnip.driverId", "18");
         Renderers.Status accepted = Renderers.judge(context, turnip, report);
         need(accepted.available && accepted.verified, "verified Turnip accepted");
+        report.put("stock.vendor", "5143");
+        need(Renderers.judge(context, nativeVulkan, report).verified, "native Vulkan shares the Adreno Turnip driver");
         need(Renderers.effective("dxvk", Arrays.asList(accepted), "dxvk", false).equals("turnip"), "default from wrong GPU family replaced");
         report.put("turnip.bcFeature", "0"); need(!Renderers.judge(context, turnip, report).available, "BC feature remains mandatory");
         report.put("stock.status", "missing"); report.put("stock.vendor", "13b5"); report.put("stock.driverId", "9");
         report.put("stock.astc", "1"); report.put("stock.bgra", "1"); report.put("stock.partiallyBound", "1");
         report.put("stock.missing", "bcTextures,fillModeNonSolid,shaderClipDistance,shaderCullDistance,multiViewport,robustness2,robustBufferAccess2,nullDescriptor");
         need(Renderers.judge(context, stock, report).verified, "Mali port fallbacks retained");
+        need(Renderers.judge(context, nativeVulkan, report).verified, "native Vulkan shares the system driver on Mali");
         report.put("stock.missing", report.get("stock.missing") + ",geometryShader");
         need(!Renderers.judge(context, stock, report).available, "unhandled missing feature still blocks Mali");
         report.put("stock.status", "crash"); need(!Renderers.judge(context, stock, report).available, "probe crash blocks startup");
         State.put(context, State.CHOICES, "language", "ru"); Locale.setDefault(Locale.JAPANESE);
         need(FrostpunkDevice.language(context).equals("ru"), "explicit launcher language wins");
+        State.put(context, State.CHOICES, "option.native_vulkan", "1");
+        FrostpunkHooks hooks = new FrostpunkHooks();
+        hooks.migrate(context);
+        need(FrostpunkHooks.NATIVE_RENDERER.equals(Renderers.chosen(context, spec, spec.distributions.get(0), hooks)), "existing toggle migrates to the renderer list");
+        need(FrostpunkHooks.fallbackToDxvk(context, "frostpunk") && !FrostpunkHooks.NATIVE_RENDERER.equals(
+            Renderers.chosen(context, spec, spec.distributions.get(0), hooks)), "crash fallback stores DXVK");
+        for (Spec.Mode panvkMode : Arrays.asList(panvk, dxvkPanvk)) {
+            State.put(context, State.CHOICES, "renderer.frostpunk", panvkMode.id);
+            need(FrostpunkHooks.fallbackToDxvk(context, "frostpunk") && "dxvk".equals(
+                Renderers.chosen(context, spec, spec.distributions.get(0), hooks)), "PanVK crash switches to system DXVK");
+        }
         System.out.println("PASS: GPU filtering, driver policy, fallback selection, failure details and all " + translations.length() + " languages");
     }
 }

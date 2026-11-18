@@ -80,8 +80,9 @@ __attribute__((visibility("default"))) int frostpunk_android_run(const Frostpunk
      * on each start on the Pixel 10a).  Keys already name device, driver and DXVK build, so one
      * folder serves every profile. */
     char pipeline_cache[PATH_MAX];const char *cache_path=host->profile_path;
+    const char *cache_dir=active_driver&&!strcmp(active_driver,"panvk")?"pipeline-cache-panvk":"pipeline-cache";
     if (host->private_path && host->private_path[0]=='/' &&
-        snprintf(pipeline_cache,sizeof(pipeline_cache),"%s/pipeline-cache",host->private_path)<(int)sizeof(pipeline_cache) &&
+        snprintf(pipeline_cache,sizeof(pipeline_cache),"%s/%s",host->private_path,cache_dir)<(int)sizeof(pipeline_cache) &&
         (!mkdir(pipeline_cache,0700) || errno==EEXIST) && !chmod(pipeline_cache,0700)) cache_path=pipeline_cache;
     if (size<0 || (size_t)size>=sizeof(executable) ||
         setenv("FROSTPUNK_GPU_RUNTIME",host->native_library_path,1) ||

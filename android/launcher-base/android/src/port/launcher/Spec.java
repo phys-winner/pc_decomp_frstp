@@ -51,12 +51,12 @@ final class Spec {
         int vulkan;                   /* VK_MAKE_API_VERSION of the needed Vulkan; 0 none */
         int minSdk;
         int adrenoMin, adrenoMax;     /* Turnip: the Adreno models its driver supports */
-        String driver = "";           /* Turnip: the driver library adrenotools loads */
+        String driver = "";           /* the custom driver library adrenotools loads */
         boolean needsBC = true;       /* a Vulkan mode needs BC1-3 (DXT) sampling: the game's textures */
         List<String> libraries = new ArrayList<>();
         Object description;
 
-        boolean vulkanKind() { return "vulkan".equals(kind) || "turnip".equals(kind); }
+        boolean vulkanKind() { return "vulkan".equals(kind) || "turnip".equals(kind) || "panvk".equals(kind); }
     }
 
     /** A license text the APK carries (an asset file), with the name the player reads. */

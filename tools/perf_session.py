@@ -302,7 +302,7 @@ def main():
                 break
             log.poll()
             text = log.text()
-            presenters = text.count('info:  Presenter: Actual swap chain properties')
+            presenters = text.count('info:  Presenter: Actual swap chain properties') + text.count('RDVK_SWAPCHAIN ')
             rows = log.presents()
             if stage == 'start' and presenters >= 2 and rows and rows[-1]['fps'] > 5:
                 stage = 'title'

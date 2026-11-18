@@ -41,6 +41,7 @@ public final class LauncherActivity extends Activity {
     static final String EXTRA_SHOW = "launcher.show";
     static volatile boolean visible;
     private static final int ASK_FOLDER = 1, ASK_ZIP = 2, ASK_TARGET = 3, ASK_PERMISSION = 4, ASK_DRIVER = 5, ASK_GOG = 6, ASK_GOG_TARGET = 7;
+    private static final int ASK_PANVK_DRIVER = 8;
     /** startTextures: the originals a conversion replaced go (TextureBackend.removeOriginals). */
     private static final int TEX_REMOVE_ORIGINALS = -1;
     /** How often the renderer card looks again while the driver check runs. */
@@ -63,6 +64,7 @@ public final class LauncherActivity extends Activity {
     private boolean filesExpanded, texturesExpanded;
     private String promptedFiles;
     private boolean checking, touching;
+    private int touchSequence;
     private final Set<Integer> refreshPending = new LinkedHashSet<>();
     private boolean initializing = true, autoLaunchPending, playRequestedPending, finishAfterLaunch;
     private TextureBackend textures;
@@ -156,15 +158,23 @@ public final class LauncherActivity extends Activity {
 
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) touching = true;
+        if (action == MotionEvent.ACTION_DOWN) { touching = true; ++touchSequence; }
         try {
             return super.dispatchTouchEvent(event);
         } finally {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                touching = false;
-                int[] pending = refreshPending.stream().mapToInt(Integer::intValue).toArray();
-                refreshPending.clear();
-                if (pending.length != 0 && !finishAfterLaunch && !isFinishing() && !isDestroyed()) refresh(pending);
+                /* A view posts its click after ACTION_UP, and a view leaving the window cancels that
+                   post.  Refreshing here rebuilt the Play button under the finger: the tap and its
+                   animation were lost whenever a refresh (the GPU check, a finished task) had waited
+                   for the touch.  The touch ends after the click has run; a newer DOWN keeps it. */
+                final int sequence = touchSequence;
+                handler.post(() -> {
+                    if (sequence != touchSequence) return;
+                    touching = false;
+                    int[] pending = refreshPending.stream().mapToInt(Integer::intValue).toArray();
+                    refreshPending.clear();
+                    if (pending.length != 0 && !finishAfterLaunch && !isFinishing() && !isDestroyed()) refresh(pending);
+                });
             }
         }
     }
@@ -918,17 +928,18 @@ public final class LauncherActivity extends Activity {
             return;
         }
         if (!Pickers.pick(this, kind, request, near, kind == Pickers.GOG))
-            note(request == ASK_DRIVER ? Texts.RENDERER : Texts.GAME_FILES, Texts.fmt(this, Texts.E_PICKER, "—"), true);
+            note(kind == Pickers.DRIVER ? Texts.RENDERER : Texts.GAME_FILES, Texts.fmt(this, Texts.E_PICKER, "—"), true);
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
         String path = result == RESULT_OK && data != null ? data.getStringExtra(FileBrowserActivity.RESULT) : null;
+        boolean driver = request == ASK_DRIVER || request == ASK_PANVK_DRIVER;
         if (uri == null && path == null) {
             /* A picker that closed by itself: offer the built-in browser at once. */
-            if (Pickers.instantCancel() && (request == ASK_FOLDER || request == ASK_ZIP || request == ASK_DRIVER))
-                Pickers.pick(this, request == ASK_FOLDER ? Pickers.FOLDER : Pickers.ZIP, request, null, true);
+            if (Pickers.instantCancel() && (request == ASK_FOLDER || request == ASK_ZIP || driver))
+                Pickers.pick(this, driver ? Pickers.DRIVER : request == ASK_FOLDER ? Pickers.FOLDER : Pickers.ZIP, request, null, true);
             if (request == ASK_TARGET) dropPending();
             return;
         }
@@ -936,7 +947,8 @@ public final class LauncherActivity extends Activity {
         if (request == ASK_FOLDER) chooseFolder(path != null ? new File(path) : Storage.treePath(uri));
         else if (request == ASK_ZIP) readArchive(uri, path != null ? new File(path) : null);
         else if (request == ASK_TARGET) unpackInto(path != null ? new File(path) : Storage.treePath(uri));
-        else if (request == ASK_DRIVER) importDriver(uri, path != null ? new File(path) : null);
+        else if (driver) importDriver(request == ASK_PANVK_DRIVER ? VulkanDriver.PANVK : VulkanDriver.TURNIP,
+            uri, path != null ? new File(path) : null);
         else if (request == ASK_GOG) {
             if (path == null) error(Texts.t(this, Texts.GOG_HINT));
             else readGog(new File(path));
@@ -1452,34 +1464,38 @@ public final class LauncherActivity extends Activity {
             card.addView(ui.label(Texts.fmt(this, Texts.N_UNCHECKED, current.mode.title, fallback.title), 13, ui.error));
         }
         Spec.Mode turnip = Probe.turnipMode(spec);
-        if (turnip != null && selected.renderers.contains(turnip.id) && gpu.qualcomm()) {
-            File own = TurnipDriver.chosen(this);
-            card.addView(ui.label(Texts.fmt(this, Texts.TURNIP_DRIVER, own != null ? TurnipDriver.title(this)
-                : Texts.t(this, Texts.TURNIP_BUILTIN)), 14, ui.text));
-            card.addView(ui.label(Texts.t(this, Texts.TURNIP_HINT), 12, ui.muted));
-            TextView choose = ui.button(Texts.t(this, Texts.TURNIP_CHOOSE), Ui.SECONDARY, () -> pick(Pickers.ZIP, ASK_DRIVER, null));
-            if (own == null) card.addView(ui.buttons(choose));
-            else card.addView(ui.buttons(choose, ui.button(Texts.t(this, Texts.TURNIP_RESET), Ui.QUIET, this::resetDriver)));
-        }
+        if (turnip != null && selected.renderers.contains(turnip.id) && gpu.qualcomm())
+            driverControls(card, VulkanDriver.TURNIP, ASK_DRIVER);
+        if (Gpu.panvkCandidate(gpu.renderer) && statuses.stream().anyMatch(s -> "panvk".equals(s.mode.kind)))
+            driverControls(card, VulkanDriver.PANVK, ASK_PANVK_DRIVER);
         card.addView(ui.label(Texts.fmt(this, Texts.GPU, gpu.renderer.isEmpty() ? "?" : gpu.renderer, Gpu.version(gpu.vulkan)), 12, ui.muted));
         card.addView(ui.label(Texts.t(this, Texts.N_APPLIES), 12, ui.muted));
     }
 
-    /** The player's own Turnip driver from a picked package or library; the driver check runs for it. */
-    private void importDriver(Uri uri, File file) {
-        setBusy(Texts.RENDERER, Texts.t(this, Texts.TURNIP_COPYING));
-        background(() -> TurnipDriver.install(this, uri, file), title -> {
+    private void driverControls(LinearLayout card, VulkanDriver driver, int request) {
+        String builtin = Texts.t(this, Texts.DRIVER_BUILTIN);
+        String title = driver.title(this);
+        card.addView(ui.label(Texts.fmt(this, Texts.DRIVER_LABEL, driver.label, title.isEmpty() ? builtin : title), 14, ui.text));
+        card.addView(ui.label(Texts.fmt(this, Texts.DRIVER_HINT, driver.label), 12, ui.muted));
+        TextView choose = ui.button(Texts.t(this, Texts.DRIVER_CHOOSE), Ui.SECONDARY, () -> pick(Pickers.DRIVER, request, null));
+        if (title.isEmpty()) card.addView(ui.buttons(choose));
+        else card.addView(ui.buttons(choose, ui.button(Texts.t(this, Texts.DRIVER_RESET), Ui.QUIET, () -> resetDriver(driver))));
+    }
+
+    private void importDriver(VulkanDriver driver, Uri uri, File file) {
+        setBusy(Texts.RENDERER, Texts.t(this, Texts.DRIVER_COPYING));
+        background(() -> driver.install(this, uri, file), title -> {
             setBusy(null);
-            note(Texts.RENDERER, Texts.fmt(this, Texts.TURNIP_DRIVER, title), false);
+            note(Texts.RENDERER, Texts.fmt(this, Texts.DRIVER_LABEL, driver.label, title), false);
             checkRenderer();
         }, problem -> {
             setBusy(null);
-            note(Texts.RENDERER, Texts.fmt(this, Texts.E_TURNIP, String.valueOf(problem.getMessage())), true);
+            note(Texts.RENDERER, Texts.fmt(this, Texts.E_DRIVER, driver.label, String.valueOf(problem.getMessage())), true);
         });
     }
 
-    private void resetDriver() {
-        background(() -> { TurnipDriver.reset(this); return true; }, done -> checkRenderer(), null);
+    private void resetDriver(VulkanDriver driver) {
+        background(() -> { driver.reset(this); return true; }, done -> checkRenderer(), null);
     }
 
     private void checkRenderer() {
@@ -1809,15 +1825,15 @@ public final class LauncherActivity extends Activity {
         TextView version = ui.label(versionLine(), 14, ui.text);
         version.setTextIsSelectable(true);
         card.addView(version);
+        List<TextView> buttons = new ArrayList<>();
         if (!spec.github.isEmpty()) {
             TextView link = ui.label("github.com/" + spec.github, 14, ui.accent);
             link.setOnClickListener(v -> open(spec.githubUrl("")));
             card.addView(link);
-            List<TextView> buttons = new ArrayList<>();
             buttons.add(ui.button(Texts.t(this, Texts.GITHUB), Ui.SECONDARY, () -> open(spec.githubUrl(""))));
-            buttons.add(ui.button(Texts.t(this, Texts.RELEASES), Ui.SECONDARY, () -> open(spec.githubUrl("/releases"))));
-            card.addView(ui.buttons(buttons.toArray(new TextView[0])));
         }
+        buttons.add(ui.button("Telegram", Ui.SECONDARY, () -> open("https://t.me/phys_winner_ports")));
+        card.addView(ui.buttons(buttons.toArray(new TextView[0])));
         if (spec.updates) {
             TextView check = ui.button(Texts.t(this, checking ? Texts.CHECKING : Texts.CHECK_UPDATES), Ui.SECONDARY, () -> checkUpdates(true));
             Ui.enable(check, !checking);

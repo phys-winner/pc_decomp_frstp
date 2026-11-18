@@ -19,6 +19,28 @@ static pthread_mutex_t input_mutex=PTHREAD_MUTEX_INITIALIZER;
 static float pending[4];
 static float pending_building_turn;
 static unsigned reset_pending, camera_available, building_available;
+/* TouchControls "cancel" while a construction tool is active: leave the paint input mode the way the
+ * game does.  FrostpunkGameplayInputSystem (instance 143FE8C40) vt[34] 14150CC00 switches its state
+ * +0xA8 from 2 (paint) to the default; the paint mode's Exit (141A03910) clears the painter.  Calling
+ * FrostpunkPainterManager::ClearPainter (141A05920) alone left the system in paint mode without a
+ * painter, and no building could be selected afterwards. */
+static unsigned painter_clear_pending;
+static unsigned street_tool_pending;
+static _Atomic unsigned touch_construction;
+static _Atomic unsigned construction_projected;
+static float construction_plane[8];
+static uint16_t street_detail[256];
+static unsigned street_detail_painter,street_detail_units;
+/* Left notifications collapse to their icons and back on a tap on an icon (tap target 2 consumes
+ * it).  Each NOTIFICATION / TUTORIAL_NOTIFICATION is BUTTON -> clip -> move(text, close); the clip
+ * folds to scale 0 and the BUTTON keeps the icon's width, so the freed strip passes taps to the city. */
+static unsigned notifications_collapsed;
+/* Continuous pinch zoom (TouchControls action 7; action 2 at the end of every gesture settles it).
+ * Between two city zoom levels of FrostpunkGameplayCameraSystem the RTS controller follows the
+ * fingers; the gesture ends on the nearest level through the game's own SetZoomLevel. */
+static float pending_zoom;
+static unsigned zoom_settle_pending,zoom_city_ok,zoom_limit_out;
+static touch_rect notify_icons[24];static unsigned notify_icon_count;
 static unsigned road_available;
 static uint64_t painters,panels;
 static float building_gesture;
@@ -38,6 +60,19 @@ static _Atomic unsigned switch_modal_visible;
 static _Atomic unsigned switch_mode;
 static uint64_t switch_targets[5];
 static int switch_button_index(const char *name);
+/* Construction controls: the close button; the open menu; the active painter kind
+ * (1 building, 2 street, 3 pipe street, 4 demolition, 5 street demolition). */
+static uint64_t construction_close_target;
+static unsigned construction_open,painter_kind;
+static float construction_menu_aim=.5f;
+/* Loading-screen tips: FrostpunkUIHintControl (vtable 141EE06E0) is a persistent root of the loading
+ * UIScreen; each loading instantiates HINT/TEXT_DESCRIPTION under its HINTS_PARENT (1413B8B00).  The
+ * loading screen never runs the UI pass, so the root is scaled beforehand from the menu/city pass. */
+static uint64_t loading_hint;static uint32_t loading_hint_id;
+/* Video subtitles: VideoSubtitlesSupport (1410048A0) adds its own UIScreen from
+ * #LiquidEngine/UI/SubtitlesPanel while a video plays; the text is FRAME/Subtitles. */
+static uint64_t subtitle_text;static uint32_t subtitle_text_id;
+static int construction_button_index(const char *name);
 static touch_rect time_rectangle;
 static unsigned time_rectangle_valid,time_state_valid,current_speed;
 static int pending_speed=-1;
@@ -114,6 +149,14 @@ static unsigned ui_visible_chain(uint64_t node){
     return node==0;
 }
 
+/* Drawn, not only laid out: a closing panel keeps its hidden flag clear while its show/hide state
+ * (+0x30, +0x34) already says hidden (the construction menu after its close animation). */
+static unsigned ui_shown_chain(uint64_t node){
+    for(unsigned depth=0;node&&depth<40;++depth,node=rd64(node+0x230))
+        if((rd32(node+0x30)|rd32(node+0x1e0)|rd8(node+0x34))&2)return 0;
+    return node==0;
+}
+
 static uint64_t ui_owner_screen(uint64_t node){
     // Text editors can leave +248 empty; their parent chain still owns the
     // native hit rectangles. A real owner remains authoritative when present.
@@ -128,6 +171,15 @@ static uint64_t ui_owner_screen(uint64_t node){
 void fp_mobile_painters_created(CPU *cpu,void (*original)(CPU*)) {
     uint64_t object=cpu->rcx;original(cpu);painters=object;
 }
+void fp_mobile_building_aim(CPU *cpu,void (*original)(CPU*)) {
+    if(!atomic_load(&touch_construction)){original(cpu);return;}
+    /* Preview, rotation and placement read the same aim, independently of the HUD pointer. */
+    _Alignas(16) const float center[4]={.5f,.5f,0,1};
+    uint64_t input=cpu->rdx;
+    cpu->rdx=(uintptr_t)center;
+    original(cpu);
+    if(cpu->rdx==(uintptr_t)center)cpu->rdx=input;
+}
 void fp_mobile_panels_created(CPU *cpu,void (*original)(CPU*)) {
     uint64_t object=cpu->rcx;original(cpu);panels=object;
     fprintf(stderr,"FP_PANEL_MANAGER object=%llx vtable=%llx enabled=%u\n",(unsigned long long)object,(unsigned long long)(rd64(object)-g_image_delta),rd8(object+0x3f1));
@@ -137,20 +189,37 @@ void fp_mobile_debug_menu_request(void){atomic_store(&debug_requested,1);}
 __attribute__((visibility("default"))) int frostpunk_dxvk_scene_active(void){return atomic_load(&saved_controller)!=0;}
 
 __attribute__((visibility("default"))) int frostpunk_mobile_submit(unsigned action,float dx,float dy,float zoom,float angle) {
-    if(action>5 || !isfinite(dx)||!isfinite(dy)||!isfinite(zoom)||!isfinite(angle)
+    if(action>9 || !isfinite(dx)||!isfinite(dy)||!isfinite(zoom)||!isfinite(angle)
        ||fabsf(dx)>4||fabsf(dy)>4||fabsf(zoom)>4||fabsf(angle)>3.141593f)return 0;
-    if(zoom!=0)return 0; /* Pinch and triggers use the original, bounded wheel command. */
+    /* Triggers and the farthest city level use the original, bounded wheel command; pinches send a
+     * continuous zoom (action 7). */
+    if(zoom!=0&&action!=7)return 0;
     if(action==4&&(dx<0||dx>3||floorf(dx)!=dx))return 0;
     if(action==5&&(dx<0||dx>1||floorf(dx)!=dx||dy||angle))return 0;
+    if(action==8){
+        if((dx!=0&&dx!=1)||dy||angle)return 0;
+        atomic_store(&touch_construction,(unsigned)dx);return 1;
+    }
+    if(action==9&&((dx!=2&&dx!=4)||dy||angle))return 0;
     pthread_mutex_lock(&input_mutex);
     if(action==5){
         if(!frostpunk_switch_ui()||!atomic_load(&switch_available)){pthread_mutex_unlock(&input_mutex);return 0;}
         atomic_store(&switch_menu,(unsigned)dx);memset(pending,0,sizeof(pending));
     }
-    else if(action==2){memset(pending,0,sizeof(pending));reset_pending=0;pending_building_turn=0;pending_speed=-1;atomic_store(&switch_menu,0);}
+    else if(action==2){memset(pending,0,sizeof(pending));reset_pending=0;pending_building_turn=0;pending_speed=-1;atomic_store(&switch_menu,0);
+        pending_zoom=0;zoom_settle_pending=1;}
+    else if(action==7){
+        if(!zoom_city_ok||dx||dy||angle){pthread_mutex_unlock(&input_mutex);return 0;}
+        pending_zoom=fmaxf(-4,fminf(4,pending_zoom+zoom));
+    }
     else if(action==1){reset_pending=1;memset(pending,0,sizeof(pending));}
     else if(action==3)pending_building_turn=fmaxf(-3.141593f,fminf(3.141593f,pending_building_turn+angle));
     else if(action==4)pending_speed=(int)dx;
+    else if(action==6){
+        if(!painter_kind){pthread_mutex_unlock(&input_mutex);return 0;}
+        painter_clear_pending=1;
+    }
+    else if(action==9)street_tool_pending=(unsigned)dx;
     else for(unsigned i=0;i<4;++i){float value=(float[]){dx,dy,zoom,angle}[i];pending[i]=fmaxf(-4,fminf(4,pending[i]+value));}
     pthread_mutex_unlock(&input_mutex);return 1;
 }
@@ -175,10 +244,13 @@ __attribute__((visibility("default"))) unsigned frostpunk_mobile_context(float x
     if(frostpunk_switch_ui())result|=1u<<24;
     if(atomic_load(&switch_menu))result|=(1u<<25)|UI;
     if(atomic_load(&switch_available))result|=1u<<26;
+    if(camera_available&&construction_open)result|=1u<<28;
+    if(camera_available)result|=(painter_kind&7u)<<29;
     /* The next zoom-out notch enters the world map.  Not tied to camera_available: that is false while a
      * level transition animates, and the following notch arrived exactly then (2->3->4 in one pinch);
      * SetZoomLevel (1412537F0) stores the new index at once, so the check is valid mid-transition. */
     if(map_gate_next_opens())result|=1u<<27;
+    if(zoom_limit_out)result|=128;   /* a pinch pushes out past the farthest city level */
     pthread_mutex_unlock(&input_mutex);
     return result|(fp_port_setting_get(FP_SETTING_TOUCH_OFFSET)<<16);
 }
@@ -188,9 +260,13 @@ static uint64_t touch_point(float x,float y){
 }
 
 __attribute__((visibility("default"))) uint64_t frostpunk_mobile_swipe_target(float x,float y,int direction) {
-    if(!isfinite(x)||!isfinite(y)||x<0||x>1||y<0||y>1||direction<-1||direction>7)return 0;
+    if(!isfinite(x)||!isfinite(y)||x<0||x>1||y<0||y>1||direction<-1||direction>11)return 0;
     uint64_t result=0;float nearest=INFINITY;
     pthread_mutex_lock(&input_mutex);
+    if(direction>=8){
+        result=direction==11&&camera_available?construction_close_target:0;
+        pthread_mutex_unlock(&input_mutex);return result;
+    }
     if(direction>=3){
         result=frostpunk_switch_ui()&&atomic_load(&switch_available)&&atomic_load(&switch_menu)?switch_targets[direction-3]:0;
         pthread_mutex_unlock(&input_mutex);return result;
@@ -211,6 +287,13 @@ __attribute__((visibility("default"))) uint64_t frostpunk_mobile_swipe_target(fl
                 ?touch_point(setting_targets[i].x[side],setting_targets[i].y[side]):0;}
         }
     }
+    if(direction==2&&!result)
+        for(unsigned i=0;i<notify_icon_count;++i){touch_rect r=notify_icons[i];
+            if(x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom){
+                notifications_collapsed^=1u;result=UINT64_MAX;
+                fprintf(stderr,"FP_NOTIFICATIONS collapsed=%u\n",notifications_collapsed);break;
+            }
+        }
     if(direction==2&&!result)result=law_photo_tap_target(x,y);
     pthread_mutex_unlock(&input_mutex);return result;
 }
@@ -417,6 +500,24 @@ static void mobile_message_wrap(CPU *cpu,uint64_t text,float width,float height,
 static float mobile_message_height(uint64_t text);
 #include "mobile_law_layout.inc"
 #include "mobile_overlay_text.inc"
+
+void fp_mobile_show_feedback(CPU *cpu,void (*original)(CPU*)){
+    uint64_t message=cpu->rdx,detail=0;
+    unsigned kind=atomic_load(&touch_construction)&&message?street_mode_message(rd64(message),&detail):0;
+    if(!kind){
+        original(cpu);return;
+    }
+    unsigned units=0;
+    while(units<sizeof(street_detail)/sizeof(*street_detail)&&rd16(detail+2*units))++units;
+    pthread_mutex_lock(&input_mutex);
+    memcpy(street_detail,(const void*)(uintptr_t)detail,units*sizeof(*street_detail));
+    street_detail_units=units;street_detail_painter=kind;
+    pthread_mutex_unlock(&input_mutex);
+    /* The feedback method consumes its string even when the message stays on the touch buttons. */
+    call(cpu,UINT64_C(0x140E20F10),message,NULL,0,0,0);
+    wr64(message,0);
+    cpu->rip=pop64(cpu);
+}
 #include "mobile_selection_background.inc"
 #include "mobile_phone_panels.inc"
 
@@ -773,26 +874,70 @@ static void population_inputs(CPU *cpu,uint64_t node,unsigned open,unsigned dept
     for(uint64_t child=rd64(node+0x220);child&&count++<512;child=rd64(child+0x240))population_inputs(cpu,child,open,depth+1,budget);
 }
 
+static float issue_ordinate(uint64_t node,uint64_t ancestor,float y){
+    for(;node&&node!=ancestor;node=rd64(node+0x230))
+        y=rdss(node+0xc4)+(rdss(node+0xd4)+y)*rdss(node+0xf4);
+    return y;
+}
+
+static float issue_circle_center(uint64_t button,uint64_t group){
+    uint64_t icon=law_photo_child(button,"Ikona");
+    uint64_t graphic=icon?law_photo_child(icon,"graphic"):0;
+    uint64_t circle=graphic?law_photo_child(graphic,"circle_circle"):0;
+    if(!circle)return NAN;
+    return issue_ordinate(circle,rd64(group+0x230),rdss(circle+0x104)*.5f)-rdss(group+0xc4);
+}
+
 static void mobile_issue_row(CPU *cpu,uint64_t node){
     uint64_t header=law_photo_child(node,"HEADER");if(!header)return;
     uint64_t groups[]={law_photo_child(header,"IMPORTANT_DANGER_BUTTONS"),law_photo_child(header,"DANGER_BUTTONS")};
-    mobile_layout *base[2]={0};float left[2]={INFINITY,INFINITY},right[2]={-INFINITY,-INFINITY},span[2]={0};
+    mobile_layout *base[2]={0};float left[2]={INFINITY,INFINITY},right[2]={-INFINITY,-INFINITY},span[2]={0},center[2]={NAN,NAN};
     for(unsigned i=0;i<2;++i){
         if(!groups[i])continue;base[i]=remember_layout(groups[i]);
         unsigned count=0;
         for(uint64_t child=rd64(groups[i]+0x220);child&&count++<128;child=rd64(child+0x240)){
             if(rd64(child)!=GVA(0x141D79F78)||!ui_visible_chain(child))continue;
+            if(applied_scale>100&&!isfinite(center[i]))center[i]=issue_circle_center(child,groups[i]);
             float x=rdss(child+0xc0)+rdss(child+0xd0)*rdss(child+0xf0),r=x+rdss(child+0x100)*rdss(child+0xf0);
             if(isfinite(x)&&isfinite(r)&&r>x){left[i]=fminf(left[i],x);right[i]=fmaxf(right[i],r);}
         }
         if(right[i]>left[i])span[i]=right[i]-left[i];
     }
     float cursor=200-(span[0]+span[1]+(span[0]&&span[1]?8:0))*.5f;
-    // Both native rows share one centred row above Discontent at phone scales.
+    // The two authored button templates place their circles at different offsets.
     for(unsigned i=0;i<2;++i)if(base[i]){
         if(applied_scale<=100||!span[i])layout_position(cpu,groups[i],base[i]->x,base[i]->y);
-        else{layout_position(cpu,groups[i],cursor-left[i],base[0]?base[0]->y:1);cursor+=span[i]+8;}
+        else{
+            float y=base[0]?base[0]->y:1;
+            if(i&&isfinite(center[0])&&isfinite(center[1]))y+=center[0]-center[1];
+            layout_position(cpu,groups[i],cursor-left[i],y);cursor+=span[i]+8;
+        }
     }
+}
+
+static void mobile_issue_count(CPU *cpu,uint64_t label){
+    mobile_layout *base=remember_layout(label);if(!base)return;
+    float y=5.5f-rdss(label+0xd4)*rdss(label+0xf4);
+    if(applied_scale>100){
+        uint64_t count=law_photo_child(label,"COUNT"),icon=rd64(label+0x230);
+        uint64_t button=icon?rd64(icon+0x230):0,group=button?rd64(button+0x230):0;
+        uint64_t header=group?rd64(group+0x230):0;
+        uint64_t major=header?law_photo_child(header,"IMPORTANT_DANGER_BUTTONS"):0;
+        unsigned visited=0;
+        for(uint64_t other=major?rd64(major+0x220):0;count&&other&&visited++<128;other=rd64(other+0x240)){
+            if(rd64(other)!=GVA(0x141D79F78)||!ui_visible_chain(other))continue;
+            uint64_t art=law_photo_child(other,"Ikona"),texts=art?law_photo_child(art,"TEXTS"):0;
+            uint64_t reference=texts?law_photo_child(texts,"COUNT"):0;
+            if(!reference||!ui_visible_chain(reference))continue;
+            float sy=rdss(icon+0xf4)*rdss(button+0xf4)*rdss(group+0xf4);
+            float target=issue_ordinate(reference,header,rdss(reference+0x104));
+            float current=issue_ordinate(count,header,rdss(count+0x104));
+            // The counters share a font size, with different text-box heights.
+            if(sy>0&&isfinite(target)&&isfinite(current))y=rdss(label+0xc4)+(target-current)/sy;
+            break;
+        }
+    }
+    layout_position(cpu,label,base->x,y);
 }
 
 static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budget,float width,float height){
@@ -829,7 +974,9 @@ static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budg
        &&(!strcmp(parent_name,"EXT_MAIN_MENU_PANEL")||!strcmp(parent_name,"EXT_INGAME_MENU_MAIN_PANEL")||!strcmp(parent_name,"EXT_SETTINGS_PANEL")
           ||!strcmp(parent_name,"EXT_INGAME_MENU_SETTINGS_PANEL")||!strcmp(parent_name,"EXT_LOADGAME_PANEL")
           ||!strcmp(parent_name,"EXT_INGAME_MENU_LOADGAME_PANEL")||!strcmp(parent_name,"EXT_INGAME_MENU_SAVEGAME_PANEL")
-          ||!strcmp(parent_name,"EXT_SAVE_GAME_PANEL")||!strcmp(parent_name,"EXT_CONFIRMATION_PANEL"))){
+          ||!strcmp(parent_name,"EXT_SAVE_GAME_PANEL")||!strcmp(parent_name,"EXT_CONFIRMATION_PANEL")
+          ||!strcmp(parent_name,"EXT_SCENARIOS_PANEL")||!strcmp(parent_name,"EXT_ENDLESS_CONFIGURATION_PANEL")
+          ||!strcmp(parent_name,"EXT_CUSTOM_SCENARIO_PANEL"))){
         mobile_layout *base=remember_layout(node);
         if(base){
             unsigned requested=fp_port_setting_get(FP_SETTING_UI_SCALE);
@@ -842,7 +989,13 @@ static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budg
                 unsigned main=!strcmp(parent_name,"EXT_MAIN_MENU_PANEL");
                 unsigned pause=!strcmp(parent_name,"EXT_INGAME_MENU_MAIN_PANEL");
                 unsigned compact_popup=!strcmp(parent_name,"EXT_SAVE_GAME_PANEL")||!strcmp(parent_name,"EXT_CONFIRMATION_PANEL");
-                float center_x=310.05f,center_y=336.5f;
+                /* Scenario list and its customisation sliders, Endless configuration: one column right
+                 * of the picture (header 710..1222, rows down to the footer); it grows in place.
+                 * Custom scenario: two 420-unit columns around the centre. */
+                unsigned scenarios=!strcmp(parent_name,"EXT_SCENARIOS_PANEL"),endless=!strcmp(parent_name,"EXT_ENDLESS_CONFIGURATION_PANEL");
+                unsigned custom=!strcmp(parent_name,"EXT_CUSTOM_SCENARIO_PANEL");
+                float aspect=frostpunk_display_aspect?frostpunk_display_aspect():16.f/9.f,visible=fmaxf(1280.f,720.f*aspect);
+                float target_x=640,center_x=310.05f,center_y=336.5f;
                 if(main){center_x=638;center_y=369;}
                 else if(pause){center_x=639;center_y=362;}
                 else if(!strcmp(parent_name,"EXT_INGAME_MENU_SETTINGS_PANEL")){center_x=637.55f;center_y=326.5f;}
@@ -850,14 +1003,67 @@ static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budg
                 else if(!strcmp(parent_name,"EXT_INGAME_MENU_LOADGAME_PANEL")){center_x=637.55f;center_y=327;}
                 else if(!strcmp(parent_name,"EXT_INGAME_MENU_SAVEGAME_PANEL")){center_x=643.55f;center_y=332;}
                 else if(compact_popup){center_x=204;center_y=178;}
-                float factor=fminf(requested/100.f,main?656.f/(370*.95f):pause?656.f/350:compact_popup?1.5f:672.f/449);
+                else if(scenarios||endless){center_x=966;center_y=scenarios?354:360;}
+                else if(custom){center_x=646;center_y=346;}
+                float factor=fminf(requested/100.f,main?656.f/(370*.95f):pause?656.f/350:compact_popup?1.5f
+                    :scenarios?700.f/500:endless?700.f/561:custom?fminf(700.f/539,(visible-24)/854):672.f/449);
+                if(scenarios||endless){
+                    /* The column's widest rows are the customisation sliders: labels from x 773 to the
+                     * slider ends at 1205.  Keep the labels right of the scenario picture (its frost
+                     * reaches 745, the Endless map's 765) and the sliders inside the screen. */
+                    float left=775,right=640+visible*.5f-12;
+                    factor=fminf(factor,(right-left)/(1205.f-773.f));
+                    target_x=left+(center_x-773)*factor;
+                }
                 // Scale the complete ink composition so its text, alpha masks and camera keep one transform.
                 if(rd32(node+0x138))call_value(cpu,UINT64_C(0x140EC39C0),node,0);
                 if(!compact_popup&&(rdss(node+0x210)!=1280||rdss(node+0x214)!=720)){float size[4]={1280,720,0,0};call(cpu,UINT64_C(0x140EC4C70),node,size,0,0,0);}
                 layout_scale(cpu,node,factor,factor);
                 float y=360-(center_y+rdss(node+0xd4))*factor;
-                layout_position(cpu,node,640-(center_x+rdss(node+0xd0))*factor,dialog_ime_y(node,y,height));
+                layout_position(cpu,node,target_x-(center_x+rdss(node+0xd0))*factor,dialog_ime_y(node,y,height));
             }
+        }
+    }
+    if(name&&parent_name&&((!strcmp(name,"TEXTSEQUENCE")&&!strcmp(parent_name,"CONTENT"))
+        ||(!strcmp(name,"TextLayout")&&!strcmp(parent_name,"SLIDE_DEFAULT"))
+        ||(!strcmp(name,"TextBoxLayout")&&!strcmp(parent_name,"SLIDE_TEXTBOX")))
+       &&law_photo_ancestor(node,"EXT_CINEMATICS_PANEL")){
+        /* Cinematic captions: TEXTSEQUENCE (centred lines up to 1000 wide), the default slide's
+         * TextLayout (900-wide text) and the text-box slide's TextBoxLayout grow with the interface
+         * scale around their centres, inside the screen's width. */
+        mobile_layout *base=remember_layout(node);
+        if(base){
+            unsigned requested=fp_port_setting_get(FP_SETTING_UI_SCALE);
+            float aspect=frostpunk_display_aspect?frostpunk_display_aspect():16.f/9.f,visible=fmaxf(1280.f,720.f*aspect);
+            float content=name[0]=='T'&&name[1]=='E'?1000.f:name[4]=='B'?440.f:900.f;
+            float s=requested>100?fminf(fminf(requested/100.f,1.5f),(visible-24)/content):1;
+            if(!(s>1))s=1;
+            float sx=base->sx*s,sy=base->sy*s;
+            /* The text-box slide sits at the left edge: it grows to the right from there. */
+            float anchor=name[4]=='B'?0.f:.5f;
+            float x=base->x+(base->px+base->w*anchor)*(base->sx-sx),y=base->y+(base->py+base->h*.5f)*(base->sy-sy);
+            layout_scale(cpu,node,sx,sy);layout_position(cpu,node,x,y);
+        }
+    }
+    if(name&&parent_name&&!strcmp(parent_name,"MODES_VIEW")&&(!strcmp(name,"BACK_BUTTON")||!strcmp(name,"DOTS_UNDERLINE"))
+       &&law_photo_ancestor(node,"EXT_ENDLESS_MODE_SELECTION_PANEL")){
+        /* Under the enlarged cards: Back and its divider move down by 30 (Back ends at 713 of 720). */
+        mobile_layout *base=remember_layout(node);
+        if(base)layout_position(cpu,node,base->x,base->y+(fp_port_setting_get(FP_SETTING_UI_SCALE)>100?30.f:0.f));
+    }
+    if(name&&!strcmp(name,"MODES_LAYOUT")&&law_photo_ancestor(node,"EXT_ENDLESS_MODE_SELECTION_PANEL")){
+        /* The three Endless cards keep their titles and descriptions in a 1047x130 strip (canvas
+         * 118..1165, 495..625) under the city art: scale the cards around it, the art stays. */
+        mobile_layout *base=remember_layout(node);
+        if(base){
+            unsigned requested=fp_port_setting_get(FP_SETTING_UI_SCALE);
+            float aspect=frostpunk_display_aspect?frostpunk_display_aspect():16.f/9.f,visible=fmaxf(1280.f,720.f*aspect);
+            float factor=requested>100?fminf(fminf(requested/100.f,1.35f),(visible-24)/1047):1;
+            if(factor<1)factor=1;
+            /* Local point of the strip's centre: canvas (642,560) minus the layout's own origin. */
+            float lx=642-(rdss(rd64(node+0x230)+0xc0)+base->x),ly=560-base->y;
+            layout_scale(cpu,node,base->sx*factor,base->sy*factor);
+            layout_position(cpu,node,base->x+lx*(1-factor),base->y+ly*(1-factor));
         }
     }
     if(name&&!strcmp(name,"TOOLTIP_DETAILS")&&law_photo_ancestor(node,"EXT_POPULATION_PANEL")){
@@ -875,7 +1081,9 @@ static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budg
     }
     if(name&&(!strcmp(name,"darken_lefttop")||!strcmp(name,"darken_rightbottom")||strstr(name,"Sequel_splash_illustration")))
         viewport_decoration(cpu,node,width,height);
-    if(name&&name[0]=='E'&&!strncmp(name,"EXT_TAB_",8))selection_tab_fit(cpu,node);
+    /* The Beacon's page (scout deploy slot and the scrolling list of scout units, 391 units) sits
+     * directly in its subpanel, not under EXT_TAB_: its scout list ran below the frame. */
+    if(name&&name[0]=='E'&&(!strncmp(name,"EXT_TAB_",8)||!strcmp(name,"EXT_EXPEDITION_BUILDING_PANEL")))selection_tab_fit(cpu,node);
     if(rd64(node)==GVA(0x141DED7D8)){
         // Tutorial pages stay a fitted PC dialog (scale 0.5); their paragraphs live in a scroll pane, so a
         // larger font only adds lines.  Section tabs and headers keep their authored size.
@@ -1045,6 +1253,24 @@ void fp_mobile_ui_template(CPU *cpu,void (*original)(CPU*)) {
     if(!isfinite(value)||value<=0||(offset==0x378&&value>=179)){original(cpu);return;}
     float adjusted=offset==0x378?atanf(tanf(value*(3.141592654f/360))/factor)*(360/3.141592654f):value*factor;
     wrss(node+offset,adjusted);original(cpu);wrss(node+offset,value);
+}
+
+/* UICanvas::Render (1410CCA60, the line charts of the Economy panel): with a virtual size (+0x2A0/
+ * +0x2A4) the canvas scale is (transform scale x size) / (virtual size x own scale) and the transform
+ * is applied once more on top, so a scaled ancestor shrinks the plot by its scale a second time (the
+ * fitted Economy panel at 0.52 drew 11 days into half of the axis).  The PC never scales an ancestor
+ * of a chart; divide that factor out by shrinking the virtual size for the draw. */
+void fp_mobile_canvas_render(CPU *cpu,void (*original)(CPU*)){
+    uint64_t node=cpu->rcx;
+    float w=rdss(node+0x2A0),h=rdss(node+0x2A4),x,y,sx,sy;
+    if(!(w>1.2e-7f)&&!(h>1.2e-7f)){original(cpu);return;}
+    parent_transform(node,&x,&y,&sx,&sy);
+    {static unsigned logged;if(!logged++)fprintf(stderr,"FP_CANVAS virtual=%.2fx%.2f ancestors=%.3fx%.3f\n",w,h,sx,sy);}
+    if(!(sx>0)||!(sy>0)||(fabsf(sx-1)<.001f&&fabsf(sy-1)<.001f)){original(cpu);return;}
+    if(w>1.2e-7f)wrss(node+0x2A0,w*sx);
+    if(h>1.2e-7f)wrss(node+0x2A4,h*sy);
+    original(cpu);
+    wrss(node+0x2A0,w);wrss(node+0x2A4,h);
 }
 
 /* The pause-menu button in the top-left corner is twice its desktop size on a phone.  The HUD
@@ -1283,13 +1509,16 @@ static void prepare_canvas(CPU *cpu,uint64_t node,unsigned depth,unsigned parent
             if(!strcmp(node_name,"EXT_SOCIETY_ISSUES_PANEL")){
                 if(applied_scale<=100)law_photo_restore(cpu,node);
                 else if(law_photo_remember(node)&&rd32(node+0x13c))call_value(cpu,UINT64_C(0x140EC30A0),node,0);
-                layout_position(cpu,node,439.5f+(width-1280)*.5f,base->y);
+                /* Switch: the bars sit lower (no empty frame under them), the issue icons a little higher. */
+                layout_position(cpu,node,439.5f+(width-1280)*.5f,base->y-(switch_mode?6.f:0.f));
                 mobile_issue_row(cpu,node);
             } else {
                 static unsigned logged;
                 if(!logged){logged=1;fprintf(stderr,"FP_SEARCH_BASE x=%.2f y=%.2f\n",base->x,base->y);}
-                /* The magnifier's ring touches the left end of the population box, as on PC. */
-                layout_position(cpu,node,applied_scale>100?-139.5f:base->x,applied_scale>100?-40:base->y);
+                /* The magnifier's ring touches the left end of the population box, as on PC (the Switch
+                 * preset parks it right of the box, off the screen: use the PC place there too). */
+                float home_x=switch_mode?58.f:base->x,home_y=switch_mode?-54.5f:base->y;
+                layout_position(cpu,node,applied_scale>100?-139.5f:home_x,applied_scale>100?-40:home_y);
                 unsigned covered=applied_scale>100&&selection_cover_pass==ui_pass;   /* folded with the bottom HUD */
                 layout_scale(cpu,node,covered?0:base->sx,covered?0:base->sy);
             }
@@ -1303,6 +1532,66 @@ static void prepare_canvas(CPU *cpu,uint64_t node,unsigned depth,unsigned parent
         if(parent_name&&!strcmp(parent_name,"TOP_LEFT_BUTTONS"))menu_button_scale(cpu,node);
     }
     if(node_name&&!strcmp(node_name,"EXT_WORLD_MAP_SELECTION_PANEL"))world_site_fit(cpu,node,height);
+    if(node_name&&node_name[0]=='E'&&!strcmp(node_name,"EXT_CONSTRUCTION_PANEL")){
+        /* While a building, street or demolition tool is active the menu folds away (as on the Switch)
+         * so the tool works on the city under the centre cursor; it returns when the tool ends. */
+        mobile_layout *base=remember_layout(node);unsigned fold=painter_kind!=0;
+        if(base)layout_scale(cpu,node,fold?0:base->sx,fold?0:base->sy);
+        if(!fold&&ui_shown_chain(node)){
+            float x,y,sx,sy;parent_transform(node,&x,&y,&sx,&sy);
+            float top=y+sy*(rdss(node+0xc4)+rdss(node+0xd4)*rdss(node+0xf4));
+            /* With the menu open, keep the cursor in the visible part of the city. */
+            construction_menu_aim=isfinite(top)&&top>66&&top<height?(66+top)*.5f/height:.5f;
+        }
+    }
+    if(node_name&&node_name[0]=='c'&&!strcmp(node_name,"clip")){
+        uint64_t holder=rd64(node+0x230);const char *holder_name=holder?law_photo_name(holder):NULL;
+        if(holder_name&&!strcmp(holder_name,"hide_expeditions_container")){
+            /* The Switch scout portraits reached ~12 units past the screen's right edge at 2x. */
+            mobile_layout *base=remember_layout(node);
+            if(base&&fabsf(base->x+465)<.5f)layout_position(cpu,node,base->x-(switch_mode&&applied_scale>100?12.f:0.f),base->y);
+        }
+        uint64_t button=rd64(node+0x230),owner=button?rd64(button+0x230):0;
+        const char *button_name=button?law_photo_name(button):NULL,*owner_name=owner?law_photo_name(owner):NULL;
+        if(button_name&&!strcmp(button_name,"BUTTON")&&owner_name&&(!strcmp(owner_name,"NOTIFICATION")||!strcmp(owner_name,"TUTORIAL_NOTIFICATION"))
+           &&law_photo_ancestor(owner,"EXT_NOTIFICATION_PANEL")){
+            unsigned fold=notifications_collapsed;
+            mobile_layout *base=remember_layout(node),*button_base=remember_layout(button);
+            if(base)layout_scale(cpu,node,fold?0:base->sx,fold?0:base->sy);
+            if(button_base&&button_base->w>0){
+                /* The icon: 66 of the 406 units of a notification, the "?" 56 of the tutorial's 440. */
+                float width=fold?(owner_name[0]=='T'?56.f:66.f):button_base->w;
+                if(fabsf(rdss(button+0x210)-width)>.01f){float size[4]={width,button_base->h,0,0};call(cpu,UINT64_C(0x140EC4C70),button,size,0,0,0);}
+            }
+        }
+    }
+    if(node_name&&node_name[0]=='l'&&switch_mode&&!strcmp(node_name,"line_bottom")){
+        /* The PC frame line of the main buttons stays in the Switch HUD without its buttons: an empty
+         * bracket under Discontent/Hope. */
+        uint64_t parent=rd64(node+0x230);const char *parent_name=parent?law_photo_name(parent):NULL;
+        mobile_layout *base=parent_name&&!strcmp(parent_name,"MAIN_BUTTONS")?remember_layout(node):NULL;
+        if(base)layout_scale(cpu,node,0,0);
+    }
+    if(node_name&&node_name[0]=='c'&&!strcmp(node_name,"critical_texts_layout")&&law_photo_ancestor(node,"DANGER_BUTTONS")){
+        mobile_issue_count(cpu,node);
+    }
+    if(node_name&&node_name[0]=='h'&&!strcmp(node_name,"hide_expeditions_container")){
+        /* The construction buttons of TouchControls take the right edge: fold the scout portraits. */
+        mobile_layout *base=remember_layout(node);unsigned fold=construction_open||painter_kind;
+        if(base)layout_scale(cpu,node,fold?0:base->sx,fold?0:base->sy);
+    }
+    if(node_name&&node_name[0]=='V'&&!strcmp(node_name,"VISIBLE_WITH_MAP_UNLOCK")){
+        /* The Switch preset draws the world-map button and scout portraits at 0.9 (PC 0.75): on the
+         * 2x HUD they ran past the screen's right edge.  Use the PC size there. */
+        uint64_t parent=rd64(node+0x230);const char *parent_name=parent?law_photo_name(parent):NULL;
+        mobile_layout *base=parent_name&&!strcmp(parent_name,"EXT_EXPEDITIONS_PANEL")?remember_layout(node):NULL;
+        if(base){
+            unsigned fit=switch_mode&&applied_scale>100;float s=fit?fminf(base->sx,.75f):base->sx;
+            layout_scale(cpu,node,s,s);
+            /* No position here: the panel slides this node in, and a base taken during the slide
+             * pinned the map and beacon buttons off screen. */
+        }
+    }
     if(applied_scale>100&&node_name&&!strcmp(node_name,"EXT_RESEARCH_FINISHED_PANEL")){
         /* "Research finished" sits at x 501 in TOP with a 281-unit card: on the 2x HUD it ended 66 units
          * past a 2.2:1 screen.  Keep its right edge inside the screen (its slide-in starts further right). */
@@ -1393,7 +1682,8 @@ static void prepare_canvas(CPU *cpu,uint64_t node,unsigned depth,unsigned parent
             if(content[2]>content[0]&&content[3]>content[1])memcpy(bounds,content,sizeof(bounds));
         }
         if(!strcmp(node_name,"EXT_RESOURCES_PANEL")){
-            bounds[1]=12;bounds[3]=195;
+            /* Its dark band starts 14 units down: at 12 the scene showed through a 3-4 px strip above it. */
+            bounds[1]=14;bounds[3]=195;
             if(applied_scale>100){bounds[0]=84;bounds[2]=924;}
         }
         unsigned economy=!strcmp(node_name,"EXT_ECONOMY_PANEL");
@@ -1419,8 +1709,16 @@ static void prepare_canvas(CPU *cpu,uint64_t node,unsigned depth,unsigned parent
             left=(width-w*scale)*.5f;top=selection_frame_top(width,height,h*scale);
             if(h>241.5f)selection_cover_pass=ui_pass;}
         if(people&&applied_scale>100&&selection_cover_pass==ui_pass){transform[0]=0;transform[1]=0;}
-        if(resources)top=0;
-        if(society)top=height-(applied_scale>100?53:67);
+        if(resources){
+            top=0;
+            /* The temperature dial (TEMPERATURE_OVERLAY_BUTTON, x 493 of the panel) is the centre of the
+             * PC's top bar; the panel's own box is not symmetric about it, so centring the box put the
+             * dial 8 units left at 2x and 43 left at 100 %. */
+            uint64_t ani=law_photo_child(node,"ANI"),dial=ani?law_photo_child(ani,"TEMPERATURE_OVERLAY_BUTTON"):0;
+            float centre=dial?rdss(ani+0xc0)+rdss(dial+0xc0):NAN;
+            if(isfinite(centre)&&centre>bounds[0]&&centre<bounds[2])left=width*.5f-(centre-bounds[0])*scale;
+        }
+        if(society)top=height-(applied_scale>100?53:67)+(switch_mode?12:0);
         float position[4]={(left-x)/sx-(rdss(node+0xd0)+bounds[0])*transform[0],(top-y)/sy-(rdss(node+0xd4)+bounds[1])*transform[1],0,1};
         if(rd32(node+0x138))call_value(cpu,UINT64_C(0x140EC39C0),node,0);
         if(rd32(node+0x13c))call_value(cpu,UINT64_C(0x140EC30A0),node,0);
@@ -1630,8 +1928,113 @@ static void intro_videos(uint64_t screen){
     }
 }
 
+
+/* Free Monument to the Builders of the Generator.  FrostpunkUIMainMenuStatuePanel's "Follow Publisher
+ * Page" handler (1419DF130) sets the profile bool CLAIM_STATUE_BUILDING_IN_STATUE_PANEL (string id
+ * 142B8ECF0) through 14111C620 and saves the profile (141C2BE30); the main menu hides its statue button
+ * and new games offer the monument while it is set.  Settings row 33 shows and changes that bool; the
+ * first start claims it once, as if the button had been pressed (the Steam page itself never opens). */
+static uint64_t guest_call(CPU *cpu,uint64_t function,uint64_t a,uint64_t b,uint64_t c3){
+    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=a;c.rdx=b;c.r8=c3;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,function);return c.rax;
+}
+static int monument_claimed(CPU *cpu,uint64_t profile){
+    if(!profile||!rd8(profile+0x128))return -1;   /* GamerProfile::GetData asserts on an uninitialised profile */
+    uint64_t out=((cpu->rsp-512)&~UINT64_C(15))+0x100;   /* inside the frame guest_call reserves, above its stack */
+    wr8(out,0);wr8(out+1,0);
+    guest_call(cpu,UINT64_C(0x14111BA90),profile,out,GVA(0x142B8ECF0));
+    return rd8(out)&&rd8(out+1);
+}
+static void monument_set(CPU *cpu,uint64_t profile,unsigned value){
+    guest_call(cpu,UINT64_C(0x14111C620),profile,GVA(0x142B8ECF0),value?1:0);
+}
+/* Unit 0959 getter of row 33, right after the original call to the profile accessor (rax = profile). */
+uint32_t fp_port_monument_get(CPU *cpu){
+    int claimed=monument_claimed(cpu,cpu->rax);
+    return claimed<0?fp_port_setting_get(FP_SETTING_FREE_BUILDING):(uint32_t)claimed;
+}
+/* Unit 0959 setter, after fp_port_setting_set: rax = profile, r14 = "profile changed" (saved by Apply),
+ * r15 = "requires restart" (the original RequiresRestart confirmation, as for texture quality). */
+void fp_port_setting_effects(CPU *cpu,uint32_t id,uint32_t value){
+    if(id==FP_SETTING_SWITCH_UI&&value!=(uint32_t)frostpunk_switch_ui()&&cpu->r15)wr8(cpu->r15,1);
+    if(id==FP_SETTING_FREE_BUILDING){
+        uint64_t profile=cpu->rax;
+        if(profile&&rd8(profile+0x128)){
+            monument_set(cpu,profile,value);
+            if(cpu->r14)wr8(cpu->r14,1);
+            fprintf(stderr,"FP_FREE_BUILDING claimed=%u source=settings\n",value?1u:0u);
+        }
+    }
+}
+static void free_building_first_start(CPU *cpu){
+    if(camera_available||!fp_port_free_building_pending())return;
+    uint64_t profile=guest_call(cpu,UINT64_C(0x1410F41B0),GVA(0x142B8A520),0,0);
+    int claimed=monument_claimed(cpu,profile);
+    if(claimed<0)return;
+    if(!claimed){monument_set(cpu,profile,1);guest_call(cpu,UINT64_C(0x141C2BE30),profile,0,0);}
+    fp_port_setting_set(FP_SETTING_FREE_BUILDING,1);
+    fprintf(stderr,"FP_FREE_BUILDING claimed=1 source=%s\n",claimed?"profile":"first-start");
+}
+
+static void loading_hint_scale(CPU *cpu){
+    uint64_t node=loading_hint;
+    if(!node||rd64(node)!=GVA(0x141EE06E0)||rd32(node+0x1e4)!=loading_hint_id)return;
+    mobile_layout *base=remember_layout(node);if(!base)return;
+    unsigned requested=fp_port_setting_get(FP_SETTING_UI_SCALE);
+    /* Drawn on the 1280x720 canvas (menus run at 100%).  The tip box is 832 units wide (two lines at
+     * most) from x +51 and y -10..+54 of the root; a 2.2:1 screen shows ~170 more units each side of
+     * this canvas.  At most 1.75x: a full-width tip stays inside the screen, its second line above the
+     * bottom edge (16:9 screens get the smaller factor that fits). */
+    float aspect=frostpunk_display_aspect?frostpunk_display_aspect():16.f/9.f;
+    float margin=fmaxf(0.f,(720.f*aspect-1280.f)*.5f);
+    /* The arrow starts 20 units into the root, the 832-unit text ends 883 units into it; the loading
+     * spinner sits from x 1139 of the canvas on the same line, so the text ends at 1129. */
+    float s=requested>100?fminf(fminf(requested/100.f,1.75f),(1129.f+margin-40.f)/863.f):1.f;
+    if(s<=1.001f){layout_scale(cpu,node,base->sx,base->sy);layout_position(cpu,node,base->x,base->y);return;}
+    layout_scale(cpu,node,base->sx*s,base->sy*s);
+    layout_position(cpu,node,-margin+40.f-20.f*s,720.f-12.f-54.f*s);
+}
+
+/* Subtitles of videos ("A New Home" intro) are drawn at the 1280x720 menu size: grow them with the
+ * interface scale around their bottom centre, inside the screen's width. */
+static void subtitle_scale(CPU *cpu){
+    /* The subtitle screen has no input controls, so the control snapshot never visits it: walk the UI
+     * manager's screen vector (1429822D0: handles +0, count +8; 140EA8FD0 appends) for FRAME/Subtitles. */
+    /* Found again on every pass: the screen is destroyed after each video. */
+    subtitle_text=0;
+    {
+        uint64_t data=rd64(GVA(0x1429822D0));int32_t count=(int32_t)rd32(GVA(0x1429822D0)+8);
+        for(int32_t i=0;data&&i<count&&i<64;++i){
+            uint64_t handle=rd64(data+8ull*(uint64_t)i),screen=handle?rd64(handle):0;
+            unsigned seen=0;
+            for(uint64_t root=screen?rd64(screen+0x220):0;root&&seen++<8;root=rd64(root+0x240)){
+                const char *root_name=law_photo_name(root);if(!root_name||strcmp(root_name,"FRAME"))continue;
+                uint64_t text=law_photo_child(root,"Subtitles");
+                if(text&&(rd64(text)==GVA(0x141DED7D8)||rd64(text)==GVA(0x141DAD740))){subtitle_text=text;subtitle_text_id=rd32(text+0x1e4);}
+            }
+        }
+    }
+    uint64_t node=subtitle_text;
+    if(!node||rd32(node+0x1e4)!=subtitle_text_id||(rd64(node)!=GVA(0x141DED7D8)&&rd64(node)!=GVA(0x141DAD740)))return;
+    mobile_layout *base=remember_layout(node);if(!base)return;
+    unsigned requested=fp_port_setting_get(FP_SETTING_UI_SCALE);
+    float aspect=frostpunk_display_aspect?frostpunk_display_aspect():16.f/9.f,visible=fmaxf(1280.f,720.f*aspect);
+    float w=base->w>0?base->w:rdss(node+0x100),s=requested>100?fminf(requested/100.f,1.6f):1;
+    if(w>0&&base->sx>0)s=fminf(s,(visible-24)/(w*base->sx));
+    if(!(s>1))s=1;
+    float sx=base->sx*s,sy=base->sy*s;
+    float x=base->x+(base->px+base->w*.5f)*(base->sx-sx),y=base->y+(base->py+base->h)*(base->sy-sy);
+    {static uint64_t logged;if(logged!=node){logged=node;
+        fprintf(stderr,"FP_SUBTITLES node=%llx box=%.1fx%.1f at=%.1f,%.1f pivot=%.1f,%.1f scale=%.3f\n",
+            (unsigned long long)node,base->w,base->h,base->x,base->y,base->px,base->py,s);}}
+    layout_scale(cpu,node,sx,sy);layout_position(cpu,node,x,y);
+}
+
 void fp_mobile_ui_before(CPU *cpu) {
     intro_videos(cpu->rcx);
+    subtitle_scale(cpu);
+    free_building_first_start(cpu);
+    loading_hint_scale(cpu);
     mobile_overlay_text(cpu);
     fp_mobile_ui_scale();
     if(!panels||!camera_available||pause_menu_visible||rd8(panels+0x865)||rd8(GVA(0x142982F8D)))debug_ready_since=0;
@@ -1698,7 +2101,7 @@ static void dump_ui(FILE *file,uint64_t node,unsigned depth,unsigned *budget) {
         for(unsigned i=0;i<16;++i)fprintf(file,"\t%.6f",rdss(node+0x50+i*4));
     }
     // Font size, laid-out ink width, auto-size and wrap-limit flags for the layout audit.
-    if(rd64(node)==GVA(0x141DED7D8))
+    if(rd64(node)==GVA(0x141DED7D8)||rd64(node)==GVA(0x141DAD740))
         fprintf(file,"\tTEXT\t%.3f\t%.3f\t%u\t%u\t%.3f\t%.3f",rdss(node+0x3a0),rdss(node+0x4d0),rd8(node+0x40e),rd8(node+0x384),
             rdss(node+0x3b0),rdss(node+0x3b4));
     if(name&&!strcmp(name,"ACTIVATE_SOCIOTECH_BUTTON")){
@@ -1719,11 +2122,15 @@ static void snapshot_ui(void) {
     uint64_t screens[32];unsigned used=0,modal=0;
     uint32_t clock_ids[8];unsigned clock_count=0;
     uint32_t switch_ids[5]={0};unsigned switch_present=0;
+    uint32_t construction_ids[4]={0};unsigned construction_present=0;
+    struct {uint32_t id;float fraction;} notify_buttons[24];unsigned notify_button_count=0;
+    notify_icon_count=0;
     uint32_t scroll_ids[128],scroll_flags[128];unsigned scroll_count=0;
     struct {uint32_t id;uint64_t screen;unsigned visible;} editors[128];unsigned editor_count=0;
     uint32_t arrow_ids[256],arrow_rows[256],arrow_sides[256];unsigned arrow_count=0;
     setting_target_count=slider_target_count=0;
     memset(switch_targets,0,sizeof(switch_targets));
+    construction_close_target=0;construction_open=0;
     law_photo_touch_reset();
     pause_menu_visible=0;
     rectangle_count=0;time_rectangle_valid=0;time_rectangle=(touch_rect){1,1,0,0};
@@ -1746,7 +2153,21 @@ static void snapshot_ui(void) {
         if(radial>=0&&ui_visible_chain(control)&&(rd32(control+0x1e0)&0x10)){
             switch_ids[radial]=rd32(control+0x1e4);switch_present|=1u<<(unsigned)radial;
         }
+        int build=construction_button_index(control_name);
+        if(build>=0&&(rd32(control+0x1e0)&0x10)&&ui_shown_chain(control)&&law_photo_ancestor(control,"EXT_CONSTRUCTION_PANEL")){
+            construction_ids[build]=rd32(control+0x1e4);construction_present|=1u<<(unsigned)build;
+        }
         law_photo_touch_control(control);
+        if(control_name&&control_name[0]=='B'&&!strcmp(control_name,"BUTTON")&&notify_button_count<24){
+            uint64_t parent=rd64(control+0x230);const char *parent_name=parent?(const char*)(uintptr_t)rd64(parent+0x1d8):NULL;
+            unsigned tutorial=parent_name&&!strcmp(parent_name,"TUTORIAL_NOTIFICATION");
+            if(parent_name&&(tutorial||!strcmp(parent_name,"NOTIFICATION"))&&ui_visible_chain(control)
+               &&law_photo_ancestor(control,"EXT_NOTIFICATION_PANEL")){
+                float width=rdss(control+0x100),icon=tutorial?56.f:66.f;
+                notify_buttons[notify_button_count].id=rd32(control+0x1e4);
+                notify_buttons[notify_button_count++].fraction=width>icon?icon/width:1.f;
+            }
+        }
         if(rd64(control)==GVA(0x141DAC248)&&editor_count<128){
             editors[editor_count].id=rd32(control+0x1e4);editors[editor_count].screen=ui_owner_screen(control);
             editors[editor_count++].visible=ui_visible_chain(control);
@@ -1833,6 +2254,14 @@ static void snapshot_ui(void) {
         if(!screen||rd64(screen)!=GVA(0x141D7B0B0))continue;
         unsigned j=0;while(j<used&&screens[j]!=screen)++j;if(j<used)continue;screens[used++]=screen;
         if(switch_mode&&!modal){unsigned budget=1024;modal=switch_modal_scan(screen,0,&budget);}
+        if(!loading_hint||rd64(loading_hint)!=GVA(0x141EE06E0)){
+            unsigned seen=0;
+            for(uint64_t root=rd64(screen+0x220);root&&seen++<64&&!loading_hint;root=rd64(root+0x240)){
+                unsigned inner=0;
+                for(uint64_t child=rd64(root+0x220);child&&inner++<256;child=rd64(child+0x240))
+                    if(rd64(child)==GVA(0x141EE06E0)){loading_hint=child;loading_hint_id=rd32(child+0x1e4);break;}
+            }
+        }
         if(dump){unsigned budget=50000;dump_ui(dump,screen,0,&budget);}
         uint64_t rects=rd64(screen+0x2f0);uint32_t n=rd32(screen+0x2f8);
         if(!rects||n>20000)continue;
@@ -1859,6 +2288,10 @@ static void snapshot_ui(void) {
                     float x=(r.left+r.right)*.5f,y=(r.top+r.bottom)*.5f;
                     if(isfinite(x)&&isfinite(y)&&x>=0&&x<=1&&y>=0&&y<=1)switch_targets[index]=touch_point(x,y);
                 }
+            if(!(flags&2)&&(flags&0x10)&&(construction_present&8u)&&construction_ids[3]==rd32(at+0x40)){
+                float x=(r.left+r.right)*.5f,y=(r.top+r.bottom)*.5f;
+                if(isfinite(x)&&isfinite(y)&&x>=0&&x<=1&&y>=0&&y<=1)construction_close_target=touch_point(x,y);
+            }
             for(unsigned n=0;n<arrow_count;++n)if(arrow_ids[n]==rd32(at+0x40)&&!(flags&2)){
                 unsigned row=arrow_rows[n],side=arrow_sides[n];touch_rect *bounds=&setting_targets[row].bounds;
                 bounds->left=fminf(bounds->left,r.left);bounds->right=fmaxf(bounds->right,r.right);
@@ -1879,6 +2312,10 @@ static void snapshot_ui(void) {
                 slider_targets[n].bounds.bottom=fmaxf(slider_targets[n].bounds.bottom,r.bottom);break;
             }
             if((flags&2)||(!(flags&0x10)&&!clock&&!scroll))continue;
+            for(unsigned n=0;n<notify_button_count&&notify_icon_count<24;++n)if(notify_buttons[n].id==rd32(at+0x40)){
+                touch_rect icon=r;icon.right=r.left+(r.right-r.left)*notify_buttons[n].fraction;
+                notify_icons[notify_icon_count++]=icon;break;
+            }
             if(rectangle_count<512&&(scroll||(r.right-r.left<.95f&&r.bottom-r.top<.95f)))rectangles[rectangle_count++]=r;
             if(clock){time_rectangle.left=fminf(time_rectangle.left,r.left);time_rectangle.right=fmaxf(time_rectangle.right,r.right);
                 time_rectangle.top=fminf(time_rectangle.top,r.top);time_rectangle.bottom=fmaxf(time_rectangle.bottom,r.bottom);time_rectangle_valid=1;}
@@ -1886,6 +2323,7 @@ static void snapshot_ui(void) {
     }
     atomic_store(&switch_modal_visible,modal);
     if(modal){atomic_store(&switch_menu,0);atomic_store(&switch_available,0);}
+    construction_open=(construction_present&7u)!=0;
     law_photo_touch_finish();
     if(dump){
         fprintf(dump,"SNAPSHOT\t%u\t%u\t%u\t%u\n",count,used,rectangle_count,arrow_count);
@@ -1949,6 +2387,118 @@ static unsigned map_gate_next_opens(void){
     return (int32_t)rd32(system+0x1F4)==first-1;
 }
 
+
+/* Map limits of the touch camera.  FrostpunkGameplayCameraSystem::Update (141250610) keeps the free
+ * RTS camera (controller +0xA0 == 4) inside FrostpunkCameraBoundsBase: system +0x1E0 for city zoom
+ * levels, +0x1E8 for distant ones (level entry +0x38), virtual +0xE0 (bounds, out, &target) returns
+ * the clamped target; the camera position moves by the same offset (SetPosition 1410B93E0,
+ * SetTarget 141C365B0).  The touch pan copies the desired transform to the current one at once, so
+ * it must clamp before that copy or the city drifts off the map. */
+static void camera_bounds_clamp(CPU *cpu,uint64_t system,uint64_t controller){
+    if(rd32(controller+0xa0)!=4)return;
+    int32_t level=(int32_t)rd32(system+0x1F4);
+    uint64_t list=rd64(system+0xb8);uint32_t count=list?rd32(list+0x60):0;
+    if(level<0||(uint32_t)level>=count||count>64)return;
+    uint64_t links=rd64(list+0x58);
+    uint64_t entry=links?call_result(cpu,UINT64_C(0x14124C6A0),links+16ull*(uint64_t)level):0;
+    if(!entry)return;
+    uint64_t bounds=rd64(system+(rd8(entry+0x38)?0x1E8:0x1E0));
+    if(!bounds||!rd64(bounds))return;
+    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);
+    uint64_t out=c.rsp+0x100,target=c.rsp+0x120;
+    memcpy((void*)(uintptr_t)target,(const void*)(uintptr_t)(controller+0x170),16);
+    c.rcx=bounds;c.rdx=out;c.r8=target;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,rd64(rd64(bounds)+0xE0)-g_image_delta);
+    if(!c.rax)return;
+    float clamped[4],before[4],position[4];
+    memcpy(clamped,(const void*)(uintptr_t)c.rax,16);memcpy(before,(const void*)(uintptr_t)target,16);
+    if(!memcmp(clamped,before,16))return;
+    for(unsigned i=0;i<4;++i)if(!isfinite(clamped[i]))return;
+    memcpy(position,(const void*)(uintptr_t)(controller+0x60),16);
+    for(unsigned i=0;i<4;++i)position[i]+=clamped[i]-before[i];
+    call(cpu,UINT64_C(0x1410B93E0),controller,position,0,0,0);
+    call(cpu,UINT64_C(0x141C365B0),controller,clamped,0,0,0);
+}
+
+/* Zoom level entries (system +0xB8: links +0x58, count +0x60; 14124C6A0 resolves one): +0x1C camera
+ * distance, +0x24 pitch, +0x44 focus height, +0x38 distant (world map) level. */
+static uint64_t zoom_level_entry(CPU *cpu,uint64_t system,int index){
+    uint64_t list=rd64(system+0xb8);uint32_t count=list?rd32(list+0x60):0;uint64_t links=list?rd64(list+0x58):0;
+    if(!links||index<0||(uint32_t)index>=count||count>64)return 0;
+    return call_result(cpu,UINT64_C(0x14124C6A0),links+16ull*(uint64_t)index);
+}
+static unsigned zoom_active,zoom_settling,zoom_quiet;static float zoom_z;
+static void zoom_apply(CPU *cpu,uint64_t system,uint64_t controller,float delta,unsigned settle,int city){
+    int index=(int32_t)rd32(system+0x1F4);unsigned mode=rd32(controller+0xa0);
+    if(city<1||index<0||index>=city||(mode!=0&&mode!=4)){
+        if(zoom_active)fprintf(stderr,"FP_ZOOM abort level=%d city=%d mode=%u\n",index,city,mode);
+        zoom_active=zoom_settling=0;zoom_limit_out=0;return;
+    }
+    /* A gesture whose end was not reported settles after half a second without zoom. */
+    zoom_quiet=delta!=0?0:zoom_quiet+1;
+    if(zoom_active&&!zoom_settling&&zoom_quiet>15)settle=1;
+    if(delta!=0){
+        if(!zoom_active){zoom_active=1;zoom_z=(float)index;
+            fprintf(stderr,"FP_ZOOM start level=%d city=%d mode=%u speed=%.3f dt=%.5f\n",index,city,mode,rdss(controller+0x9c),rd64(GVA(0x142898D88))?rdss(rd64(GVA(0x142898D88))+248):-1.f);}
+        zoom_settling=0;
+        /* A doubled finger distance (log 0.69) crosses about 2.8 levels. */
+        float z=zoom_z-delta*4.f,top=(float)(city-1);
+        if(delta<0&&z>top+.25f)zoom_limit_out=1;
+        zoom_z=fminf(top,fmaxf(0,z));
+    }
+    if(!zoom_active)return;
+    if(settle&&!zoom_settling){
+        int nearest=(int)lroundf(zoom_z);zoom_limit_out=0;
+        fprintf(stderr,"FP_ZOOM end z=%.3f level=%d->%d\n",zoom_z,index,nearest);
+        if(nearest!=index){
+            /* SetZoomLevel (1412537F0): the game's own transition from here to the level, with its
+             * level of detail, sound and bounds; the next touch frames wait for it (+0x228 > 0). */
+            CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=system;c.rdx=(uint64_t)(uint32_t)nearest;c.r8=1;
+            push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x1412537F0));
+            zoom_active=0;return;
+        }
+        zoom_settling=1;
+    }
+    if(zoom_settling){
+        float target=(float)index;zoom_z+=(target-zoom_z)*.3f;
+        if(fabsf(target-zoom_z)<.005f){zoom_z=target;zoom_active=zoom_settling=0;}
+    }
+    int lower=(int)floorf(zoom_z);if(lower>city-1)lower=city-1;if(lower<0)lower=0;
+    float f=fminf(1,fmaxf(0,zoom_z-(float)lower));
+    uint64_t a=zoom_level_entry(cpu,system,lower),b=zoom_level_entry(cpu,system,lower+1<city?lower+1:lower);
+    if(!a||!b)return;
+    float distance=rdss(a+0x1C)+(rdss(b+0x1C)-rdss(a+0x1C))*f;
+    float pitch=rdss(a+0x24)+(rdss(b+0x24)-rdss(a+0x24))*f;
+    float height=rdss(a+0x44)+(rdss(b+0x44)-rdss(a+0x44))*f;
+    if(!isfinite(distance)||!isfinite(pitch)||!isfinite(height)||distance<=0)return;
+    /* Heading of the current rotation (14124D730), then 14124D360(system, out, &focus, heading,
+     * pitch, distance, keep the focus height): the eye for that focus. */
+    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=system;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x14124D730));
+    float heading=c.xmm[0].f32[0];if(!isfinite(heading))return;
+    c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);
+    uint64_t out=c.rsp+0x100,target=c.rsp+0x120;
+    /* The current focus (+0x160): the target (+0x170) of an idle controller is the last move's. */
+    float focus[4];memcpy(focus,(const void*)(uintptr_t)(controller+0x160),16);focus[1]=height;focus[3]=1;
+    memcpy((void*)(uintptr_t)target,focus,16);
+    wrss(c.rsp+0x20,pitch);wrss(c.rsp+0x28,distance);wr64(c.rsp+0x30,1);
+    c.rcx=system;c.rdx=out;c.r8=target;c.xmm[3].f32[0]=heading;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x14124D360));
+    float eye[4];memcpy(eye,(const void*)(uintptr_t)out,16);
+    for(unsigned i=0;i<3;++i)if(!isfinite(eye[i]))return;
+    memcpy((void*)(uintptr_t)(controller+0x60),eye,16);memcpy((void*)(uintptr_t)(controller+0x170),focus,16);
+    camera_bounds_clamp(cpu,system,controller);
+    /* Follow at 40 % a frame (the touch pan moves the camera at once); LookAt 141C361A0 turns the
+     * camera to the new pitch. */
+    float current[4],look[4];
+    memcpy(eye,(const void*)(uintptr_t)(controller+0x60),16);memcpy(focus,(const void*)(uintptr_t)(controller+0x170),16);
+    memcpy(current,(const void*)(uintptr_t)(controller+0x30),16);memcpy(look,(const void*)(uintptr_t)(controller+0x160),16);
+    for(unsigned i=0;i<3;++i){current[i]+=(eye[i]-current[i])*.4f;look[i]+=(focus[i]-look[i])*.4f;}
+    if(!zoom_active){memcpy(current,eye,12);memcpy(look,focus,12);}
+    memcpy((void*)(uintptr_t)(controller+0x30),current,16);
+    call(cpu,UINT64_C(0x141C361A0),controller,look,0,0,0);
+}
+
 void fp_mobile_camera_before(CPU *cpu) {
     uint64_t system=cpu->rcx,controller=rd64(system+0xa0);
     map_gate_update(cpu,system);
@@ -1959,11 +2509,28 @@ void fp_mobile_camera_before(CPU *cpu) {
     building_available=placement&&rd64(placement)==GVA(0x142014120)&&rd32(placement+0x2068)>0;
     uint64_t painter=painters?rd64(painters+0x80):0;
     road_available=painter&&(rd64(painter)==GVA(0x142138308)||rd64(painter)==GVA(0x1421383A8));
+    {   /* FrostpunkBuildingPainter, BuildStreet, BuildPipeStreet, Demolish, DemolishStreet painters. */
+        uint64_t type=painter?rd64(painter):0;
+        unsigned kind=type==GVA(0x1421381E0)?1:type==GVA(0x142138308)?2:type==GVA(0x1421383A8)?3:type==GVA(0x142138448)?4:type==GVA(0x1421384D0)?5:0;
+        if(kind==1&&!building_available)kind=0;
+        if(kind!=painter_kind){
+            street_detail_units=0;
+            fprintf(stderr,"FP_CONSTRUCTION painter=%u open=%u\n",kind,construction_open);
+        }
+        painter_kind=kind;
+    }
     if(!building_available)building_gesture=0;
     snapshot_ui();memcpy(values,pending,sizeof(values));memset(pending,0,sizeof(pending));
     reset=reset_pending;reset_pending=0;
     building_turn=pending_building_turn;pending_building_turn=0;
     speed=pending_speed;pending_speed=-1;
+    unsigned clear=painter_clear_pending;painter_clear_pending=0;
+    unsigned street_tool=street_tool_pending;street_tool_pending=0;
+    float zoom_delta=pending_zoom;pending_zoom=0;unsigned zoom_settle=zoom_settle_pending;zoom_settle_pending=0;
+    int zoom_city;{int first=atomic_load(&gate_first_distant);uint64_t list=rd64(system+0xb8);
+        zoom_city=first>0?first:list?(int)rd32(list+0x60):0;
+        int level=(int32_t)rd32(system+0x1F4);
+        zoom_city_ok=available&&level>=0&&level<zoom_city&&(rd32(controller+0xa0)==0||rd32(controller+0xa0)==4);}
     uint64_t time_system=rd64(GVA(0x142B8D800)),clock=rd64(GVA(0x142B8B390));
     time_state_valid=time_system&&rd64(time_system)==GVA(0x141E049B0)&&clock;
     if(time_state_valid){current_speed=0;
@@ -1975,6 +2542,23 @@ void fp_mobile_camera_before(CPU *cpu) {
         call_value(cpu,UINT64_C(0x141107E40),time_system,speed==0);
     }
     if(building_available&&building_turn!=0)rotate_building(cpu,placement,building_turn);
+    if(clear){
+        uint64_t input=rd64(GVA(0x143FE8C40));unsigned state=input?rd32(input+0xA8):~0u;
+        if(state==2&&painters&&rd64(painters+0x80)){
+            call_result(cpu,UINT64_C(0x14150CC00),input);
+            fprintf(stderr,"FP_CONSTRUCTION tool cancelled state=%u painter=%u\n",rd32(input+0xA8),rd64(painters+0x80)!=0);
+        } else fprintf(stderr,"FP_CONSTRUCTION cancel skipped state=%u\n",state);
+    }
+    if(street_tool&&available&&atomic_load(&touch_construction)&&(construction_open||painter_kind)){
+        uint64_t input=rd64(GVA(0x143FE8C40));
+        unsigned state=input?rd32(input+0xa8):~0u;
+        if(painters&&input&&rd64(input+0xa0)==painters&&(state==0||state==2||state==3)){
+            /* The construction panel uses this same entry for tool 2 (build) and 4 (demolish).
+             * It switches painters in place when input is already in paint mode. */
+            CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=input;c.rdx=street_tool;c.r8=GVA(0x14296F8F8);
+            push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x141864090));
+        }
+    }
     if(!available)return;
     float position[4],target[4];memcpy(position,(void*)(uintptr_t)(controller+0x30),16);memcpy(target,(void*)(uintptr_t)(controller+0x160),16);
     float distance=sqrtf((position[0]-target[0])*(position[0]-target[0])+(position[1]-target[1])*(position[1]-target[1])+(position[2]-target[2])*(position[2]-target[2]));
@@ -1989,12 +2573,13 @@ void fp_mobile_camera_before(CPU *cpu) {
         memcpy((void*)(uintptr_t)(controller+0x30),initial_position,16);memcpy((void*)(uintptr_t)(controller+0x60),initial_position,16);
         memcpy((void*)(uintptr_t)(controller+0x160),initial_target,16);memcpy((void*)(uintptr_t)(controller+0x170),initial_target,16);
         memset((void*)(uintptr_t)(controller+0x70),0,16);memset((void*)(uintptr_t)(controller+0x180),0,16);
-        wr32(controller+0xa0,0);wrss(controller+0x1f8,initial_distance);return;
+        wr32(controller+0xa0,0);wrss(controller+0x1f8,initial_distance);zoom_active=zoom_settling=0;return;
     }
     float length=hypotf(values[0],values[1]);
     if(length>0){
         float vector[4]={-values[0],0,values[1],0};
         call(cpu,UINT64_C(0x141C365D0),controller,vector,0,distance*length*1.4f,1);
+        camera_bounds_clamp(cpu,system,controller);
         memcpy(position,(void*)(uintptr_t)(controller+0x60),16);
         memcpy(target,(void*)(uintptr_t)(controller+0x170),16);
         memcpy((void*)(uintptr_t)(controller+0x30),position,16);
@@ -2009,6 +2594,78 @@ void fp_mobile_camera_before(CPU *cpu) {
         memcpy((void*)(uintptr_t)(controller+0x30),position,16);
         memcpy((void*)(uintptr_t)(controller+0x60),position,16);
     }
+    if(zoom_delta!=0||zoom_active)zoom_apply(cpu,system,controller,zoom_delta,zoom_settle,zoom_city);
+}
+
+__attribute__((visibility("default"))) unsigned frostpunk_mobile_construction_view(float corners[8],uint16_t *detail,unsigned capacity,unsigned painter){
+    pthread_mutex_lock(&input_mutex);
+    unsigned ready=atomic_load(&construction_projected);
+    unsigned units=street_detail_painter==painter&&street_detail_units<=capacity?street_detail_units:0;
+    if(ready)memcpy(corners,construction_plane,sizeof(construction_plane));
+    if(units)memcpy(detail,street_detail,units*sizeof(*detail));
+    pthread_mutex_unlock(&input_mutex);
+    return units*2+ready;
+}
+
+static void project_vector(uint64_t matrix,const float point[4],float projected[4]){
+    for(unsigned i=0;i<4;++i)
+        projected[i]=point[0]*rdss(matrix+4*i)+point[1]*rdss(matrix+16+4*i)
+            +point[2]*rdss(matrix+32+4*i)+point[3]*rdss(matrix+48+4*i);
+}
+
+static void publish_construction_plane(uint64_t camera,unsigned alternate,const float ground[4]){
+    /* Y=0 is the painters' build plane. The forward camera is the inverse of the aim-ray transform. */
+    static const float offsets[4][2]={{-7,-7},{7,-7},{7,7},{-7,7}};
+    float corners[8];
+    for(unsigned i=0;i<4;++i){
+        float point[4]={ground[0]+offsets[i][0],0,ground[2]+offsets[i][1],1};
+        float clip[4],view[4];
+        if(alternate){
+            project_vector(camera+0x50,point,view);
+            project_vector(camera+0x110,view,clip);
+        }else project_vector(camera+0x1f0,point,clip);
+        if(!(clip[3]>0)){atomic_store(&construction_projected,0);return;}
+        float x=.5f+.5f*(clip[0]/clip[3]),y=.5f-.5f*(clip[1]/clip[3]);
+        if(!isfinite(x)||!isfinite(y)||fabsf(x-.5f)>1.5f||fabsf(y-.5f)>1.5f){
+            atomic_store(&construction_projected,0);return;
+        }
+        corners[2*i]=x;corners[2*i+1]=y;
+    }
+    pthread_mutex_lock(&input_mutex);
+    memcpy(construction_plane,corners,sizeof(corners));
+    atomic_store(&construction_projected,1);
+    pthread_mutex_unlock(&input_mutex);
+}
+
+void fp_mobile_camera_after(CPU *cpu) {
+    static uint64_t last_painter;
+    static float last_ground[4];
+    if(!atomic_load(&touch_construction)||!camera_available||(!construction_open&&!painter_kind)
+       ||pause_menu_visible||atomic_load(&switch_menu)||rd8(GVA(0x142982F8D))){
+        last_painter=0;atomic_store(&construction_projected,0);return;
+    }
+    unsigned alternate=rd32(GVA(0x142985AA4))==1;
+    uint64_t renderer=rd64(GVA(alternate?0x143FC0998:0x142B3B598));
+    uint64_t camera=renderer?rd64(renderer+(alternate?0xa8:0x20f8)):0;
+    if(!camera){last_painter=0;atomic_store(&construction_projected,0);return;}
+    uint64_t painter=painters?rd64(painters+0x80):0;
+    float y=painter?.5f:construction_menu_aim;
+    /* Ground intersection of the aim ray, using the same projection as the original painters. */
+    const float aim[4]={.5f,1.f-y,0,1};
+    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);
+    win64_pointer(c.rsp-8,256,1);
+    uint64_t point=c.rsp+0x80,screen=c.rsp+0x90;
+    memcpy((void*)(uintptr_t)screen,aim,16);
+    c.rcx=point;c.rdx=screen;c.xmm[2].f32[0]=0;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x14181BDB0));
+    float ground[4];memcpy(ground,(const void*)(uintptr_t)point,16);
+    if(!isfinite(ground[0])||!isfinite(ground[1])||!isfinite(ground[2])){
+        last_painter=0;atomic_store(&construction_projected,0);return;
+    }
+    publish_construction_plane(camera,alternate,ground);
+    if(painter&&(painter!=last_painter||fabsf(ground[0]-last_ground[0])>.001f||fabsf(ground[2]-last_ground[2])>.001f))
+        call(cpu,rd64(rd64(painter)+40)-g_image_delta,painter,aim,0,0,0);
+    last_painter=painter;memcpy(last_ground,ground,16);
 }
 
 void fp_mobile_camera_destroy(void) {
@@ -2017,6 +2674,9 @@ void fp_mobile_camera_destroy(void) {
     camera_available=building_available=road_available=rectangle_count=setting_target_count=slider_target_count=reset_pending=0;saved_controller=0;
     atomic_store(&switch_menu,0);atomic_store(&switch_available,0);memset(switch_targets,0,sizeof(switch_targets));
     atomic_store(&switch_modal_visible,0);
+    construction_close_target=0;construction_open=painter_kind=0;street_tool_pending=painter_clear_pending=0;
+    construction_menu_aim=.5f;atomic_store(&construction_projected,0);
+    street_detail_units=0;
     painters=panels=0;building_gesture=0;pause_menu_visible=0;debug_ready_since=0;atomic_store(&debug_requested,0);
     memset(pending,0,sizeof(pending));
     pending_building_turn=0;

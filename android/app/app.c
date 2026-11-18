@@ -180,6 +180,12 @@ __attribute__((visibility("default"))) void frostpunk_android_presented(void) {
     if(current && !current->stopping)set_status(current,"\1");
     pthread_mutex_unlock(&current_mutex);
 }
+/* Hang watchdog (host/frame_profile.c): presents stop legitimately while paused or without a window. */
+__attribute__((visibility("default"))) int frostpunk_android_foreground(void){
+    int result=0;pthread_mutex_lock(&current_mutex);
+    if(current&&!current->stopping){pthread_mutex_lock(&current->mutex);result=current->window&&!current->paused;pthread_mutex_unlock(&current->mutex);}
+    pthread_mutex_unlock(&current_mutex);return result;
+}
 __attribute__((visibility("default"))) void frostpunk_android_cancel_input(void){
     pthread_mutex_lock(&current_mutex);if(current&&!current->stopping)set_status(current,"\4");pthread_mutex_unlock(&current_mutex);
 }
@@ -312,6 +318,21 @@ JNIEXPORT jlong JNICALL Java_com_frostpunk_staticrecomp_TouchControls_nativeSwip
     uint64_t (*target)(float,float,int)=c&&c->runtime_handle?dlsym(c->runtime_handle,"frostpunk_mobile_swipe_target"):NULL;
     uint64_t result=target?target(x,y,direction):0;
     pthread_mutex_unlock(&current_mutex);return (jlong)result;
+}
+JNIEXPORT jint JNICALL Java_com_frostpunk_staticrecomp_TouchControls_nativeConstructionView(JNIEnv *env,jclass cls,jfloatArray output,jcharArray detail,jint painter) {
+    (void)cls;
+    if(!output||!detail||(*env)->GetArrayLength(env,output)!=8)return 0;
+    float corners[8];
+    uint16_t text[256];
+    unsigned capacity=(unsigned)(*env)->GetArrayLength(env,detail);
+    if(capacity>sizeof(text)/sizeof(*text))capacity=sizeof(text)/sizeof(*text);
+    pthread_mutex_lock(&current_mutex);app_context *c=current;
+    unsigned (*view)(float*,uint16_t*,unsigned,unsigned)=c&&c->runtime_handle?dlsym(c->runtime_handle,"frostpunk_mobile_construction_view"):NULL;
+    unsigned state=view?view(corners,text,capacity,(unsigned)painter):0;
+    pthread_mutex_unlock(&current_mutex);
+    if(state&1)(*env)->SetFloatArrayRegion(env,output,0,8,corners);
+    if(state>>1)(*env)->SetCharArrayRegion(env,detail,0,(jsize)(state>>1),(const jchar*)text);
+    return (jint)state;
 }
 JNIEXPORT jboolean JNICALL Java_com_frostpunk_staticrecomp_TouchControls_nativePointer(JNIEnv *env,jclass cls,jint buttons,jfloat x,jfloat y,jfloat wheel) {
     (void)env;(void)cls;
@@ -456,7 +477,14 @@ static int extract_driver(app_context *c) {
     int length=snprintf(path,sizeof(path),"%s/libpurple_turnip.so",c->libraries);
     if(length<0 || (size_t)length>=sizeof(path) || access(path,R_OK))return 0;
     log_text("FROSTPUNK_TURNIP bundled=purple-T30");
-    return !setenv("PORT_TURNIP_DRIVER",path,0);
+    /* The launcher exports PORT_TURNIP_DRIVER="" for the port's own driver.  setenv(...,0) kept that
+     * empty value, so adrenotools looked for files/driver/vulkan.ad07xx.so: a stale copy left by
+     * builds before 0.2-dev on upgraded phones, nothing on a fresh install (then stat() failed,
+     * "no loader/proc returned", and the Qualcomm driver was refused: OnePlus 13 / Adreno 830). */
+    char stale[PATH_MAX];
+    if(snprintf(stale,sizeof(stale),"%s/driver/vulkan.ad07xx.so",c->private_path)<(int)sizeof(stale)&&!unlink(stale))
+        log_text("FROSTPUNK_TURNIP removed stale files/driver/vulkan.ad07xx.so");
+    return !setenv("PORT_TURNIP_DRIVER",path,1);
 #elif defined(FP_GPU_SYSTEM)
     (void)c;return 1;
 #else
@@ -611,6 +639,21 @@ failed:
     if(result)(*env)->DeleteLocalRef(env,result);if(cls)(*env)->DeleteLocalRef(env,cls);
     if(attached)(*vm)->DetachCurrentThread(vm);return ok;
 }
+/* The native Vulkan renderer's build-time shader library (tools/build_shaderlib.py) is a stored
+ * asset of this APK.  Its file descriptor range goes to libfrostpunk_rdvk.so, which maps the
+ * SPIR-V straight from the APK; the descriptor stays open for the process. */
+static void export_shader_library(app_context *c) {
+    static int fd=-1;
+    if(fd>=0)return;
+    AAsset *asset=AAssetManager_open(c->app->activity->assetManager,"shaders/rdvk_shaderlib.bin",AASSET_MODE_UNKNOWN);
+    off64_t start=0,length=0;
+    if(asset){fd=AAsset_openFileDescriptor64(asset,&start,&length);AAsset_close(asset);}
+    char text[96];
+    if(fd<0){unsetenv("FROSTPUNK_RDVK_SHADERLIB");log_text("FROSTPUNK_RDVK_SHADERLIB none (asset missing or compressed)");return;}
+    snprintf(text,sizeof(text),"%d:%lld:%lld",fd,(long long)start,(long long)length);
+    setenv("FROSTPUNK_RDVK_SHADERLIB",text,1);
+    char line[160];snprintf(line,sizeof(line),"FROSTPUNK_RDVK_SHADERLIB apk asset fd=%s",text);log_text(line);
+}
 static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t error_size);
 static void apply_debug_environment(void);
 static void *game_worker(void *opaque) {
@@ -621,6 +664,7 @@ static void *game_worker(void *opaque) {
     else{
         PFN_vkGetInstanceProcAddr proc=open_vulkan(c,error,sizeof(error));
         pthread_mutex_lock(&c->mutex);c->provider=proc;pthread_mutex_unlock(&c->mutex);
+        if(proc)export_shader_library(c);
         void *library=proc&&!stopping(c)?dlopen(path,RTLD_NOW|RTLD_GLOBAL):NULL;
         if(!proc)goto finished;
         if(!library)snprintf(error,sizeof(error),"Cannot load native game runtime: %s",dlerror());
@@ -677,6 +721,21 @@ static void apply_debug_environment(void) {
     }
 }
 static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t error_size) {
+    const char *renderer=getenv("PORT_RENDERER");
+    if(renderer&&(!strcmp(renderer,"native_vulkan_panvk")||!strcmp(renderer,"dxvk_panvk"))){
+        char cache[PATH_MAX], product[PROP_VALUE_MAX]={0};
+        if(snprintf(cache,sizeof(cache),"%s/mesa-panvk-cache",c->private_path)<(int)sizeof(cache)&&
+           (!mkdir(cache,0700)||errno==EEXIST))setenv("MESA_SHADER_CACHE_DIR",cache,0);
+        /* The TB373FU display composer can corrupt scaled AFBC PanVK window buffers. */
+        __system_property_get("ro.product.device",product);
+        if(!strcmp(product,"TB373FU"))setenv("MESA_GRALLOC_LINEAR","1",0);
+        char reason[256]={0};
+        PFN_vkGetInstanceProcAddr panvk=frostpunk_gpu_open_panvk(c->libraries,reason,sizeof(reason));
+        setenv("FROSTPUNK_VULKAN_DRIVER",panvk?"panvk":"none",1);
+        if(panvk)log_text("FROSTPUNK_VULKAN_DRIVER active=panvk requested=panvk");
+        else snprintf(error,error_size,"PanVK: %s",reason);
+        return panvk;
+    }
     char reason[256]={0},message[512],hardware[PROP_VALUE_MAX]={0};const char *active="system";PFN_vkGetInstanceProcAddr get=NULL;
     int requested=turnip_requested(c);__system_property_get("ro.hardware.vulkan",hardware);
     int adreno=!strcmp(hardware,"adreno")&&!access("/dev/kgsl-3d0",R_OK|W_OK);

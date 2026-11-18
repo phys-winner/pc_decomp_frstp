@@ -10,6 +10,7 @@ static uint64_t test_milliseconds=1000;
 int clock_gettime(clockid_t clock,struct timespec *now){(void)clock;now->tv_sec=test_milliseconds/1000;now->tv_nsec=(test_milliseconds%1000)*1000000;return 0;}
 
 int64_t g_image_delta;
+int win64_skip_intro;
 static unsigned scale=150,pan_calls,turn_calls,resize_calls,building_calls,position_calls,speed_calls,pause_calls,debug_calls;
 static unsigned switch_active;
 int frostpunk_switch_ui(void){return switch_active;}
@@ -27,6 +28,8 @@ float fp_mobile_ime_visible_fraction(void){return test_ime_fraction;}
 uint64_t fp_mobile_text_focused_editor(void){return test_ime_editor;}
 static _Alignas(16) unsigned char component[0x80];
 uint32_t fp_port_setting_get(uint32_t id){if(id==FP_SETTING_TOUCH_OFFSET)return 64;assert(id==FP_SETTING_UI_SCALE);return scale;}
+int fp_port_free_building_pending(void){return 0;}
+void fp_port_setting_set(uint32_t id,uint32_t value){(void)id;(void)value;assert(!"unexpected settings write");}
 void *win64_pointer(uint64_t p,size_t n,int w){(void)n;(void)w;assert(p);return (void*)(uintptr_t)p;}
 static void position_original(CPU*c);
 static void created_original(CPU*c){(void)c;}
@@ -125,18 +128,40 @@ static void check_mobile_bottom_family(CPU *cpu){
     wr64((uintptr_t)header+0x1d8,(uintptr_t)"HEADER");wr64((uintptr_t)header+0x220,(uintptr_t)major);
     wr64((uintptr_t)major+0x240,(uintptr_t)minor);
     uint64_t groups[]={(uintptr_t)major,(uintptr_t)minor},buttons[]={(uintptr_t)primary,(uintptr_t)counter};
+    _Alignas(16) unsigned char artwork[2][3][0x280]={0};
+    _Alignas(16) unsigned char text_nodes[2][2][0x280]={0};
+    const char *artwork_names[]={"Ikona","graphic","circle_circle"};
     for(unsigned i=0;i<2;++i){
         uint64_t g=groups[i],b=buttons[i];wr64(g+0x230,(uintptr_t)header);wr64(g+0x1d8,(uintptr_t)(i?"DANGER_BUTTONS":"IMPORTANT_DANGER_BUTTONS"));
         wr32(g+0x1e4,4302+i);wr64(g+0x220,b);wr64(b+0x230,g);wr64(b,GVA(0x141D79F78));wr32(b+0x1e4,4304+i);
         wrss(g+0xc0,i?90:0);wrss(g+0xc4,i?81:1);wrss(b+0xc0,i?109.5f:200);wrss(b+0xd0,i?-13.5f:-19);
         wrss(b+0xf0,1);wrss(b+0x100,i?27:38);
+        wrss(g+0xf4,1);wrss(b+0xf4,1);
+        uint64_t parent=b;
+        for(unsigned j=0;j<3;++j){
+            uint64_t child=(uintptr_t)artwork[i][j];
+            wr64(parent+0x220,child);wr64(child+0x230,parent);wr64(child+0x1d8,(uintptr_t)artwork_names[j]);
+            wrss(child+0xf4,1);parent=child;
+        }
+        wrss(parent+0xc4,i?13:25);wrss(parent+0x104,20);
+        uint64_t art=(uintptr_t)artwork[i][0],texts=(uintptr_t)text_nodes[i][0],value=(uintptr_t)text_nodes[i][1];
+        wr64((uintptr_t)artwork[i][1]+0x240,texts);wr64(texts+0x230,art);wr64(texts+0x220,value);
+        wr64(texts+0x1d8,(uintptr_t)(i?"critical_texts_layout":"TEXTS"));
+        wr64(value+0x230,texts);wr64(value+0x1d8,(uintptr_t)"COUNT");
+        wr32(texts+0x1e4,4310+i);wrss(texts+0xf4,1);wrss(texts+0xc4,i?39:8);
+        wrss(value+0xf4,1);wrss(value+0xc4,i?1:2);wrss(value+0x104,i?12:15);
     }
     scale=200;fp_mobile_ui_before(cpu);assert(rdss((uintptr_t)issues+0xc0)==119.5f&&rdss((uintptr_t)issues+0xc4)==75&&rd32((uintptr_t)issues+0x13c)==0);
-    assert(rdss((uintptr_t)search+0xc0)==-150&&rdss((uintptr_t)search+0xc4)==-40);
+    assert(rdss((uintptr_t)search+0xc0)==-139.5f&&rdss((uintptr_t)search+0xc4)==-40);
     assert(rdss((uintptr_t)major+0xc0)==-17.5f&&rdss((uintptr_t)minor+0xc0)==113.5f);
-    assert(rdss((uintptr_t)major+0xc4)==1&&rdss((uintptr_t)minor+0xc4)==1);
+    assert(rdss((uintptr_t)major+0xc4)==1&&rdss((uintptr_t)minor+0xc4)==13);
+    float aligned_count_y=rdss((uintptr_t)text_nodes[1][0]+0xc4);
+    assert(fabsf(aligned_count_y)<.01f);
+    fp_mobile_ui_before(cpu);assert(rdss((uintptr_t)text_nodes[1][0]+0xc4)==aligned_count_y);
     wr32((uintptr_t)counter+0x1e0,2);fp_mobile_ui_before(cpu);assert(rdss((uintptr_t)major+0xc0)==0);
     wr32((uintptr_t)counter+0x1e0,0);wr32((uintptr_t)primary+0x1e0,2);fp_mobile_ui_before(cpu);assert(rdss((uintptr_t)minor+0xc0)==90.5f);
+    assert(rdss((uintptr_t)minor+0xc4)==1);
+    assert(rdss((uintptr_t)text_nodes[1][0]+0xc4)==5.5f);
     wr32((uintptr_t)primary+0x1e0,0);fp_mobile_ui_before(cpu);assert(rdss((uintptr_t)major+0xc0)==-17.5f);
     float position[4]={439.5f,75,0,1};CPU animation=*cpu;animation.rcx=(uintptr_t)issues;animation.rdx=(uintptr_t)position;
     fp_mobile_ui_position(&animation,position_original);assert(rdss((uintptr_t)issues+0xc0)==119.5f&&rdss((uintptr_t)issues+0xc4)==75);
@@ -144,7 +169,7 @@ static void check_mobile_bottom_family(CPU *cpu){
     assert(fabsf(frame_top+21-320.5f)<.001f);
     position[0]=-142;position[1]=-54;animation.rcx=(uintptr_t)search;animation.rdx=(uintptr_t)position;
     fp_mobile_ui_position(&animation,position_original);
-    assert(rdss((uintptr_t)search+0xc0)==-150&&rdss((uintptr_t)search+0xc4)==-40);
+    assert(rdss((uintptr_t)search+0xc0)==-139.5f&&rdss((uintptr_t)search+0xc4)==-40);
     scale=100;fp_mobile_ui_before(cpu);assert(rdss((uintptr_t)issues+0xc0)==439.5f&&rdss((uintptr_t)issues+0xc4)==75&&rd32((uintptr_t)issues+0x13c)==14);
     assert(rdss((uintptr_t)search+0xc0)==-142&&rdss((uintptr_t)search+0xc4)==-54);cpu->rcx=saved;
     assert(rdss((uintptr_t)major+0xc0)==0&&rdss((uintptr_t)minor+0xc0)==90&&rdss((uintptr_t)minor+0xc4)==81);

@@ -25,7 +25,8 @@ public final class MainActivity extends NativeActivity {
     private volatile String pending="Frostpunk native window probe\nStarting native Vulkan/window fixture";
     private final AtomicLong pointerSequence=new AtomicLong();
     @Override public void onCreate(Bundle state) {
-        try { CrashReport.configureRenderLog(getIntent().getBooleanExtra("crash.watched", false)); }
+        try { CrashReport.configureRenderLog(getIntent().getBooleanExtra("crash.watched", false)
+                && !getIntent().getBooleanExtra("crash.rendererOnly", false)); }
         catch (Exception error) { Log.w("Frostpunk", "Cannot configure render log", error); }
         allowRotation();
         installCrashHandler();
@@ -160,6 +161,12 @@ public final class MainActivity extends NativeActivity {
             runOnUiThread(() -> {
                 if(isFinishing()||isDestroyed()||message.equals(startupError))return;
                 startupError=message;
+                if(message.startsWith("PanVK: ")&&getIntent().getBooleanExtra("crash.watched",false)){
+                    setResult(RESULT_CANCELED,new android.content.Intent().putExtra("crash.exitCode",78)
+                        .putExtra("crash.startupError",message));
+                    finish();
+                    return;
+                }
                 if(controls!=null)controls.failed();
                 if(status!=null){status.setText(message);status.setVisibility(View.VISIBLE);}
                 if(startupFailure!=null)startupFailure.dismiss();

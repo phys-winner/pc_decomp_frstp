@@ -4,6 +4,7 @@
 #include "driver.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int frostpunk_startup_gpu_init(const char *runtime_dir,const char *driver_dir) {
     char error[512]={0};
@@ -49,13 +50,18 @@ int frostpunk_startup_gpu_configure(PFN_vkGetInstanceProcAddr get,void *native_w
     vkGetPhysicalDeviceFormatProperties(device,VK_FORMAT_B8G8R8A8_UNORM,&bgra);
     vkGetPhysicalDeviceFormatProperties(device,VK_FORMAT_ASTC_4x4_UNORM_BLOCK,&astc);
 #ifdef FP_GPU_SYSTEM
-    int valid=(((driver.driverID==VK_DRIVER_ID_ARM_PROPRIETARY && properties.properties.vendorID==0x13b5) ||
+    const char *active_driver=getenv("FROSTPUNK_VULKAN_DRIVER");
+    int panvk=driver.driverID==VK_DRIVER_ID_MESA_PANVK&&active_driver&&!strcmp(active_driver,"panvk");
+    int valid=((((driver.driverID==VK_DRIVER_ID_ARM_PROPRIETARY || panvk) && properties.properties.vendorID==0x13b5) ||
         (driver.driverID==VK_DRIVER_ID_IMAGINATION_PROPRIETARY && properties.properties.vendorID==0x1010)) &&
         properties.properties.deviceType!=VK_PHYSICAL_DEVICE_TYPE_CPU && properties.properties.apiVersion>=VK_API_VERSION_1_3 &&
         features.textureCompressionASTC_LDR && (bgra.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) &&
         (astc.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT));
-    /* Mesa Turnip, selected in the Graphics menu ("Vulkan driver") and opened by the APK through adrenotools. */
-    valid=valid||(driver.driverID==VK_DRIVER_ID_MESA_TURNIP && properties.properties.deviceType!=VK_PHYSICAL_DEVICE_TYPE_CPU &&
+    /* Mesa Turnip, selected in the Graphics menu ("Vulkan driver") and opened by the APK through adrenotools.
+     * Qualcomm's own driver is the fallback when Turnip cannot be opened: Adreno 8xx drivers expose BC
+     * textures (OnePlus 13, Adreno 830: BC=1 ASTC=1), older ones do not and stay refused. */
+    valid=valid||((driver.driverID==VK_DRIVER_ID_MESA_TURNIP||(driver.driverID==VK_DRIVER_ID_QUALCOMM_PROPRIETARY&&properties.properties.vendorID==0x5143))
+        && properties.properties.deviceType!=VK_PHYSICAL_DEVICE_TYPE_CPU &&
         properties.properties.apiVersion>=VK_API_VERSION_1_3 && features.textureCompressionBC &&
         (bc1.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && (bc3.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT));
 #else

@@ -255,7 +255,121 @@ static const char *render_result_name(int32_t result) {
     return "OTHER";
 }
 
+/* Hang watchdog (external-theories T10 a, after spore-re's watchdog.cpp): when no frame has been
+ * presented for debug.fp.watchdog seconds (default 10, 0 = off) while the game is in the foreground,
+ * native.log receives FP_HANG with every thread's state (comm, R/S/D, wchan, CPU ticks) and, through
+ * SIGURG, each thread's own backtrace as library+offset.  One report per stall. */
+#include <dirent.h>
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <sys/system_properties.h>
+#include <unwind.h>
+extern int frostpunk_android_foreground(void) __attribute__((weak));
+static uint64_t watchdog_last_present;
+static unsigned char watchdog_started;
+
+typedef struct { uintptr_t pcs[24]; int count; } watchdog_trace;
+static _Unwind_Reason_Code watchdog_step(struct _Unwind_Context *context, void *opaque) {
+    watchdog_trace *trace = opaque;
+    uintptr_t pc = _Unwind_GetIP(context);
+    if (pc && trace->count < 24) trace->pcs[trace->count++] = pc;
+    return trace->count < 24 ? _URC_NO_REASON : _URC_END_OF_STACK;
+}
+static void watchdog_signal(int sig, siginfo_t *info, void *context) {
+    (void)sig; (void)info; (void)context;
+    int saved_errno = errno;
+    watchdog_trace trace = {{0}, 0};
+    _Unwind_Backtrace(watchdog_step, &trace);
+    /* One write per thread keeps its frames together in the shared log. */
+    char out[3072];size_t used = 0;
+    int n = snprintf(out, sizeof out, "FP_HANG_STACK tid=%ld frames=%d\n", (long)syscall(SYS_gettid), trace.count);
+    if (n > 0) used = (size_t)n < sizeof out ? (size_t)n : sizeof out - 1;
+    for (int i = 1; i < trace.count && used < sizeof out - 1; ++i) {   /* #0 is this handler */
+        Dl_info where;
+        if (dladdr((void *)trace.pcs[i], &where) && where.dli_fname) {
+            const char *name = strrchr(where.dli_fname, '/');
+            n = snprintf(out + used, sizeof out - used, "FP_HANG_STACK   #%02d %s+0x%lx%s%s\n", i, name ? name + 1 : where.dli_fname,
+                (unsigned long)(trace.pcs[i] - (uintptr_t)where.dli_fbase), where.dli_sname ? " " : "",
+                where.dli_sname ? where.dli_sname : "");
+        } else n = snprintf(out + used, sizeof out - used, "FP_HANG_STACK   #%02d 0x%lx\n", i, (unsigned long)trace.pcs[i]);
+        if (n <= 0) break;
+        used += (size_t)n < sizeof out - used ? (size_t)n : sizeof out - used - 1;
+    }
+    if (used) (void)!write(STDERR_FILENO, out, used);
+    errno = saved_errno;
+}
+static unsigned watchdog_seconds(void) {
+    char value[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("debug.fp.watchdog", value) <= 0) return 10;
+    long seconds = strtol(value, NULL, 10);
+    return seconds < 0 ? 0 : seconds > 600 ? 600 : (unsigned)seconds;
+}
+static void watchdog_report(uint64_t stall_ms) {
+    fprintf(stderr, "FP_HANG no_present_ms=%llu\n", (unsigned long long)stall_ms);
+    pid_t self = (pid_t)syscall(SYS_gettid), pid = getpid();
+    DIR *tasks = opendir("/proc/self/task");
+    if (!tasks) return;
+    struct dirent *entry;unsigned signalled = 0;
+    while ((entry = readdir(tasks))) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+        long tid = strtol(entry->d_name, NULL, 10);
+        char path[64], stat[512] = {0}, wchan[64] = {0};
+        snprintf(path, sizeof path, "/proc/self/task/%ld/stat", tid);
+        FILE *file = fopen(path, "re");
+        if (file) { if (!fgets(stat, sizeof stat, file)) stat[0] = 0; fclose(file); }
+        snprintf(path, sizeof path, "/proc/self/task/%ld/wchan", tid);
+        file = fopen(path, "re");
+        if (file) { if (!fgets(wchan, sizeof wchan, file)) wchan[0] = 0; fclose(file); }
+        /* stat: "tid (comm) S ppid ... utime(14) stime(15)" */
+        const char *open = strchr(stat, '('), *close = strrchr(stat, ')');
+        char comm[32] = "?", state = '?';unsigned long long utime = 0, stime = 0;
+        if (open && close && close > open) {
+            size_t length = (size_t)(close - open - 1); if (length >= sizeof comm) length = sizeof comm - 1;
+            memcpy(comm, open + 1, length); comm[length] = 0;
+            state = close[2];
+            const char *field = close + 2;int index = 3;
+            while (*field && index < 14) { if (*field == ' ') ++index; ++field; }
+            sscanf(field, "%llu %llu", &utime, &stime);
+        }
+        fprintf(stderr, "FP_HANG_THREAD tid=%ld name=%s state=%c wchan=%s cpu_ticks=%llu+%llu\n", tid, comm, state,
+            wchan[0] ? wchan : "-", utime, stime);
+        if (tid != self && signalled < 64) { syscall(SYS_tgkill, pid, (pid_t)tid, SIGURG); ++signalled; }
+    }
+    closedir(tasks);
+    fflush(stderr);
+}
+static void *watchdog_main(void *unused) {
+    (void)unused;
+    uint64_t reported = 0;
+    for (;;) {
+        sleep(1);
+        unsigned seconds = watchdog_seconds();
+        uint64_t last = __atomic_load_n(&watchdog_last_present, __ATOMIC_ACQUIRE), now = monotonic_ns();
+        if (!seconds || !last || !now || now < last) continue;
+        if (frostpunk_android_foreground && !frostpunk_android_foreground()) continue;
+        if (now - last >= (uint64_t)seconds * SECOND_NS && reported != last) {
+            reported = last;
+            watchdog_report((now - last) / 1000000ull);
+        }
+    }
+    return NULL;
+}
+static void watchdog_present(uint64_t now) {
+    __atomic_store_n(&watchdog_last_present, now, __ATOMIC_RELEASE);
+    if (__atomic_test_and_set(&watchdog_started, __ATOMIC_ACQ_REL)) return;
+    struct sigaction action;memset(&action, 0, sizeof action);
+    action.sa_sigaction = watchdog_signal; action.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGURG, &action, NULL)) return;
+    pthread_t thread;pthread_attr_t attributes;pthread_attr_init(&attributes);
+    pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+    if (!pthread_create(&thread, &attributes, watchdog_main, NULL)) pthread_setname_np(thread, "fp-watchdog");
+    pthread_attr_destroy(&attributes);
+}
+
 static void render_accept(int32_t result, uint64_t gap, uint64_t now) {
+    watchdog_present(now);
     uint64_t gap_ms = gap / 1000000ull;
     if (result == VK_SUBOPTIMAL_VALUE) ++render_sub;
     else ++render_ok;

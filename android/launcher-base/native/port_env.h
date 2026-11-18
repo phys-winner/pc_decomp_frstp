@@ -13,8 +13,9 @@
  *                            is then the folder of the archive's few unpacked (compressed) files
  *   PORT_MOUNT_FD_<ID>       that archive's open descriptor, owned by the process
  *   PORT_OPTION_<KEY>        an option of port.json ("1"/"0" for switches)
- *   PORT_TURNIP_DRIVER       the player's own Turnip driver (TurnipDriver.java): the library's full
+ *   PORT_TURNIP_DRIVER       the player's own Turnip driver (VulkanDriver.java): the library's full
  *                            path, for adrenotools in place of the port's; empty for the port's own
+ *   PORT_PANVK_DRIVER        the same for PanVK, shared by both PanVK renderer modes
  *   PORT_UPDATE_VERSION      a newer port release the launcher found (its versionName), else absent
  *   PORT_UPDATE_PAGE         its release page
  *

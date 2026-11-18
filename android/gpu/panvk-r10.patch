@@ -1,0 +1,81 @@
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -2161,6 +2161,7 @@
+ /* BASE_CSF_NOTIFICATION_*: what a read() of the context's fd returns, 64 bytes each. */
+ #define KBASE_CSF_NOTIFICATION_SIZE              64
+ #define KBASE_CSF_NOTIFICATION_GPU_QUEUE_GROUP_ERROR 1
++#define BASE_CSF_TILER_OOM_EXCEPTION_FLAG (1u << 0)
+ 
+ /* CS opcodes and fields (genxml v12, "CS ..."). */
+ #define CS_OP_MOVE48        1u
+@@ -2555,6 +2556,7 @@
+          .tiler_max = 1,
+          .fragment_max = max_fragment,
+          .compute_max = max_compute,
++         .csi_handlers = BASE_CSF_TILER_OOM_EXCEPTION_FLAG,
+       },
+    };
+    if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc)) {
+--- a/build.sh
++++ b/build.sh
+@@ -38,7 +38,7 @@
+    exit 1
+ fi
+ 
+-for tool in meson ninja python3 pkg-config glslangValidator; do
++for tool in meson ninja python3 pkg-config glslangValidator rustc bindgen; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+       echo "error: $tool not found in PATH" >&2
+       exit 1
+@@ -79,6 +79,11 @@
+    python3 android/gralloc/mkstubs.py "$BIN/aarch64-linux-android31-clang" "$GRALLOC_DEPS/libs-a12"
+ fi
+ 
++if [ -z "${BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android:-}" ]; then
++   resource_dir=$("$BIN/aarch64-linux-android31-clang" -print-resource-dir)
++   export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$BIN/../sysroot --target=aarch64-linux-android31 -isystem $resource_dir/include"
++fi
++
+ cat > "$BUILD/cross.ini" <<EOF
+ [binaries]
+ c = '$BIN/aarch64-linux-android31-clang'
+@@ -86,11 +91,16 @@
+ ar = '$BIN/llvm-ar'
+ strip = '$BIN/llvm-strip'
+ pkg-config = 'pkg-config'
++rust = ['rustc', '--target=aarch64-linux-android']
++rust_ld = '$BIN/aarch64-linux-android31-clang'
+ 
+ [properties]
+ # Keep the host's .pc files out of the cross build.
+ pkg_config_libdir = ['$PWD/$BUILD/pkgconfig-empty']
+-cpp_link_args = ['-static-libstdc++']
++
++[built-in options]
++c_link_args = ['-Wl,-z,max-page-size=16384']
++cpp_link_args = ['-static-libstdc++', '-Wl,-z,max-page-size=16384']
+ 
+ [host_machine]
+ system = 'android'
+@@ -101,7 +111,7 @@
+ 
+ if [ ! -f "$BUILD/build.ninja" ]; then
+    meson setup "$BUILD" --cross-file "$BUILD/cross.ini" \
+-      -Dbuildtype=debugoptimized -Db_ndebug=true \
++      -Dbuildtype=release -Db_ndebug=true -Dpanfrost-rust=true \
+       -Dplatforms=android -Dplatform-sdk-version=31 -Dandroid-stub=true -Dandroid-strict=false \
+       -Dandroid-libbacktrace=disabled \
+       -Dvulkan-drivers=panfrost -Dgallium-drivers= -Dvulkan-layers= -Dtools= -Dvideo-codecs= \
+--- a/src/panfrost/compiler/pan_compiler.c
++++ b/src/panfrost/compiler/pan_compiler.c
+@@ -52,8 +52,9 @@
+    DEBUG_NAMED_VALUE_END,
+ };
+ 
++/* The Bifrost fragment compiler corrupts Frostpunk materials on Valhall v11. */
+ DEBUG_GET_ONCE_FLAGS_OPTION(use_kraid, "PAN_USE_KRAID",
+-                            pan_use_kraid_flags, 0)
++                            pan_use_kraid_flags, USE_KRAID_FS)
+ #endif
+ 
+ bool

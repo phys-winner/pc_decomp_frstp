@@ -12,6 +12,7 @@ whatever revision is latest:
 | --- | --- | --- | --- |
 | pcrecomp CPU/lifter | [sp00nznet/pcrecomp](https://github.com/sp00nznet/pcrecomp) | `904ac3129d0c9d05efbeec19a1dce6abbe7f5d26` | MIT; see `native/runtime64/LICENSE` |
 | DXVK | [doitsujin/dxvk](https://github.com/doitsujin/dxvk) | `0cf05780abd7250c2cd713b7749cf32180157cf5` | zlib; retained upstream notice |
+| PanVK for Mali kbase | [JimVulkan/mali-panvk](https://github.com/JimVulkan/mali-panvk/releases/tag/v1.6.0) and [Mesa Kraid](https://gitlab.freedesktop.org/mesa/mesa/-/tree/e7371b0711bb1cd38c39d1c05e5578c445cc6bca/src/panfrost/compiler/kraid) | `58f2c55854` (r10), Kraid from `e7371b0711` and `android/gpu/panvk-r10.patch` | MIT, upstream `android/NOTICE.txt`, Rust and crate licenses in the bundled notice |
 | libadrenotools | [bylaws/libadrenotools](https://github.com/bylaws/libadrenotools) | `8fae8ce254dfc1344527e05301e43f37dea2df80` | BSD-2-Clause |
 | linkernsbypass | [bylaws/libadrenotools](https://github.com/bylaws/libadrenotools) submodule | `aa3975893d83ef1bc84c321ec60c65fbf1287887` | BSD-2-Clause |
 | FidelityFX FSR1 | [GPUOpen-Effects/FidelityFX-FSR](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | `a21ffb8f6c13233ba336352bdff293894c706575` | MIT |

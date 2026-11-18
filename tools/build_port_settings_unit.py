@@ -63,16 +63,15 @@ EDITS = [
 uint32_t fp_port_setting_get(uint32_t id);
 void fp_port_setting_set(uint32_t id, uint32_t value);
 void fp_mobile_output_config(uint64_t config, uint32_t percent);
-uint32_t fp_port_frame_rates(uint32_t rates[32]);
-int fp_output_resolution_label(uint32_t percent, char *text, size_t text_n);
+#include "port_settings.h"
 #include <stdio.h>
 #include <string.h>
 #include "port_help.inc"
 static void fp_frame_options(CPU *cpu,uint64_t row) {
     if(!row||rd32(row+0x20)!=28u)return;
-    uint32_t rates[32],count=fp_port_frame_rates(rates);
+    uint32_t rates[FP_MAX_FRAME_LIMITS],count=fp_port_frame_rates(rates);
     uint64_t options=rd64(row+0x28);uint32_t previous=rd32(row+0x30);
-    if(!options||!previous||previous>33)return;
+    if(!options||!previous||previous>FP_MAX_FRAME_LIMITS+1)return;
     unsigned same=previous==count+1;
     for(uint32_t i=0;same&&i<count;++i)if(rd32(options+(uint64_t)(i+1)*16)!=rates[i])same=0;
     if(same)return;

@@ -80,10 +80,20 @@ public:
     if (window && displayMode(&mode) && width == mode.width && height == mode.height) return;
     throw DxvkError("Android WSI: application-controlled resize is unsupported");
   }
-  bool setWindowMode(HMONITOR, HWND, const WsiMode&) override { return false; }
-  bool enterFullscreenMode(HMONITOR, HWND, DxvkWindowState*, bool) override { return false; }
-  bool leaveFullscreenMode(HWND, DxvkWindowState*, bool) override { return false; }
-  bool restoreDisplayMode() override { return false; }
+  /* The NativeActivity window is already the display. Reporting failure makes
+   * CryEngine call EnterFullscreenMode every frame; ChangeDisplayMode then
+   * fails in setWindowMode and the load keeps allocating. Accept the current
+   * mode instead of switching the real display. */
+  bool setWindowMode(HMONITOR monitor, HWND window, const WsiMode& requested) override {
+    WsiMode current;
+    if (!window || !monitorMode(monitor, &current)) return false;
+    return requested.width == current.width && requested.height == current.height;
+  }
+  bool enterFullscreenMode(HMONITOR monitor, HWND window, DxvkWindowState*, bool) override {
+    return window && monitor == virtualMonitor();
+  }
+  bool leaveFullscreenMode(HWND window, DxvkWindowState*, bool) override { return window != nullptr; }
+  bool restoreDisplayMode() override { return true; }
   HMONITOR getWindowMonitor(HWND window) override { return window ? getDefaultMonitor() : nullptr; }
   bool isWindow(HWND w) override { return w != nullptr; }
   bool isMinimized(HWND w) override {
@@ -93,9 +103,7 @@ public:
     return minimized;
   }
   bool isOccluded(HWND w) override { return isMinimized(w); }
-  void updateFullscreenWindow(HMONITOR, HWND, bool) override {
-    throw DxvkError("Android WSI: fullscreen display control is unsupported");
-  }
+  void updateFullscreenWindow(HMONITOR, HWND, bool) override {}
   VkResult createSurface(HWND w, PFN_vkGetInstanceProcAddr gipa,
                          VkInstance instance, VkSurfaceKHR* surface) override {
     if (!w || !surface || !gipa) return VK_ERROR_INITIALIZATION_FAILED;

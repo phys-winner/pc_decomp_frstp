@@ -15,6 +15,7 @@ PFN_vkGetInstanceProcAddr frostpunk_gpu_open(const char *runtime_dir,
 PFN_vkGetInstanceProcAddr frostpunk_gpu_open_system(char *error, size_t error_size);
 PFN_vkGetInstanceProcAddr frostpunk_gpu_open_turnip(const char *runtime_dir,
     const char *driver_dir, char *error, size_t error_size);
+PFN_vkGetInstanceProcAddr frostpunk_gpu_open_panvk(const char *runtime_dir, char *error, size_t error_size);
 #ifdef __cplusplus
 }
 #endif

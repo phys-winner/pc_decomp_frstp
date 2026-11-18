@@ -1,0 +1,91 @@
+# Liquid Engine RenderingDeviceDirectX11 functions with D3D11 effects, replaced by the native
+# Vulkan device (android/vulkan).  Line order = hook table index (append only).
+# VA name size vtable-slots
+0x140d881b0 dev_create_blend_states 477 RDPC[62],RDBase[62]
+0x140d88390 dev_raster_state_apply 906
+0x140d88720 dev_init_base 1155 RDBase[1]
+0x140d88bb0 dev_shutdown 340 RDPC[2],RDBase[2]
+0x140d88d40 dev_frame_begin_query 63 RDPC[19],RDBase[19]
+0x140d88d80 dev_frame_end_query 202 RDPC[20],RDBase[20]
+0x140d89210 dev_commit_render_targets 34 RDPC[49],RDBase[49]
+0x140d89240 dev_user_vertices 517
+0x140d89450 dev_user_indices 406
+0x140d895f0 dev_set_viewport 149 RDPC[60],RDBase[60]
+0x140d89690 dev_set_cull 170 RDPC[24],RDBase[24]
+0x140d89740 dev_set_raster_42 91 RDPC[42],RDBase[42]
+0x140d897a0 dev_set_raster_25 99 RDPC[25],RDBase[25]
+0x140d89810 dev_set_raster_51 77 RDPC[51],RDBase[51]
+0x140d89860 dev_set_scissor 90 RDPC[43],RDBase[43]
+0x140d898c0 dev_apply_depth_state 38 RDPC[61],RDBase[61]
+0x140d898f0 dev_present 220 RDPC[22],RDBase[22]
+0x140d899d0 dev_dispatch 151 RDPC[21],RDBase[21]
+0x140d89b10 dev_set_texture 1036 RDPC[39],RDBase[39]
+0x140d89f20 dev_bind_srv 346
+0x140d8a080 dev_bind_cs_uav 111
+0x140d8a0f0 dev_set_uavs 505 RDPC[40],RDBase[40]
+0x140d8a2f0 dev_clear_uavs 239 RDPC[41],RDBase[41]
+0x140d8a3e0 dev_set_index_buffer_30 142 RDPC[30],RDBase[30]
+0x140d8a470 dev_set_index_buffer_29 127 RDPC[29],RDBase[29]
+0x140d8a530 dev_set_stream_32 355 RDPC[32],RDBase[32]
+0x140d8a6e0 dev_save_ia 273 RDPC[33],RDBase[33]
+0x140d8a800 dev_restore_ia 322 RDPC[34],RDBase[34]
+0x140d8aa40 dev_set_constant_buffers 580 RDPC[37],RDBase[37]
+0x140d8ac90 dev_draw_indexed 191 RDPC[26],RDBase[26]
+0x140d8ad50 dev_draw_indexed_instanced 141 RDPC[27],RDBase[27]
+0x140d8ade0 dev_draw 159 RDPC[28],RDBase[28]
+0x140d8ae80 dev_set_vertex_buffers 272
+0x140d8ceb0 dev_init 589 RDPC[1]
+0x140d8d100 dev_copy_resource 36 RDPC[59]
+0x140d8e2d0 dev_screen_grab_58 415 RDPC[58]
+0x140d8e9e0 rt_clear 176 RDRenderTargetDirectX11Cube[3],RDRenderTargetDirectX11[3]
+0x140d8ea90 rt_read_back 979 RDRenderTargetDirectX11Cube[5],RDRenderTargetDirectX11[5]
+0x140d8ee70 rt_view 970 RDRenderTargetDirectX11[8]
+0x140d8f4d0 rt_cube_view 929 RDRenderTargetDirectX11Cube[8]
+0x140d8f930 ds_read_back 928 RDRenderTargetDirectX11DepthStencilCube[5],RDRenderTargetDirectX11DepthStencil[5]
+0x140d8fcd0 ds_clear 157 RDRenderTargetDirectX11DepthStencilCube[4],RDRenderTargetDirectX11DepthStencil[4]
+0x140d8fd70 ds_view 361 RDRenderTargetDirectX11DepthStencil[8]
+0x140d90060 ds_cube_view 1013 RDRenderTargetDirectX11DepthStencilCube[8]
+0x140d90460 tex_uav_view 463 RDDirectX11Texture_UAV[20]
+0x140d90a20 query_begin 21 RDDirectx11Query[2]
+0x140d90a40 query_end 21 RDDirectx11Query[3]
+0x140d90a60 query_data 43 RDDirectx11Query[4]
+0x140d90a90 query_result_5 208 RDDirectx11Query[5]
+0x140d90b60 query_result_6 124 RDDirectx11Query[6]
+0x140d90be0 query_result_7 99 RDDirectx11Query[7]
+0x140d90cd0 pso_apply 673
+0x140d91af0 rs_create_render_target 1128
+0x140d92100 rs_9 525 RDResourceSupport[9]
+0x140d923e0 rs_create_depth_stencil 1085
+0x140d92b50 rs_create_pipeline_state 1207 RDResourceSupport[17]
+0x140d93100 rs_create_texture_2d 1121 RDResourceSupport[12]
+0x140d93570 rs_create_texture_13 875 RDResourceSupport[13]
+0x140d938e0 rs_create_texture_3d 746 RDResourceSupport[14]
+0x140d93d40 fn_140d93d40 995
+0x140d94130 fn_140d94130 1007
+0x140d94520 fn_140d94520 734
+0x140d94800 rs_create_d3d_buffer 304
+0x140d94bf0 rs_create_texture_10 930 RDResourceSupport[10]
+0x140d94fa0 rs_create_texture_11 486 RDResourceSupport[11]
+0x140d95190 rs_create_query 178 RDResourceSupport[16]
+0x140d95250 rs_create_shader 620 RDResourceSupport[1]
+0x140d958e0 rs_create_depth_state 924
+0x140d95c80 rs_create_sampler 598
+0x140d96020 window_create 1163 RDWindowDirectX11[2]
+0x140d967a0 window_buffers 707
+0x140d97500 tex_generate_mips 27 RDDirectX11Texture_Cube[5],RDDirectX11TextureBase[5],RDDirectX11Texture_2D[5]
+0x140d97520 tex_init_views 2045 RDDirectX11Texture_Cube[19],RDDirectX11TextureBase[19],RDDirectX11Texture_2D[19]
+0x140d97d20 tex_init_views_array 1166
+0x140d981b0 tex_unlock_2 308 RDDirectX11Texture_Cube[2],RDDirectX11TextureBase[2],RDDirectX11Texture_2D[2]
+0x140d982f0 tex_unlock_3 196 RDDirectX11Texture_Cube[3],RDDirectX11TextureBase[3],RDDirectX11Texture_2D[3]
+0x140d983c0 tex_read_back 417
+0x140d98570 tex_update 500 RDDirectX11Texture_Cube[4],RDDirectX11TextureBase[4],RDDirectX11Texture_2D[4]
+0x140d98770 tex_update_region 249 RDDirectX11Texture_Cube[7],RDDirectX11TextureBase[7],RDDirectX11Texture_2D[7]
+0x140d98920 staging_map 359 RDDirectX11Texture_Staging2D[8]
+0x140d98a90 staging_unmap 24 RDDirectX11Texture_Staging2D[9]
+0x140d9a8d0 buffer_init 1245
+0x140d9adb0 vb_resize 458 RDDirectx11VertexBuffer[5]
+0x140d9af80 ib_resize 458 RDDirectx11IndexBuffer[5]
+0x140d9b150 buffer_map 196
+0x140d9b280 buffer_unmap 21 RDDirectX11Buffer[3]
+0x140d9b2a0 buffer_update 281 RDDirectX11Buffer[4]
+0x140d9b4b0 vib_unlock 21 RDDirectx11IndexBuffer[3],RDDirectx11VertexBuffer[3]

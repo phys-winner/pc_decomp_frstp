@@ -38,7 +38,7 @@ typedef struct {
 static law_photo_saved law_photo_saved_nodes[2048];
 static ui_index_slot law_photo_saved_index[4096];
 static unsigned law_photo_saved_count,law_photo_placing;
-typedef struct {uint64_t object,view;uint32_t id,active;float initial[4],selected[4],viewport[4];} law_photo_camera_saved;
+typedef struct {uint64_t object,view;uint32_t id,active,has_last;float initial[4],selected[4],viewport[4],last_law[4];} law_photo_camera_saved;
 static law_photo_camera_saved law_photo_cameras[16];
 static unsigned law_photo_camera_count;
 static ui_index_slot law_photo_camera_index[32];
@@ -62,6 +62,18 @@ static unsigned law_photo_family(uint64_t node) {
     return 0;
 }
 
+/* SociotechTree controller camera (141A62E90), called on selection changes only (141A60530, and the
+ * cancel 141A60220 while the state +0xD0 is still 2): with a law guid at +0x1C8 the view scrolls to its
+ * node (entries +0x1B0, position +48) minus the "selected" offset +0x270; with no guid to the tree centre
+ * +0x200 minus the "initial" offset +0x260, so cancelling a law jumped back to the middle of the list.
+ * After a cancel the initial offset is moved so the view stays on the law just closed.  The categories
+ * view (state 0) and a closed book (3) forget it: opening a tree (141A60070) centres it as on the PC. */
+static unsigned law_photo_no_law(uint64_t object){return !memcmp((void*)(uintptr_t)(object+0x1C8),(void*)(uintptr_t)GVA(0x14296FC18),16);}
+static void law_photo_camera_return(uint64_t object,law_photo_camera_saved *saved,const float base[4]) {
+    unsigned back=saved->has_last&&law_photo_no_law(object);
+    for(unsigned i=0;i<2;++i)wrss(object+0x260+4*i,back?rdss(object+0x200+4*i)-saved->last_law[i]+base[i]:base[i]);
+}
+
 static void law_photo_camera_cache(uint64_t object) {
     uint64_t reference=rd64(object+0xd8),view=reference?rd64(reference):0;
     if(!view||law_photo_family(view)!=1)return;
@@ -79,12 +91,15 @@ static void law_photo_camera_cache(uint64_t object) {
         ui_index_add(law_photo_camera_index,31u,object,id,index);
     }
     law_photo_camera_saved *saved=&law_photo_cameras[index];
+    unsigned state=rd32(object+0xd0);
+    if(state!=1&&state!=2)saved->has_last=0;
     if(applied_scale<=100){
         if(saved->active){
             memcpy((void*)(uintptr_t)(object+0x260),saved->initial,16);
             memcpy((void*)(uintptr_t)(object+0x270),saved->selected,16);
             memcpy((void*)(uintptr_t)(object+0x280),saved->viewport,16);saved->active=0;
         }
+        law_photo_camera_return(object,saved,saved->initial);
         return;
     }
     float width=rdss(GVA(0x142980E60)),height=rdss(GVA(0x142980E64));
@@ -97,10 +112,30 @@ static void law_photo_camera_cache(uint64_t object) {
     // node in the remaining lower-left tree area; initial/root focus stays centred.
     wrss(object+0x270,(g.table_left-4)*.5f);wrss(object+0x274,fminf(view_height-58,g.law_selected_y-g.tree_top));
     wrss(object+0x280,view_width);wrss(object+0x284,view_height);saved->active=1;
+    float centre[4]={view_width*.5f,view_height*.5f,0,0};
+    law_photo_camera_return(object,saved,centre);
+}
+
+/* Remembers where the selected law sits: entry index of its guid (+0x1C8) in the sorted entry array
+ * +0x1B0 (binary search 141A5ADB0, read-only), node position at +48 of the 128-byte entry. */
+static void law_photo_camera_remember(CPU *cpu,uint64_t object) {
+    uint64_t reference=rd64(object+0xd8),view=reference?rd64(reference):0,entries=rd64(object+0x1B0);
+    if(!view||!entries||law_photo_no_law(object))return;
+    int slot=ui_index_find(law_photo_camera_index,31u,object,rd32(view+0x1e4));if(slot<0)return;
+    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=object+0x1B0;c.rdx=object+0x1C8;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x141A5ADB0));
+    int32_t found=(int32_t)c.rax;
+    if(found<0||(uint32_t)found>=rd32(object+0x1B8))return;
+    law_photo_camera_saved *saved=&law_photo_cameras[slot];
+    memcpy(saved->last_law,(void*)(uintptr_t)(entries+((uint64_t)found<<7)+48),16);
+    saved->has_last=isfinite(saved->last_law[0])&&isfinite(saved->last_law[1]);
+    {static unsigned logged;if(logged++<8)fprintf(stderr,"FP_LAW_CAMERA remember index=%d state=%u at=%.1f,%.1f\n",found,rd32(object+0xd0),saved->last_law[0],saved->last_law[1]);}
 }
 
 void fp_mobile_law_camera(CPU *cpu,void (*original)(CPU*)) {
-    law_photo_camera_cache(cpu->rcx);original(cpu);
+    uint64_t object=cpu->rcx;
+    law_photo_camera_remember(cpu,object);
+    law_photo_camera_cache(object);original(cpu);
 }
 
 void fp_mobile_law_camera_init(CPU *cpu,void (*original)(CPU*)) {
@@ -431,14 +466,18 @@ static int law_photo_layout(CPU *cpu,uint64_t node,float width,float height) {
                 if(isfinite(left)&&right>left&&right-left<2000)x=(width-(right-left)*factor)*.5f-left*factor;
                 law_photo_place(cpu,node,x,16,factor,factor);
             }
-        } else if(!strcmp(name,"CUSTOM_CLOSE_BUTTON")&&parent_name&&!strcmp(parent_name,"ANIM"))law_photo_place(cpu,node,width-148,8,.85f,.85f);
+        } else if(!strcmp(name,"CUSTOM_CLOSE_BUTTON")&&parent_name&&!strcmp(parent_name,"ANIM")){
+            float w=rdss(node+0x100)>0?rdss(node+0x100):164.f;
+            law_photo_place(cpu,node,width-12-w*.8f,8,.8f,.8f);
+        }
         else if(!strcmp(name,"top")&&parent_name&&!strcmp(parent_name,"TREE_VIEW"))law_photo_place(cpu,node,0,0,1,1);
         else if((!strcmp(name,"logo")||!strcmp(name,"BACK_BUTTON"))&&parent_name&&!strcmp(parent_name,"top")&&grandparent_name&&!strcmp(grandparent_name,"TREE_VIEW")){
             uint64_t content=law_photo_child(grandparent,"CONTENT"),info=content?law_photo_child(content,"INFO_PANEL"):0;
-            if(info&&!(rd32(info+0x1e0)&2)){
-                if(!strcmp(name,"logo"))law_photo_place(cpu,node,12-140*.6f,4+501*.6f,.6f,.6f);
-                else law_photo_place(cpu,node,12,height-42,.8f,.8f);
-            } else law_photo_restore(cpu,node);
+            unsigned page=info&&!(rd32(info+0x1e0)&2);
+            if(!strcmp(name,"logo")){
+                if(page)law_photo_place(cpu,node,12-140*.6f,4+501*.6f,0,0);
+                else law_photo_restore(cpu,node);
+            } else law_photo_place(cpu,node,12,8,.8f,.8f);
         }
         else if(!strcmp(name,"HEADER")&&parent_name&&!strcmp(parent_name,"CATEGORIES_VIEW")){
             law_photo_place(cpu,node,0,height-60,width/1280,width/1280);  /* uniform: 0.5x0.6 stretched the caption */

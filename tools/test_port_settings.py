@@ -2,6 +2,7 @@
 import argparse
 import json,subprocess
 from fastbuild import CLANG,ROOT
+from fastlift import port_settings_patch
 from test_android_render_scale import function
 from test_android_touch_controls import extract
 parser=argparse.ArgumentParser(description=__doc__)
@@ -14,7 +15,8 @@ out.parent.mkdir(parents=True,exist_ok=True)
 source=ROOT/'build/fast/mobile-objects/recomp_funcs_0807.c'
 (out.parent/'render_defaults_production.inc').write_text(function(source.read_text(),'140E5C1A0'))
 options_source=ROOT/'build/fast/port-objects/recomp_funcs_0959.c'
-(out.parent/'frame_options_production.inc').write_text(extract(options_source.read_text(),'static void fp_frame_options(')+extract(options_source.read_text(),'static int fp_label_matches(')+extract(options_source.read_text(),'static void fp_output_labels('))
+options_text=port_settings_patch(options_source.read_text())
+(out.parent/'frame_options_production.inc').write_text(extract(options_text,'static void fp_frame_options(')+extract(options_text,'static int fp_label_matches(')+extract(options_text,'static void fp_output_labels('))
 subprocess.run([str(CLANG),'--target=aarch64-linux-android30','-O2','-std=c11','-Wl,-z,max-page-size=16384','-I'+str(ROOT/'android/host'),
  '-I'+str(ROOT/'native/runtime64'),'-I'+str(out.parent),
  str(ROOT/'tests/port_settings_fixture.c'),str(ROOT/'android/host/port_settings.c'),'-o',str(out)],check=True)

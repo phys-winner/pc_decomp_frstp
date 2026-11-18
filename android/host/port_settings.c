@@ -25,27 +25,49 @@ static _Atomic uint32_t model_detail = 5;
  * the meshes already in use, so the row is not a second hidden default. */
 static int building_quality_chosen;
 static _Atomic uint32_t building_quality = 0;
+static int free_building_chosen;
+static _Atomic uint32_t free_building = 1;
 static _Atomic uint32_t output_native_w, output_native_h;
-static uint32_t display_rates[32]={60},display_rate_count=1;
+static uint32_t frame_rates[FP_MAX_FRAME_LIMITS]={30,60},frame_rate_count=2;
 static pthread_mutex_t rates_mutex=PTHREAD_MUTEX_INITIALIZER;
 extern void fp_mobile_debug_menu_request(void) __attribute__((weak));
 extern void frostpunk_android_request_frame_rate(uint32_t) __attribute__((weak));
 
-uint32_t fp_port_frame_rates(uint32_t rates[32]){
-    pthread_mutex_lock(&rates_mutex);uint32_t count=display_rate_count;
-    memcpy(rates,display_rates,count*sizeof(uint32_t));pthread_mutex_unlock(&rates_mutex);return count;
+uint32_t fp_port_frame_rates(uint32_t rates[FP_MAX_FRAME_LIMITS]){
+    pthread_mutex_lock(&rates_mutex);uint32_t count=frame_rate_count;
+    memcpy(rates,frame_rates,count*sizeof(uint32_t));pthread_mutex_unlock(&rates_mutex);return count;
 }
 static int valid_frame_rate(uint32_t value){
-    if(!value)return 1;int valid=0;pthread_mutex_lock(&rates_mutex);
-    for(uint32_t i=0;i<display_rate_count;++i)if(display_rates[i]==value){valid=1;break;}
-    pthread_mutex_unlock(&rates_mutex);return valid;
+    if(!value)return 1;
+    for(uint32_t i=0;i<frame_rate_count;++i)if(frame_rates[i]==value)return 1;
+    return 0;
+}
+static int set_frame_rate(uint32_t value){
+    pthread_mutex_lock(&rates_mutex);
+    int valid=valid_frame_rate(value);
+    if(valid)atomic_store(&frame_limit,value);
+    pthread_mutex_unlock(&rates_mutex);
+    return valid;
+}
+static int compare_frame_rates(const void *a,const void *b){
+    return (int)*(const uint32_t*)a-(int)*(const uint32_t*)b;
 }
 void fp_port_frame_rates_configure(const uint32_t *rates,uint32_t count){
-    if(!rates||!count||count>32)return;
+    if(!rates||!count||count>FP_MAX_FRAME_LIMITS/2)return;
     for(uint32_t i=0;i<count;++i)if(!rates[i]||rates[i]>1000||(i&&rates[i]<=rates[i-1]))return;
-    pthread_mutex_lock(&rates_mutex);memcpy(display_rates,rates,count*sizeof(uint32_t));display_rate_count=count;
-    atomic_store(&display_limit,rates[count-1]);pthread_mutex_unlock(&rates_mutex);
+    uint32_t limits[FP_MAX_FRAME_LIMITS],length=0;
+    for(uint32_t i=0;i<count;++i){
+        limits[length++]=rates[i];
+        if(rates[i]>1)limits[length++]=rates[i]/2;
+    }
+    qsort(limits,length,sizeof(limits[0]),compare_frame_rates);
+    pthread_mutex_lock(&rates_mutex);
+    frame_rate_count=0;
+    for(uint32_t i=0;i<length;++i)
+        if(!i||limits[i]!=limits[i-1])frame_rates[frame_rate_count++]=limits[i];
+    atomic_store(&display_limit,rates[count-1]);
     if(!valid_frame_rate(atomic_load(&frame_limit)))atomic_store(&frame_limit,0);
+    pthread_mutex_unlock(&rates_mutex);
 }
 __attribute__((visibility("default"))) uint32_t frostpunk_android_frame_limit(void){
     uint32_t limit=atomic_load(&frame_limit);return limit?limit:atomic_load(&display_limit);
@@ -190,6 +212,8 @@ void fp_port_settings_load(const char *directory) {
     atomic_store(&switch_ui, 0);
     atomic_store(&switch_ui_active, 0);
     building_quality_chosen = 0;
+    free_building_chosen = 0;
+    atomic_store(&free_building, 1);
     atomic_store(&model_detail, 5);
     /* The initial 50% output needs a 200% interface on phones and tablets. */
     atomic_store(&ui_scale, resource_available("FROSTPUNK_PORT_DATA") ? 200 : 100);
@@ -206,12 +230,16 @@ void fp_port_settings_load(const char *directory) {
         else if (sscanf(line, "ui_scale=%u", &value) == 1 && value >= 100 && value <= 200 && value % 10 == 0) atomic_store(&ui_scale, value);
         else if (sscanf(line, "touch_offset=%u", &value) == 1 && value <= 128 && value % 16 == 0) atomic_store(&touch_offset, value);
         else if (sscanf(line, "upscaler=%u", &value) == 1 && value <= 2) atomic_store(&upscaler, value);
-        else if (sscanf(line, "frame_limit=%u", &value) == 1 && valid_frame_rate(value)) atomic_store(&frame_limit, value);
+        else if (sscanf(line, "frame_limit=%u", &value) == 1) set_frame_rate(value);
         else if (sscanf(line, "switch_interface=%u", &value) == 1 && value <= 1) atomic_store(&switch_ui, value);
         else if (sscanf(line, "model_detail=%u", &value) == 1 && value <= 5) atomic_store(&model_detail, value);
         else if (sscanf(line, "building_quality=%u", &value) == 1 && value <= 4) {
             atomic_store(&building_quality, value);
             building_quality_chosen = 1;
+        }
+        else if (sscanf(line, "free_building=%u", &value) == 1 && value <= 1) {
+            atomic_store(&free_building, value);
+            free_building_chosen = 1;
         }
     }
     fclose(file);
@@ -237,6 +265,8 @@ static void save(void) {
                      (unsigned)atomic_load(&switch_ui), (unsigned)atomic_load(&model_detail)) > 0;
         if (ok && building_quality_chosen)
             ok = fprintf(file, "building_quality=%u\n", (unsigned)atomic_load(&building_quality)) > 0;
+        if (ok && free_building_chosen)
+            ok = fprintf(file, "free_building=%u\n", (unsigned)atomic_load(&free_building)) > 0;
         ok = fflush(file) == 0 && ok;
         ok = fsync(fileno(file)) == 0 && ok;
         ok = fclose(file) == 0 && ok;
@@ -260,8 +290,11 @@ uint32_t fp_port_setting_get(uint32_t id) {
     if (id == FP_SETTING_SWITCH_UI) return atomic_load(&switch_ui);
     if (id == FP_SETTING_MODEL_DETAIL) return atomic_load(&model_detail);
     if (id == FP_SETTING_BUILDING_MODELS) return building_quality_shown();
+    if (id == FP_SETTING_FREE_BUILDING) return atomic_load(&free_building);
     return 0;
 }
+
+int fp_port_free_building_pending(void) { return !free_building_chosen; }
 
 void fp_port_setting_set(uint32_t id, uint32_t value) {
     if (id == FP_SETTING_UI_SCALE && value > 100 && !resource_available("FROSTPUNK_PORT_DATA")) value = 100;
@@ -279,8 +312,7 @@ void fp_port_setting_set(uint32_t id, uint32_t value) {
     else if (id == FP_SETTING_TOUCH_OFFSET && value <= 128 && value % 16 == 0) atomic_store(&touch_offset, value);
     else if (id == FP_SETTING_UPSCALER && value <= 2) atomic_store(&upscaler, value);
     else if (id == FP_SETTING_SWITCH_UI && value <= 1) atomic_store(&switch_ui, value);
-    else if (id == FP_SETTING_FRAME_LIMIT && valid_frame_rate(value)){
-        atomic_store(&frame_limit,value);
+    else if (id == FP_SETTING_FRAME_LIMIT && set_frame_rate(value)){
         if(frostpunk_android_request_frame_rate)frostpunk_android_request_frame_rate(frostpunk_android_frame_limit());
     }
     else if (id == FP_SETTING_MODEL_DETAIL && value <= 5) {
@@ -290,6 +322,10 @@ void fp_port_setting_set(uint32_t id, uint32_t value) {
     else if (id == FP_SETTING_BUILDING_MODELS && value <= 4) {
         atomic_store(&building_quality, value);
         building_quality_chosen = 1;
+    }
+    else if (id == FP_SETTING_FREE_BUILDING && value <= 1) {
+        atomic_store(&free_building, value);
+        free_building_chosen = 1;
     }
     else { fprintf(stderr, "FP_PORT_SETTINGS rejected id=%u value=%u\n", id, value); return; }
     fprintf(stderr, "FP_PORT_SETTINGS set id=%u value=%u\n", id, value);

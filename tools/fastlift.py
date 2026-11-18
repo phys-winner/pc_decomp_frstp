@@ -76,13 +76,19 @@ SOURCE_OVERRIDE = {
 ALIASES = {va: 'fp_original_L_%012X' % va for va in (
     0x140D8DB10, 0x140D8E470, 0x140DFA630, 0x140E1E6C0, 0x140E26E40, 0x140E26F30, 0x140E26F90, 0x140E74B30,
     0x140EC6200, 0x140EC7240, 0x140F99F00, 0x140F9D240, 0x14124C7B0, 0x141250610, 0x1419EF190, 0x141A04EB0,
-    0x141A5EE10, 0x141A62E90)}
+    0x141A5EE10, 0x141A62E90, 0x141AAAFB0, 0x14180A400,
+    # UICanvas::Render (line charts of the Economy panel): mobile_controls.c corrects its scale.
+    0x1410CCA60)}
 
 
 ALIASES.update({0x140F752A0: 'fp_quality_original_L_000140F752A0', 0x1410343F0: 'fp_quality_original_L_0001410343F0',
                 0x140E2C200: 'fp_bounds_original', 0x140E2C890: 'fp_frustum_original'})
 # MeshEntity's global level of detail (meshentity.cpp): wrapped by android/host/mobile_lod.c.
 ALIASES[0x140FBA350] = 'fp_lod_original_L_000140FBA350'
+# Wrappers that must also see the references of their own unit.  SociotechTree's camera update
+# (141A62E90) is only reached by tail jumps from 141A60220 (cancel) and 141A60530 (selection) in its
+# own unit. The building painter also calls its aim routine directly in its own unit.
+ALIAS_WRAP_OWN_UNIT = {0x141A62E90, 0x141AAAFB0, 0x14180A400}
 
 
 # Production link rows of patched units that do not carry the unit number in their file name.
@@ -439,7 +445,6 @@ def unit_path(index):
     return overlay if overlay.exists() else GENERATED / name
 
 
-OUTPUT_LABEL_DECL = 'int fp_output_resolution_label(uint32_t percent, char *text, size_t text_n);\n'
 OUTPUT_LABEL_CALL = '    fp_output_labels(c,c->rdx);\n'
 FRAME_CALL = '    fp_frame_options(c,c->rdx);\n'
 FRAME_FN = 'static void fp_frame_options(CPU *cpu,uint64_t row) {'
@@ -514,15 +519,18 @@ def port_settings_patch(text):
     """
     if FRAME_FN not in text:
         return text
+    text = text.replace('uint32_t fp_port_frame_rates(uint32_t rates[32]);\n',
+                        '#include "port_settings.h"\n', 1)
+    text = text.replace('uint32_t rates[32],count=fp_port_frame_rates(rates);',
+                        'uint32_t rates[FP_MAX_FRAME_LIMITS],count=fp_port_frame_rates(rates);', 1)
+    text = text.replace('if(!options||!previous||previous>33)return;',
+                        'if(!options||!previous||previous>FP_MAX_FRAME_LIMITS+1)return;', 1)
     if 'static void fp_output_labels' not in text:
         if text.count(FRAME_FN) != 1:
             raise ValueError('port settings frame helper drifted')
         text = text.replace(FRAME_FN, OUTPUT_LABEL_FN + FRAME_FN, 1)
-    if OUTPUT_LABEL_DECL not in text:
-        decl = 'uint32_t fp_port_frame_rates(uint32_t rates[32]);\n'
-        if text.count(decl) != 1:
-            raise ValueError('port settings declaration drifted')
-        text = text.replace(decl, decl + OUTPUT_LABEL_DECL, 1)
+    if '#include "port_settings.h"' not in text:
+        raise ValueError('port settings declaration drifted')
     if 'fp_output_labels(c,c->rdx)' not in text:
         if text.count(FRAME_CALL) == 1:
             text = text.replace(FRAME_CALL, FRAME_CALL + OUTPUT_LABEL_CALL, 1)
@@ -538,6 +546,25 @@ def port_settings_patch(text):
     text = text.replace(
         'if(R32(c->rbx)>=20u&&R32(c->rbx)<=29u)',
         'if(R32(c->rbx)>=20u&&R32(c->rbx)<=31u)', 1)
+    # Row 33 is the free monument (profile bool, getter/setter in mobile_controls.c); the setter's
+    # effects hook also raises the original "requires restart" flag for row 30 (Switch interface).
+    if 'fp_port_setting_effects' not in text:
+        steps = (
+            ('uint32_t fp_port_setting_get(uint32_t id);\n',
+             'uint32_t fp_port_setting_get(uint32_t id);\n'
+             'uint32_t fp_port_monument_get(CPU *c);\n'
+             'void fp_port_setting_effects(CPU *c,uint32_t id,uint32_t value);\n'),
+            ('if(R32(c->rcx)>=21u&&R32(c->rcx)<=32u) {\n        SET32(c->rdx,fp_port_setting_get(R32(c->rcx)));',
+             'if(R32(c->rcx)>=21u&&R32(c->rcx)<=33u) {\n'
+             '        SET32(c->rdx,R32(c->rcx)==33u?fp_port_monument_get(c):fp_port_setting_get(R32(c->rcx)));'),
+            ('if(R32(c->rbx)>=20u&&R32(c->rbx)<=31u) {', 'if(R32(c->rbx)>=20u&&R32(c->rbx)<=32u) {'),
+            ('        fp_port_setting_set(R32(c->rbx)+1u,rd32(c->rsp+0x50u));\n',
+             '        fp_port_setting_set(R32(c->rbx)+1u,rd32(c->rsp+0x50u));\n'
+             '        fp_port_setting_effects(c,R32(c->rbx)+1u,rd32(c->rsp+0x50u));\n'))
+        for before, after in steps:
+            if text.count(before) != 1:
+                raise ValueError('port settings row 33 anchor drifted: ' + before[:60])
+            text = text.replace(before, after, 1)
     return text
 
 
@@ -870,7 +897,7 @@ class Emitter:
     def name(self, t, unit):
         """A wrapped function is reached through its wrapper, except from its own unit, where the
         production objects bind the reference to the renamed original."""
-        if t in ALIASES and self.plan.unit_of[t] == unit:
+        if t in ALIASES and self.plan.unit_of[t] == unit and t not in ALIAS_WRAP_OWN_UNIT:
             self.alias_refs.add(t)
             return ALIASES[t]
         self.refs.add(t)

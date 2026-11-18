@@ -37,7 +37,10 @@
       "activity": "com.frostpunk.staticrecomp.MainActivity",
       "renderers": [
         "dxvk",
-        "turnip"
+        "turnip",
+        "native_vulkan",
+        "native_vulkan_panvk",
+        "dxvk_panvk"
       ],
       "parts": [
         {
@@ -79,7 +82,7 @@
       {
         "id": "turnip",
         "kind": "turnip",
-        "title": "Vulkan (Turnip)",
+        "title": "DXVK (Turnip)",
         "vulkan": "1.3",
         "needsBC": true,
         "adreno": [
@@ -92,6 +95,48 @@
           "libdxvk_d3d11.so",
           "libdxvk_dxgi.so"
         ]
+      },
+      {
+        "id": "native_vulkan",
+        "kind": "vulkan",
+        "title": "Native Vulkan",
+        "description": {
+          "en": "Experimental renderer. Uses Vulkan directly.",
+          "ru": "Экспериментальный рендерер. Использует Vulkan напрямую.",
+          "de": "Experimenteller Renderer mit direktem Vulkan-Zugriff.",
+          "pl": "Eksperymentalny renderer korzystający bezpośrednio z Vulkan."
+        },
+        "vulkan": "1.3",
+        "needsBC": true,
+        "libraries": ["libfrostpunk_rdvk.so"]
+      },
+      {
+        "id": "native_vulkan_panvk",
+        "kind": "panvk",
+        "title": "Native Vulkan (PanVK)",
+        "description": {
+          "en": "Experimental native Vulkan with Mesa PanVK.",
+          "ru": "Экспериментальный нативный Vulkan с Mesa PanVK."
+        },
+        "minSdk": 31,
+        "vulkan": "1.3",
+        "needsBC": false,
+        "driver": "libvulkan_panfrost.so",
+        "libraries": ["libfrostpunk_rdvk.so", "libadrenotools.so", "libvulkan_panfrost.so"]
+      },
+      {
+        "id": "dxvk_panvk",
+        "kind": "panvk",
+        "title": "DXVK (PanVK)",
+        "description": {
+          "en": "Experimental DXVK with Mesa PanVK.",
+          "ru": "Экспериментальный DXVK с Mesa PanVK."
+        },
+        "minSdk": 31,
+        "vulkan": "1.3",
+        "needsBC": false,
+        "driver": "libvulkan_panfrost.so",
+        "libraries": ["libdxvk_d3d11.so", "libdxvk_dxgi.so", "libadrenotools.so", "libvulkan_panfrost.so"]
       }
     ]
   },

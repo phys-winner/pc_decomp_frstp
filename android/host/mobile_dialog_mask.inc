@@ -10,7 +10,9 @@ static uint64_t dialog_mask_ink(uint64_t node) {
            &&strcmp(parent_name,"EXT_INGAME_MENU_MAIN_PANEL")&&strcmp(parent_name,"EXT_SETTINGS_PANEL")
            &&strcmp(parent_name,"EXT_INGAME_MENU_SETTINGS_PANEL")&&strcmp(parent_name,"EXT_LOADGAME_PANEL")
            &&strcmp(parent_name,"EXT_INGAME_MENU_LOADGAME_PANEL")&&strcmp(parent_name,"EXT_INGAME_MENU_SAVEGAME_PANEL")
-           &&strcmp(parent_name,"EXT_SAVE_GAME_PANEL")&&strcmp(parent_name,"EXT_CONFIRMATION_PANEL")))continue;
+           &&strcmp(parent_name,"EXT_SAVE_GAME_PANEL")&&strcmp(parent_name,"EXT_CONFIRMATION_PANEL")
+           &&strcmp(parent_name,"EXT_SCENARIOS_PANEL")&&strcmp(parent_name,"EXT_ENDLESS_CONFIGURATION_PANEL")
+           &&strcmp(parent_name,"EXT_CUSTOM_SCENARIO_PANEL")))continue;
         return node;
     }
     return 0;

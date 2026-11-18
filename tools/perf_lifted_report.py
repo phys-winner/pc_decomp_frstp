@@ -32,6 +32,10 @@ def symbol_root(label, runtime, data=None):
     given, the unstripped DXVK (same code as the APK copy) under the install path the profile names."""
     root = OUT / ('symfs-' + label)
     wanted = {DEVICE_LIB: Path(runtime)}
+    # The native Vulkan device (android/vulkan): its development copy has the symbols of the build.
+    rdvk = ROOT / 'build/vulkan-native/lib/libfrostpunk_rdvk.so'
+    if rdvk.exists():
+        wanted['data/data/com.frostpunk.staticrecomp/files/rdvk-dev/libfrostpunk_rdvk.so'] = rdvk
     if data is not None and DXVK_SYMBOLS.exists():
         listing = subprocess.run([str(SIMPLEPERF), 'report', '-i', str(data), '--sort', 'dso'],
                                  capture_output=True, text=True, encoding='utf-8', errors='replace').stdout

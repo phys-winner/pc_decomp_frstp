@@ -37,7 +37,7 @@ TEMPLATE_PACKAGE = "port.launcher"
 PROBE_SOURCE = ROOT / "native/vulkan_probe.c"
 PROBE_LIBRARY = "libportprobe.so"
 LANGUAGES = ("en", "ru", "de", "pl")
-KINDS = ("gles", "vulkan", "turnip")
+KINDS = ("gles", "vulkan", "turnip", "panvk")
 OPTION_TYPES = ("bool", "choice", "text")
 ANDROID = "http://schemas.android.com/apk/res/android"
 
@@ -100,9 +100,9 @@ def validate(spec):
             need(re.fullmatch(r"\d+\.\d+", str(mode["vulkan"])), f"renderer {mode.get('id')}: vulkan must look like 1.3")
         if "adreno" in mode:
             need(isinstance(mode["adreno"], list) and len(mode["adreno"]) == 2, f"renderer {mode.get('id')}: adreno must be [min, max]")
-        if mode.get("kind") == "turnip":
+        if mode.get("kind") in ("turnip", "panvk"):
             need(isinstance(mode.get("driver"), str) and mode.get("driver", "").endswith(".so"),
-                 f"renderer {mode.get('id')}: a turnip mode names its driver library (\"driver\": \"lib….so\")")
+                 f"renderer {mode.get('id')}: a custom mode names its driver library (\"driver\": \"lib….so\")")
         if "needsBC" in mode:
             need(isinstance(mode["needsBC"], bool), f"renderer {mode.get('id')}: needsBC must be true or false")
     if modes:
@@ -269,7 +269,7 @@ def expand_manifest(text, spec, package):
     process = (app.get("processes") or {}).get("launcher", ":launcher")
     where = f' android:process="{process}"' if process else ""
     probe = (app.get("processes") or {}).get("probe", ":probe")
-    vulkan = any(m.get("kind") in ("vulkan", "turnip") for m in (spec.get("renderers") or {}).get("modes", []))
+    vulkan = any(m.get("kind") in ("vulkan", "turnip", "panvk") for m in (spec.get("renderers") or {}).get("modes", []))
     changes = "orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density"
     body = [
         "    <!-- The launcher base (tools/launcher.py): the home-screen entry. -->",
@@ -379,7 +379,7 @@ def prepare(spec_path, manifest_path, out):
         raise SpecError(f"{manifest_path}: the manifest is not well-formed XML: {failure}") from failure
     manifest.write_text(expanded, encoding="utf-8", newline="\n")
     build = write_assets(spec, manifest_text, out / "assets", spec_path.parent)
-    vulkan = any(m.get("kind") in ("vulkan", "turnip") for m in (spec.get("renderers") or {}).get("modes", []))
+    vulkan = any(m.get("kind") in ("vulkan", "turnip", "panvk") for m in (spec.get("renderers") or {}).get("modes", []))
     return {"package": package, "sources": [str(p) for p in sources], "manifest": str(manifest),
             "assets": str(out / "assets"), "build": build, "probe": vulkan}
 

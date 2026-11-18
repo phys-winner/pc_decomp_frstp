@@ -1042,6 +1042,24 @@ extern "C" int frostpunk_dxvk_get_display_mode(uint32_t *width,uint32_t *height,
     uint64_t extent=display_extent.load(std::memory_order_relaxed);
     *width=uint32_t(extent>>32);*height=uint32_t(extent);*refresh=rate;return 1;
 }
+/* The guest HWND -> ANativeWindow resolver for the native Vulkan rendering device
+ * (android/vulkan): the same leases the DXVK swap chains take. */
+extern "C" void* frostpunk_window_acquire(uint64_t guest,uint64_t* generation) {
+    win64_d3d11_window_acquire_fn acquire;
+    {std::lock_guard lock(mutex);acquire=acquire_guest_window;}
+    if(acquire)return acquire(guest,generation);
+    ANativeWindow* native=window.load(std::memory_order_acquire);
+    if(native)ANativeWindow_acquire(native);
+    if(generation)*generation=0;
+    return native;
+}
+extern "C" void frostpunk_window_release(void* native) {
+    win64_d3d11_window_release_fn release;
+    {std::lock_guard lock(mutex);release=release_guest_window;}
+    if(!native)return;
+    if(release)release(native);else ANativeWindow_release(static_cast<ANativeWindow*>(native));
+}
+extern "C" void* frostpunk_window_current() { return window.load(std::memory_order_acquire); }
 extern "C" void win64_d3d11_set_window_resolver(win64_d3d11_window_acquire_fn acquire,win64_d3d11_window_release_fn release) {
     if(bool(acquire)!=bool(release))trap("incomplete HWND resolver callbacks");
     std::lock_guard lock(mutex);
@@ -1135,10 +1153,43 @@ extern "C" int win64_d3d11_import(CPU* c, const char* dll, const char* name) {
     }
     return 0;
 }
+/* The native Vulkan rendering device (android/vulkan) owns the textures when it is active. */
+extern "C" int frostpunk_rdvk_active(void) __attribute__((weak));
+extern "C" uint32_t frostpunk_rdvk_read_texture(uint64_t texture,uint32_t* width,uint32_t* height,uint32_t* format,uint8_t** rgba) __attribute__((weak));
+static HRESULT write_photo(CPU* c,unsigned width,unsigned height,const uint8_t* pixels) {
+    int fd=-1;void* token=nullptr;
+    int error=win64_kernel_stream_open(c->r9,1,1,&fd,&token);
+    HRESULT hr=HRESULT(0x80070000u|unsigned(error));
+    if(error)return hr;
+    char link[64],saved[4096]={};
+    snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+    ssize_t path_size=readlink(link,saved,sizeof(saved)-1);
+    if(path_size>0)saved[path_size]=0;
+    FILE* file=fdopen(fd,"wb");
+    hr=E_FAIL;
+    if(file) {
+        auto write=[](void* out,void* data,int size){fwrite(data,1,size,static_cast<FILE*>(out));};
+        int encoded=stbi_write_png_to_func(write,file,width,height,4,pixels,width*4);
+        bool ok=encoded && !ferror(file) && fflush(file)==0;
+        if(fclose(file)!=0)ok=false;
+        if(ok){hr=S_OK;if(frostpunk_android_photo_saved&&(path_size<=0||!frostpunk_android_photo_saved(saved)))hr=E_FAIL;}
+    } else close(fd);
+    win64_kernel_stream_close(token);
+    return hr;
+}
 extern "C" void win64_d3d11_save_photo(CPU* c) {
     GfxDiagnosticErrors errors;
     uint32_t saved_error=win64_get_error();
     HRESULT hr=E_INVALIDARG;
+    if(c->rcx && c->rdx && c->r9 && frostpunk_rdvk_active && frostpunk_rdvk_active() && frostpunk_rdvk_read_texture) {
+        uint32_t width=0,height=0,format=0;uint8_t* rgba=nullptr;
+        hr=HRESULT(frostpunk_rdvk_read_texture(c->rdx,&width,&height,&format,&rgba));
+        if(SUCCEEDED(hr))hr=write_photo(c,width,height,rgba);
+        free(rgba);
+        fprintf(stderr,"FP_PHOTO_SAVED size=%ux%u format=%u status=%08x renderer=vulkan\n",width,height,format,unsigned(hr));
+        win64_set_error(saved_error);c->rax=uint32_t(hr);
+        return;
+    }
     if(c->rcx && c->rdx && c->r9) {
         Native<ID3D11DeviceContext> context(c->rcx);
         Native<ID3D11Texture2D> source(c->rdx);
@@ -1162,25 +1213,7 @@ extern "C" void win64_d3d11_save_photo(CPU* c) {
                         if(bgra)for(unsigned x=0;x<desc.Width;++x)std::swap(row[x*4],row[x*4+2]);
                     }
                     context->Unmap(staging,0);
-                    int fd=-1;void* token=nullptr;
-                    int error=win64_kernel_stream_open(c->r9,1,1,&fd,&token);
-                    hr=HRESULT(0x80070000u|unsigned(error));
-                    if(!error) {
-                        char link[64],saved[4096]={};
-                        snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
-                        ssize_t path_size=readlink(link,saved,sizeof(saved)-1);
-                        if(path_size>0)saved[path_size]=0;
-                        FILE* file=fdopen(fd,"wb");
-                        hr=E_FAIL;
-                        if(file) {
-                            auto write=[](void* out,void* data,int size){fwrite(data,1,size,static_cast<FILE*>(out));};
-                            int encoded=stbi_write_png_to_func(write,file,desc.Width,desc.Height,4,pixels.data(),desc.Width*4);
-                            bool ok=encoded && !ferror(file) && fflush(file)==0;
-                            if(fclose(file)!=0)ok=false;
-                            if(ok){hr=S_OK;if(frostpunk_android_photo_saved&&(path_size<=0||!frostpunk_android_photo_saved(saved)))hr=E_FAIL;}
-                        } else close(fd);
-                        win64_kernel_stream_close(token);
-                    }
+                    hr=write_photo(c,desc.Width,desc.Height,pixels.data());
                 }
                 staging->Release();
             }
@@ -1357,6 +1390,35 @@ struct PresentScope {
     ~PresentScope(){if(start)frame_timer.present=FrameTimer::clock(CLOCK_MONOTONIC)-start;}
 };
 }
+namespace {
+/* Diagnostic (debug.fp.d3d11_census=1 when the game starts): every COM call counted by the guest
+ * return address of its call site, so the engine code that talks to D3D11 is known exactly.  The
+ * table is written to the log every 1200 presents as FP_D3D11_SITE lines. */
+int census_enabled() {
+    static const int enabled=[]{char value[PROP_VALUE_MAX]={0};
+        return __system_property_get("debug.fp.d3d11_census",value)>0&&value[0]=='1';}();
+    return enabled;
+}
+std::mutex census_mutex;
+std::unordered_map<uint64_t,uint64_t> census_sites;
+uint64_t census_presents=0;
+void census_record(CPU* c,Kind kind,unsigned slot) {
+    uint64_t ret=read64(c->rsp);
+    uint64_t key=(uint64_t(unsigned(kind)*STRIDE+slot)<<40)|(ret&((uint64_t(1)<<40)-1));
+    std::lock_guard lock(census_mutex);
+    ++census_sites[key];
+    if((kind==Kind::IDXGISwapChain||kind==Kind::IDXGISwapChain1)&&slot==8&&++census_presents%1200==0) {
+        fprintf(stderr,"FP_D3D11_CENSUS presents=%llu sites=%zu\n",(unsigned long long)census_presents,census_sites.size());
+        for(const auto& site:census_sites) {
+            unsigned number=unsigned(site.first>>40),k=number/STRIDE,s=number%STRIDE;
+            fprintf(stderr,"FP_D3D11_SITE ret=0x%llx kind=%s slot=%u method=%s count=%llu\n",
+                (unsigned long long)(site.first&((uint64_t(1)<<40)-1)),kind_names[k],s,
+                s<slot_counts[k]?slot_names[k][s]:"?",(unsigned long long)site.second);
+        }
+        fflush(stderr);
+    }
+}
+}
 extern "C" int win64_d3d11_dispatch(CPU* c, uint64_t target) {
     if (target<SENTINEL || target>=SENTINEL+unsigned(Kind::Count)*STRIDE*8 || (target-SENTINEL)%8) return 0;
     unsigned number=unsigned((target-SENTINEL)/8), slot=number%STRIDE;
@@ -1364,6 +1426,7 @@ extern "C" int win64_d3d11_dispatch(CPU* c, uint64_t target) {
     { Proxy& object=proxy(arg(c,0));
       if (kind!=object.kind || slot>=slot_counts[unsigned(kind)]) trap("sentinel/vtable kind mismatch",kind,slot);
     }
+    if (__builtin_expect(census_enabled(),0)) census_record(c,kind,slot);
     if (geometry::draws_active()) {
         if (kind>=Kind::ID3D11DeviceContext1&&kind<=Kind::ID3D11DeviceContext4) geometry::context_call(c,slot);
         else if (kind==Kind::ID3D11DeviceContext) geometry::context_call(c,slot);

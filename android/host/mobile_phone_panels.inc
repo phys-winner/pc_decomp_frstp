@@ -25,6 +25,14 @@ static void phone_hud_visibility(CPU *cpu,uint64_t screen){
     phone_cover_scan(hud,0,&budget,targets,&count);
     phone_hud_covered=phone_hud_covered&&applied_scale>100;
     for(unsigned i=0;i<count;++i){mobile_layout *base=remember_layout(targets[i]);if(!base)continue;
+        /* A panel first seen while a save was still loading can have scale 0 then (the world-map,
+         * beacon and scout buttons of EXT_EXPEDITIONS_PANEL stayed folded for the whole game):
+         * its own scale is the base once it has one. */
+        if(!(base->sx>0)||!(base->sy>0)){
+            float sx=rdss(targets[i]+0xf0),sy=rdss(targets[i]+0xf4);
+            if(sx>0&&sy>0){base->sx=sx;base->sy=sy;}
+            else if(!phone_hud_covered){base->sx=base->sy=1;}
+        }
         // Keep queued city notices intact while a phone panel occupies their touch area.
         layout_scale(cpu,targets[i],phone_hud_covered?0:base->sx,phone_hud_covered?0:base->sy);
     }
@@ -55,8 +63,10 @@ typedef struct {uint64_t node;uint32_t id;float size,fitted;} phone_font_saved;
 static phone_font_saved phone_fonts[4096];
 static ui_index_slot phone_font_index[8192];
 static unsigned phone_font_count;
-static void phone_text_size(CPU *cpu,uint64_t node,float minimum){
-    if(rd64(node)==GVA(0x141DED7D8)&&!rd8(node+0x40e)){
+/* vtable 141DED7D8 = UITextBox (wrapping box), 141DAD740 = UIText; both share the text base
+ * (140FB3830): font size +0x3A0, Begin/EndUpdate 140FB3C50/140FB4090. */
+static void phone_text_size_class(CPU *cpu,uint64_t node,float minimum,uint64_t vtable){
+    if(rd64(node)==vtable&&!rd8(node+0x40e)){
         uint32_t id=rd32(node+0x1e4);int i=ui_index_find(phone_font_index,8191u,node,id);
         float size=rdss(node+0x3a0);
         if(i<0&&size>0&&size<minimum&&phone_font_count<4096){
@@ -68,6 +78,60 @@ static void phone_text_size(CPU *cpu,uint64_t node,float minimum){
                 call_value(cpu,UINT64_C(0x140FB3C50),node,0);wrss(node+0x3a0,target);
                 call_value(cpu,UINT64_C(0x140FB4090),node,0);
             }
+        }
+    }
+}
+static void phone_text_size(CPU *cpu,uint64_t node,float minimum){phone_text_size_class(cpu,node,minimum,GVA(0x141DED7D8));}
+static float phone_relative_scale(uint64_t node,uint64_t ancestor){
+    float scale=1;
+    for(unsigned depth=0;node&&node!=ancestor&&depth<32;++depth,node=rd64(node+0x230)){float s=rdss(node+0xf0);if(s>0)scale*=s;}
+    return scale;
+}
+/* Switch economy template (FROSTPUNK_SWITCH_DATA): both chart switches are drawn turned upright.
+ * The mode switch's captions sat 50 units up-left ("Off", outside the frame) and 71 down-right ("On"),
+ * and the history-range switch lay on the day labels under the axis. */
+static void phone_economy_switches(CPU *cpu,uint64_t node,const char *name){
+    if(applied_scale<=100||!name)return;
+    if(!switch_mode){
+        /* PC template: the range captions have 64-unit boxes ("Last 10" / "days" on two lines);
+         * the Switch template's 128 keeps each on one line. */
+        if(!strcmp(name,"TXT_LAST10DAYS")||!strcmp(name,"TXT_FULLHISTORY")){
+            law_photo_saved *saved=law_photo_remember(node);
+            if(saved&&saved->base.w>0&&saved->base.w<100)law_photo_size(cpu,node,128,saved->base.h);
+        }
+        return;
+    }
+    uint64_t parent=rd64(node+0x230);const char *parent_name=parent?law_photo_name(parent):NULL;
+    if((!strcmp(name,"off_text")||!strcmp(name,"on_text"))&&parent_name&&!strcmp(parent_name,"SWITCH_CHART_MODE_BUTTON")){
+        law_photo_saved *saved=law_photo_remember(node);unsigned off=name[1]=='f';
+        if(!saved||fabsf(saved->base.x-(off?-50.f:71.f))>.5f||fabsf(saved->base.y-(off?-18.f:18.f))>.5f)return;
+        /* The upright capsule spans x 0..10, y -8..29 of the button; its knob rests at y 1.5 (off)
+         * or 23 (on).  Captions end 4 units left of it, centred on the knob positions. */
+        float ink=rdss(node+0x4d0);if(!(ink>0&&ink<120))ink=18;
+        layout_position(cpu,node,-4-ink,off?-6.5f:15.f);
+    } else if(!strcmp(name,"SWITCH_CHART_TIME_RANGE_BUTTON")){
+        law_photo_saved *saved=law_photo_remember(node);
+        if(!saved||fabsf(saved->base.x-50)>.5f||fabsf(saved->base.y-470)>.5f)return;
+        uint64_t full=law_photo_child(node,"TXT_FULLHISTORY"),last=law_photo_child(node,"TXT_LAST10DAYS");
+        float ink=fmaxf(full?rdss(full+0x4d0):0,last?rdss(last+0x4d0):0);if(!(ink>0&&ink<240))ink=66;
+        /* Top right of the chart, under the tab row and level with its header (capsule centre 19
+         * below the button top, captions from x 16): the labels end at x 524, left of the summary. */
+        layout_position(cpu,node,524-16-ink+40,51+16);
+    } else if(!strcmp(name,"SUMMARY_PANEL")){
+        /* The chart's grid reaches x 601 of the subpanel and ran under this column (568); the frame
+         * has room on the right. */
+        law_photo_saved *saved=law_photo_remember(node);
+        if(saved&&fabsf(saved->base.x-568)<.5f)layout_position(cpu,node,saved->base.x+40,saved->base.y);
+    } else if((!strcmp(name,"GeneratorConsumptionTag")||!strcmp(name,"CUSTOM_COUNT_TEXT"))&&law_photo_ancestor(node,"SUMMARY_PANEL")){
+        /* Consumption captions start at -74, across the bracket line at -13 of their rows and the
+         * bar's connector tick; start them right of both. */
+        law_photo_saved *saved=law_photo_remember(node);
+        if(saved&&fabsf(saved->base.x+74)<.5f&&fabsf(saved->base.y+26)<.5f)layout_position(cpu,node,16,saved->base.y);
+    } else if(!strcmp(name,"line")&&parent_name&&!strcmp(parent_name,"GENERATOR_CONSUMPTION_ELEMENT")){
+        /* The first row's bracket reaches up into the larger "Coal consumption" caption. */
+        law_photo_saved *saved=law_photo_remember(node);
+        if(saved&&fabsf(saved->base.x+13)<.5f&&fabsf(saved->base.y+62)<.5f&&fabsf(saved->base.h-76)<.5f){
+            law_photo_size(cpu,node,saved->base.w,62);layout_position(cpu,node,saved->base.x,-48);
         }
     }
 }
@@ -87,8 +151,20 @@ static void phone_scroll_refresh(CPU *cpu,uint64_t node);
 static void phone_economy_text(CPU *cpu,uint64_t node,unsigned depth,unsigned *budget){
     if(!node||depth>32||!*budget||(rd32(node+0x1e0)&2))return;
     /* Readable on a phone: the panel already fills the screen height at about the desktop scale. */
-    --*budget;phone_text_fit(cpu,node,21);
+    --*budget;
     const char *name=law_photo_name(node);
+    /* The chart toggles' captions sit in 64x13 boxes stacked two lines apart: at 21 they wrapped
+     * into each other ("Last 10" over "History").  The summary column is drawn at 0.75 of the panel
+     * scale, so its texts need a larger size to read like the list on the left. */
+    unsigned toggle=name&&(!strcmp(name,"on_text")||!strcmp(name,"off_text")||!strcmp(name,"TXT_LAST10DAYS")||!strcmp(name,"TXT_FULLHISTORY"));
+    /* Summary column: ~21 after its own element scales (the consumption rows are drawn at 0.75). */
+    uint64_t summary=law_photo_ancestor(node,"SUMMARY_PANEL");
+    float minimum=toggle?15.f:summary?fminf(28.f,21.f/fmaxf(.5f,phone_relative_scale(node,summary))):21.f;
+    phone_text_fit(cpu,node,minimum);
+    /* Coal gain / consumption above the balance bar are UIText, not UITextBox; 16 keeps the longest
+     * caption inside its 220-unit box. */
+    if(summary&&name&&(!strcmp(name,"INCOME_TEXT")||!strcmp(name,"UPKEEP_TEXT")))phone_text_size_class(cpu,node,16,GVA(0x141DAD740));
+    phone_economy_switches(cpu,node,name);
     if(frostpunk_switch_ui()&&name&&!strcmp(name,"PLACES_LIST_PANEL")){
         uint64_t mask=law_photo_child(node,"Table_mask"),pane=mask?law_photo_child(mask,"SCROLL_PANE"):0;
         uint64_t content=pane?law_photo_child(pane,"CONTENT_LAYOUT"):0;

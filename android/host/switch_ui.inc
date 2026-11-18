@@ -5,8 +5,22 @@ static int switch_button_index(const char *name){
     return -1;
 }
 
+static int construction_button_index(const char *name){
+    if(!name||(name[0]!='B'&&name[0]!='D'&&name[0]!='C'))return -1;
+    static const char *names[]={"BUILD_STREET_BUTTON","DEMOLISH_STREET_BUTTON","DEMOLISH_BUTTON","CLOSE_BUTTON"};
+    for(unsigned i=0;i<4;++i)if(!strcmp(name,names[i]))return (int)i;
+    return -1;
+}
+
 static int switch_button_layout(CPU *cpu,uint64_t node){
-    if(!switch_mode||!atomic_load(&saved_controller)||rd64(node)!=GVA(0x141D79F78)||switch_button_index(law_photo_name(node))<0)return 0;
+    if(!switch_mode||!atomic_load(&saved_controller)||rd64(node)!=GVA(0x141D79F78))return 0;
+    int index=switch_button_index(law_photo_name(node));
+    if(index<0)return 0;
+    if(index==1){
+        /* Search stays a HUD button left of the population box (as on PC); the ring reuses its hit box. */
+        if(rd32(node+0x1e0)&2)call_value(cpu,UINT64_C(0x140EBE470),node,2);
+        return 0;
+    }
     unsigned open=atomic_load(&switch_menu)&&!phone_hud_covered&&!pause_menu_visible;
     unsigned hidden=(rd32(node+0x1e0)&2)!=0;
     if(hidden==open)call_value(cpu,open?UINT64_C(0x140EBE470):UINT64_C(0x140EC0F60),node,2);

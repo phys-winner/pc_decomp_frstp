@@ -20,14 +20,20 @@ void fp_original_L_000140E74B30(CPU*);
 void fp_original_L_000140F99F00(CPU*);
 void fp_original_L_000140F9D240(CPU*);
 void fp_original_L_000141A04EB0(CPU*);
+void fp_original_L_000141AAAFB0(CPU*);
+void fp_original_L_00014180A400(CPU*);
 void fp_original_L_0001419EF190(CPU*);
 void fp_original_L_000141A5EE10(CPU*);
 void fp_original_L_000141A62E90(CPU*);
+void fp_original_L_0001410CCA60(CPU*);
+void L_0001410CCA60(CPU* c){fp_mobile_canvas_render(c,fp_original_L_0001410CCA60);}
 void L_000141A5EE10(CPU* c){fp_mobile_law_camera_init(c,fp_original_L_000141A5EE10);}
 void L_000141A62E90(CPU* c){fp_mobile_law_camera(c,fp_original_L_000141A62E90);}
 void L_000141A04EB0(CPU* c){fp_mobile_painters_created(c,fp_original_L_000141A04EB0);}
+void L_000141AAAFB0(CPU* c){fp_mobile_building_aim(c,fp_original_L_000141AAAFB0);}
+void L_00014180A400(CPU* c){fp_mobile_show_feedback(c,fp_original_L_00014180A400);}
 void L_0001419EF190(CPU* c){fp_mobile_panels_created(c,fp_original_L_0001419EF190);}
-void L_000141250610(CPU* c){fp_mobile_camera_before(c);fp_original_L_000141250610(c);}
+void L_000141250610(CPU* c){fp_mobile_camera_before(c);fp_original_L_000141250610(c);fp_mobile_camera_after(c);}
 void L_00014124C7B0(CPU* c){fp_mobile_camera_destroy();fp_original_L_00014124C7B0(c);}
 void L_000140EC6200(CPU* c){fp_mobile_ui_scale();fp_original_L_000140EC6200(c);}
 void L_000140EC7240(CPU* c){fp_temperature_ui_before(c);fp_mobile_ui_before(c);fp_original_L_000140EC7240(c);fp_mobile_text_process(c);}

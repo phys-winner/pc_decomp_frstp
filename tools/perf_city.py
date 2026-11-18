@@ -350,7 +350,9 @@ def run(args):
             log.poll()
             text = log.text()
             rows = log.presents()
-            if stage == 'start' and text.count('info:  Presenter: Actual swap chain properties') >= 2 and rows and rows[-1]['fps'] > 5:
+            # DXVK logs its presenter twice before the title; the native Vulkan device (RDVK_SWAPCHAIN) once.
+            presenters = text.count('info:  Presenter: Actual swap chain properties') + text.count('RDVK_SWAPCHAIN ')
+            if stage == 'start' and presenters >= 2 and rows and rows[-1]['fps'] > 5:
                 stage = 'title'
                 result['title_s'] = round(now, 1)
                 time.sleep(1.5)
@@ -414,6 +416,16 @@ def run(args):
         key(dev, 'SPACE', 300)
         time.sleep(2)
         result['paused'] = measure(dev, log, folder, 'paused', args.seconds)
+        if args.meminfo:
+            text = dev.sh('dumpsys meminfo ' + PKG, timeout=120)
+            (folder / 'meminfo.txt').write_text(text, encoding='utf-8')
+            rows = {}
+            for label in ('Native Heap', 'Graphics', 'GL mtrack', 'Other mtrack', 'TOTAL PSS', 'TOTAL'):
+                m = re.search(r'^\s*%s:?\s+(\d+)' % re.escape(label), text, re.M)
+                if m:
+                    rows[label] = int(m.group(1))
+            result['meminfo_kb'] = rows
+            print('[%s] meminfo %s' % (dev.serial, rows), flush=True)
         if args.gpu_trace:
             gpu_trace(dev, folder, args.gpu_trace)
         if args.zoom:
@@ -503,4 +515,5 @@ if __name__ == '__main__':
     ap.add_argument('--stat', type=int, default=0, help='seconds of per-thread cycle/instruction counting (running city)')
     ap.add_argument('--perf-hz', type=int, default=499)
     ap.add_argument('--load-only', action='store_true')
+    ap.add_argument('--meminfo', action='store_true', help='dumpsys meminfo of the game in the paused city (meminfo.txt)')
     run(ap.parse_args())

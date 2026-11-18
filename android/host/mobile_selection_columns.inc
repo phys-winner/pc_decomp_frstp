@@ -33,6 +33,33 @@ static mobile_selection_flow *selection_flow_base(uint64_t node,uint64_t header)
     base->header_x=rdss(header+0xc0);base->header_y=rdss(header+0xc4);
     memcpy(base->padding,(void*)(uintptr_t)(node+0x280),16);memcpy(base->requested,(void*)(uintptr_t)(node+0x210),16);return base;
 }
+static uint64_t selection_named_child(uint64_t node,const char *wanted){
+    unsigned count=0;
+    for(uint64_t child=rd64(node+0x220);child&&count++<64;child=rd64(child+0x240)){
+        const char *name=(const char*)(uintptr_t)rd64(child+0x1d8);
+        if(name&&!strcmp(name,wanted))return child;
+    }
+    return 0;
+}
+/* Workplaces: the Workers page (count line, a fixed 154-unit table and buttons at 174) is taller than
+ * most first pages, so opening it grew the frame over the bottom HUD and shrank it back on the other
+ * tab.  Every tab keeps the Workers height, like buildings whose first page is as tall (Advanced
+ * Steelworks).  The page's own rows give its height even while it is hidden. */
+static float selection_workers_edge(uint64_t child){
+    const char *name=(const char*)(uintptr_t)rd64(child+0x1d8);
+    if(!name||strcmp(name,"TAB_CONTROLLER"))return 0;
+    uint64_t content=selection_named_child(child,"CONTENT"),page=content?selection_named_child(content,"EXT_TAB_WORKER_DETAILS"):0;
+    uint64_t details=page?selection_named_child(page,"EXT_WORKERS_DETAILS"):0;
+    if(!details)return 0;
+    float extent=0;unsigned count=0;
+    for(uint64_t item=rd64(details+0x220);item&&count++<32;item=rd64(item+0x240)){
+        float s=rdss(item+0xf4),bottom=rdss(item+0xc4)+rdss(item+0xd4)*s+rdss(item+0x104)*s;
+        if(isfinite(bottom)&&bottom<1000)extent=fmaxf(extent,bottom);
+    }
+    float scale=rdss(child+0xf4),inner=rdss(page+0xf4)*rdss(details+0xf4);
+    if(!(extent>0)||!(scale>0)||!(inner>0))return 0;
+    return rdss(child+0xc4)+rdss(child+0xd4)*scale+(rdss(content+0xc4)+rdss(page+0xc4)+rdss(details+0xc4)+extent*inner)*scale;
+}
 static unsigned selection_columns(CPU *cpu,uint64_t node,unsigned depth,float *height,unsigned apply){
     if(depth>5||(rd32(node+0x1e0)&2))return 0;
     const char *name=(const char*)(uintptr_t)rd64(node+0x1d8);unsigned found=0;
@@ -68,6 +95,7 @@ static unsigned selection_columns(CPU *cpu,uint64_t node,unsigned depth,float *h
                 // containers empty (steam distribution); the frame follows what is actually drawn.
                 float edge=rdss(child+0xc4)+rdss(child+0xd4)*b+visual_extent(child,0,&budget)*b;
                 if(isfinite(b)&&b>0&&isfinite(edge)&&edge<2000)drawn=fmaxf(drawn,edge);
+                if(mobile){float workers=selection_workers_edge(child);if(isfinite(workers)&&workers<2000)drawn=fmaxf(drawn,workers);}
             }
             if(mobile&&drawn>0)body_height=drawn;
             selection_pad_bottom=padding[3];

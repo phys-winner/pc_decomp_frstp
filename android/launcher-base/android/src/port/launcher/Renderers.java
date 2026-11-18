@@ -69,7 +69,7 @@ final class Renderers {
                 String here = gpu.renderer.isEmpty() ? "?" : gpu.renderer;
                 return new Status(mode, false, false, Texts.fmt(context, Texts.R_ADRENO, mode.adrenoMin, mode.adrenoMax, here));
             }
-        } else {
+        } else if (!"panvk".equals(mode.kind)) {
             /* The system Vulkan driver, as the platform declares it. */
             if (gpu.vulkan == 0) return new Status(mode, false, false, Texts.t(context, Texts.R_NO_VULKAN));
             if (mode.vulkan != 0 && Integer.compareUnsigned(gpu.vulkan, mode.vulkan) < 0)
@@ -82,7 +82,7 @@ final class Renderers {
 
     /** A Vulkan mode by the driver check's report (Probe). */
     static Status judge(Context context, Spec.Mode mode, Map<String, String> report) {
-        String driver = "turnip".equals(mode.kind) ? "turnip" : "stock";
+        String driver = "turnip".equals(mode.kind) || "panvk".equals(mode.kind) ? mode.kind : "stock";
         String status = report.getOrDefault(driver + ".status", "");
         switch (status) {
         case "ok": return new Status(mode, true, true, null);

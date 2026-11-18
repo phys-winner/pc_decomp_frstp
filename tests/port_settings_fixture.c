@@ -28,20 +28,28 @@ void dispatch(CPU *c,uint64_t target){
 }
 #include "frame_options_production.inc"
 static void check_frame_options(CPU *cpu){
- unsigned char row[0x80]={0},options[33*16]={0};wr32((uintptr_t)row+0x20,28);wr64((uintptr_t)row+0x28,(uintptr_t)options);
- wr32((uintptr_t)row+0x30,1);wr32((uintptr_t)row+0x34,33);wr64((uintptr_t)options+8,(uintptr_t)"Auto");
+ unsigned char row[0x80]={0},options[(FP_MAX_FRAME_LIMITS+1)*16]={0};wr32((uintptr_t)row+0x20,28);wr64((uintptr_t)row+0x28,(uintptr_t)options);
+ wr32((uintptr_t)row+0x30,1);wr32((uintptr_t)row+0x34,FP_MAX_FRAME_LIMITS+1);wr64((uintptr_t)options+8,(uintptr_t)"Auto");
  uint32_t rates[]={60,90,120};fp_port_frame_rates_configure(rates,3);fp_port_setting_set(FP_SETTING_FRAME_LIMIT,120);
+ const uint32_t expected[]={30,45,60,90,120};
  CPU saved=*cpu;fp_frame_options(cpu,(uintptr_t)row);assert(!memcmp(cpu,&saved,sizeof(saved)));
- assert(rd32((uintptr_t)row+0x30)==4&&option_creates==3&&!option_destroys);
- for(unsigned i=0;i<3;++i)assert(rd32((uintptr_t)options+(i+1)*16)==rates[i]);
- fp_frame_options(cpu,(uintptr_t)row);assert(option_creates==3&&!option_destroys&&rd32((uintptr_t)row+0x30)==4);
+ assert(rd32((uintptr_t)row+0x30)==6&&option_creates==5&&!option_destroys);
+ for(unsigned i=0;i<5;++i)assert(rd32((uintptr_t)options+(i+1)*16)==expected[i]);
+ assert(!strcmp((const char*)(uintptr_t)rd64((uintptr_t)options+24),"30 FPS"));
+ fp_frame_options(cpu,(uintptr_t)row);assert(option_creates==5&&!option_destroys&&rd32((uintptr_t)row+0x30)==6);
+ uint32_t many[FP_MAX_FRAME_LIMITS/2];
+ for(unsigned i=0;i<FP_MAX_FRAME_LIMITS/2;++i)many[i]=128+2*i;
+ fp_port_frame_rates_configure(many,FP_MAX_FRAME_LIMITS/2);fp_frame_options(cpu,(uintptr_t)row);
+ assert(rd32((uintptr_t)row+0x30)==FP_MAX_FRAME_LIMITS+1);
+ fp_port_setting_set(FP_SETTING_FRAME_LIMIT,128);
  uint32_t changed[]={60,120};fp_port_frame_rates_configure(changed,2);fp_frame_options(cpu,(uintptr_t)row);
- assert(rd32((uintptr_t)row+0x30)==3&&option_creates==5&&option_destroys==3);
- assert(rd32((uintptr_t)options+16)==60&&rd32((uintptr_t)options+32)==120&&fp_port_setting_get(FP_SETTING_FRAME_LIMIT)==120);
+ assert(rd32((uintptr_t)row+0x30)==4&&option_creates==5+FP_MAX_FRAME_LIMITS+3&&option_destroys==5+FP_MAX_FRAME_LIMITS);
+ assert(rd32((uintptr_t)options+16)==30&&rd32((uintptr_t)options+32)==60&&rd32((uintptr_t)options+48)==120);
+ assert(!fp_port_setting_get(FP_SETTING_FRAME_LIMIT)&&frostpunk_android_frame_limit()==120);
  assert(!strcmp((const char*)(uintptr_t)rd64((uintptr_t)options+8),"Auto"));
  for(unsigned n=0;n<100;++n)fp_frame_options(cpu,(uintptr_t)row);
- assert(option_creates==5&&option_destroys==3&&!memcmp(cpu,&saved,sizeof(saved)));
- for(unsigned i=1;i<3;++i)free((void*)(uintptr_t)rd64((uintptr_t)options+i*16+8));
+ assert(option_creates==5+FP_MAX_FRAME_LIMITS+3&&option_destroys==5+FP_MAX_FRAME_LIMITS&&!memcmp(cpu,&saved,sizeof(saved)));
+ for(unsigned i=1;i<4;++i)free((void*)(uintptr_t)rd64((uintptr_t)options+i*16+8));
  fp_port_setting_set(FP_SETTING_FRAME_LIMIT,0);
 }
 static void check_output_labels(CPU *cpu) {
@@ -93,19 +101,19 @@ int main(void){
  assert(fp_port_setting_get(FP_SETTING_TOUCH_OFFSET)==64&&frostpunk_dxvk_upscaler()==0);
  uint32_t rates[]={60,90,120};fp_port_frame_rates_configure(rates,3);
  assert(fp_port_setting_get(FP_SETTING_FRAME_LIMIT)==0&&frostpunk_android_frame_limit()==120);
- fp_port_setting_set(FP_SETTING_FRAME_LIMIT,90);fp_port_setting_set(FP_SETTING_FRAME_LIMIT,75);
- assert(fp_port_setting_get(FP_SETTING_FRAME_LIMIT)==90&&frostpunk_android_frame_limit()==90);
- fp_port_settings_load(folder);assert(fp_port_setting_get(FP_SETTING_FRAME_LIMIT)==90);
+ fp_port_setting_set(FP_SETTING_FRAME_LIMIT,45);fp_port_setting_set(FP_SETTING_FRAME_LIMIT,75);
+ assert(fp_port_setting_get(FP_SETTING_FRAME_LIMIT)==45&&frostpunk_android_frame_limit()==45);
+ fp_port_settings_load(folder);assert(fp_port_setting_get(FP_SETTING_FRAME_LIMIT)==45);
  uint32_t slower[]={60};fp_port_frame_rates_configure(slower,1);
  assert(!fp_port_setting_get(FP_SETTING_FRAME_LIMIT)&&frostpunk_android_frame_limit()==60);
  uint32_t invalid[]={60,60};fp_port_frame_rates_configure(invalid,2);
- uint32_t actual[32];assert(fp_port_frame_rates(actual)==1&&actual[0]==60);
- fp_port_frame_rates_configure(rates,3);fp_port_setting_set(FP_SETTING_FRAME_LIMIT,60);
+ uint32_t actual[FP_MAX_FRAME_LIMITS];assert(fp_port_frame_rates(actual)==2&&actual[0]==30&&actual[1]==60);
+ fp_port_frame_rates_configure(rates,3);fp_port_setting_set(FP_SETTING_FRAME_LIMIT,30);
  struct timespec begin,end;assert(!clock_gettime(CLOCK_MONOTONIC,&begin));
  for(unsigned i=0;i<6;++i)frostpunk_android_frame_pace();
  assert(!clock_gettime(CLOCK_MONOTONIC,&end));
  int64_t elapsed=(int64_t)(end.tv_sec-begin.tv_sec)*INT64_C(1000000000)+end.tv_nsec-begin.tv_nsec;
- assert(elapsed>=INT64_C(1000000000)*5/60);
+ assert(elapsed>=INT64_C(1000000000)*5/30);
  fp_port_setting_set(FP_SETTING_FRAME_LIMIT,0);assert(frostpunk_android_frame_limit()==120);
  fp_port_setting_set(FP_SETTING_OUTPUT_SCALE,20);fp_port_setting_set(FP_SETTING_OUTPUT_SCALE,19);
  assert(fp_port_setting_get(FP_SETTING_OUTPUT_SCALE)==20);

@@ -61,7 +61,7 @@ public final class FrostpunkDriverDownloadTest {
             need(!worker.isAlive(), "cancel did not interrupt the connection within 3 seconds");
             need(job.failure!=null && job.failure.code==Failure.CANCELLED, "cancel reported as a network failure");
             need(!job.target.exists(), "cancelled part was left behind");
-            need(TurnipDriver.chosen(context).getName().equals(chosen), "cancel changed the selected driver");
+            need(VulkanDriver.TURNIP.chosen(context).getName().equals(chosen), "cancel changed the selected driver");
             System.out.println("CANCEL mode="+mode+" elapsed_ms="+(System.nanoTime()-start)/1000000+" PASS");
         }
     }
@@ -78,25 +78,25 @@ public final class FrostpunkDriverDownloadTest {
             need(firstJob.done==64 && firstJob.total==64,"download progress counters");
             need(server.requests==1, "first driver was not downloaded");
         }
-        File first=TurnipDriver.chosen(context);
+        File first=VulkanDriver.TURNIP.chosen(context);
         good(new FrostpunkDriverDownload(context, "cached", url));
-        need(TurnipDriver.chosen(context).equals(first), "offline cache did not restore the same driver");
-        need(TurnipDriver.unused(context).isEmpty(), "active driver considered unused");
+        need(VulkanDriver.TURNIP.chosen(context).equals(first), "offline cache did not restore the same driver");
+        need(VulkanDriver.TURNIP.unused(context).isEmpty(), "active driver considered unused");
         cancel(context,1,first.getName()); cancel(context,2,first.getName());
         FrostpunkDriverDownload pre=new FrostpunkDriverDownload(context,"pre-cancel",url); pre.cancel(); pre.run();
         need(pre.failure!=null && pre.failure.code==Failure.CANCELLED && !pre.target.exists(),"pre-cancel failed");
         try (Server server = new Server(elf(2), 3)) {
             FrostpunkDriverDownload failed=new FrostpunkDriverDownload(context,"HTTP error",server.url()); failed.run();
             need(failed.failure!=null && failed.failure.code!=Failure.CANCELLED && !failed.target.exists(),"HTTP failure cleanup");
-            need(TurnipDriver.chosen(context).equals(first),"HTTP error changed the driver");
+            need(VulkanDriver.TURNIP.chosen(context).equals(first),"HTTP error changed the driver");
         }
         try (Server server = new Server(elf(2), 0)) { good(new FrostpunkDriverDownload(context,"second",server.url())); }
-        File second=TurnipDriver.chosen(context); need(!second.equals(first),"different driver replaced the cache entry");
-        need(TurnipDriver.unused(context).equals(Arrays.asList(first)),"unused driver list");
-        TurnipDriver.removeUnused(context); need(!first.exists() && second.isFile(),"cleanup removed active driver");
-        need(TurnipDriver.unused(context).isEmpty(),"cleanup button should disappear");
-        TurnipDriver.reset(context); need(second.isFile() && TurnipDriver.unused(context).size()==1,"reset did not preserve cached external driver");
-        TurnipDriver.removeUnused(context); need(TurnipDriver.unused(context).isEmpty() && !second.exists(),"cleanup after reset");
+        File second=VulkanDriver.TURNIP.chosen(context); need(!second.equals(first),"different driver replaced the cache entry");
+        need(VulkanDriver.TURNIP.unused(context).equals(Arrays.asList(first)),"unused driver list");
+        VulkanDriver.TURNIP.removeUnused(context); need(!first.exists() && second.isFile(),"cleanup removed active driver");
+        need(VulkanDriver.TURNIP.unused(context).isEmpty(),"cleanup button should disappear");
+        VulkanDriver.TURNIP.reset(context); need(second.isFile() && VulkanDriver.TURNIP.unused(context).size()==1,"reset did not preserve cached external driver");
+        VulkanDriver.TURNIP.removeUnused(context); need(VulkanDriver.TURNIP.unused(context).isEmpty() && !second.exists(),"cleanup after reset");
         System.out.println("DRIVER_CACHE offline_reuse=PASS active_preserved=PASS cleanup_visibility=PASS HTTP_failure=PASS");
         if (args.length>1) {
             TestContext live=new TestContext(new File(args[0],"live"));
@@ -104,9 +104,9 @@ public final class FrostpunkDriverDownloadTest {
             need(releases>0,"GitHub release list is empty");
             System.out.println("REAL_GITHUB_RELEASES count="+releases+" PASS");
             good(new FrostpunkDriverDownload(live,"purple-turnip T30",args[1]));
-            need(TurnipDriver.sha(TurnipDriver.chosen(live)).equals("1d80dfa019659b008e4669311db5b1e4a02af59ff1d5458a98e2f5fe18ed013b"),"real T30 digest mismatch");
+            need(VulkanDriver.sha(VulkanDriver.TURNIP.chosen(live)).equals("1d80dfa019659b008e4669311db5b1e4a02af59ff1d5458a98e2f5fe18ed013b"),"real T30 digest mismatch");
             good(new FrostpunkDriverDownload(live,"cached T30",args[1]));
-            System.out.println("REAL_GITHUB_DOWNLOAD title="+TurnipDriver.title(live)+" sha256=PASS cached_repeat=PASS");
+            System.out.println("REAL_GITHUB_DOWNLOAD title="+VulkanDriver.TURNIP.title(live)+" sha256=PASS cached_repeat=PASS");
         }
     }
 }

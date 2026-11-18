@@ -21,7 +21,8 @@
     "Medium",
     "Low",
     "Lowest",
-    "Building model quality"
+    "Building model quality",
+    "Free building: Monument to the Builders"
   ],
   "de": [
     "Render-Skalierung",
@@ -45,7 +46,8 @@
     "Mittel",
     "Niedrig",
     "Minimal",
-    "Qualität der Gebäudemodelle"
+    "Qualität der Gebäudemodelle",
+    "Gratisgebäude: Monument für die Konstrukteure"
   ],
   "pl": [
     "Skala renderowania",
@@ -69,7 +71,8 @@
     "Średnia",
     "Niska",
     "Minimalna",
-    "Jakość modeli budynków"
+    "Jakość modeli budynków",
+    "Darmowy budynek: Pomnik Budowniczych"
   ],
   "ru": [
     "Масштаб рендеринга",
@@ -93,7 +96,8 @@
     "Средняя",
     "Низкая",
     "Минимальная",
-    "Качество моделей зданий"
+    "Качество моделей зданий",
+    "Бесплатное здание: памятник строителям"
   ],
   "fr": [
     "Échelle de rendu",
@@ -117,7 +121,8 @@
     "Moyen",
     "Faible",
     "Minimal",
-    "Qualité des modèles de bâtiments"
+    "Qualité des modèles de bâtiments",
+    "Bâtiment gratuit : Monument aux bâtisseurs"
   ],
   "es": [
     "Escala de renderizado",
@@ -141,7 +146,8 @@
     "Medio",
     "Bajo",
     "Mínimo",
-    "Calidad de modelos de edificios"
+    "Calidad de modelos de edificios",
+    "Edificio gratis: monumento a los constructores"
   ],
   "it": [
     "Scala di rendering",
@@ -165,7 +171,8 @@
     "Medio",
     "Basso",
     "Minimo",
-    "Qualità dei modelli degli edifici"
+    "Qualità dei modelli degli edifici",
+    "Edificio gratuito: Monumento ai costruttori"
   ],
   "pt-BR": [
     "Escala de renderização",
@@ -189,7 +196,8 @@
     "Médio",
     "Baixo",
     "Mínimo",
-    "Qualidade dos modelos de edifícios"
+    "Qualidade dos modelos de edifícios",
+    "Construção grátis: Monumento aos Construtores"
   ],
   "tr": [
     "İşleme ölçeği",
@@ -213,7 +221,8 @@
     "Orta",
     "Düşük",
     "En düşük",
-    "Bina modellerinin kalitesi"
+    "Bina modellerinin kalitesi",
+    "Ücretsiz bina: Kurucular Anıtı"
   ],
   "ja": [
     "レンダリング倍率",
@@ -237,7 +246,8 @@
     "中",
     "低",
     "最低",
-    "建物モデルの品質"
+    "建物モデルの品質",
+    "無料の建物：建築家の記念碑"
   ],
   "ko": [
     "렌더링 배율",
@@ -261,7 +271,8 @@
     "중간",
     "낮음",
     "최저",
-    "건물 모델 품질"
+    "건물 모델 품질",
+    "무료 건물: 빌더 기념비"
   ],
   "zh-CN": [
     "渲染比例",
@@ -285,7 +296,8 @@
     "中",
     "低",
     "最低",
-    "建筑模型质量"
+    "建筑模型质量",
+    "免费建筑：建造者丰碑"
   ],
   "fa": [
     "مقیاس رندر",
@@ -309,6 +321,7 @@
     "متوسط",
     "پایین",
     "حداقل",
-    "کیفیت مدل ساختمان‌ها"
+    "کیفیت مدل ساختمان‌ها",
+    "ساختمان رایگان: بنای یادبود سازندگان"
   ]
 }

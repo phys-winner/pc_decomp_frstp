@@ -30,7 +30,7 @@ public final class Probe extends Service {
     static final String REPORT = "probe.txt", PARTIAL = "probe.part", STAGE = "probe.stage";
     /** A check that has not reported by then crashed or hung in the stage it noted. */
     static final long TIMEOUT_MS = 15000;
-    static final int QUALCOMM = 0x5143;
+    static final int QUALCOMM = 0x5143, ARM = 0x13b5;
 
     private static native String nativeProbe(String libraryDir, String driver, boolean panvk);
     private static boolean started;
@@ -60,9 +60,11 @@ public final class Probe extends Service {
         }
         Spec spec = Spec.get(this);
         Map<String, String> system = parse(stock);
+        int stockVendor = vendor(system, "stock");
+        boolean stockHasGpu = stockVendor != 0 && !"4".equals(system.get("stock.gpuType"));
         java.util.Set<String> installed = Renderers.libraries(this);
         Spec.Mode mode = turnipMode(spec);
-        if (mode != null && vendor(system, "stock") == QUALCOMM && installed.containsAll(mode.libraries)) {
+        if (mode != null && stockVendor == QUALCOMM && installed.containsAll(mode.libraries)) {
             write(new File(dir, PARTIAL), key + "\n" + stock);
             write(new File(dir, STAGE), key + "\nturnip\n");
             try {
@@ -75,8 +77,8 @@ public final class Probe extends Service {
         for (Spec.Mode candidate : spec.modes) {
             if (!"panvk".equals(candidate.kind) || candidate.driver.isEmpty()) continue;
             panvk = "panvk.status=skipped\n";
-            if (Build.VERSION.SDK_INT >= candidate.minSdk && vendor(system, "stock") == 0x13b5
-                    && Gpu.panvkCandidate(system.get("stock.device")) && installed.containsAll(candidate.libraries)) {
+            if (Build.VERSION.SDK_INT >= candidate.minSdk && installed.containsAll(candidate.libraries)
+                    && (stockVendor == ARM || (!stockHasGpu && Gpu.get(this).mali()))) {
                 write(new File(dir, PARTIAL), key + "\n" + stock + turnip);
                 write(new File(dir, STAGE), key + "\npanvk\n");
                 try {

@@ -33,8 +33,9 @@ final class FrostpunkDevice {
     static boolean applies(boolean qualcomm, String kind) {
         return qualcomm == "turnip".equals(kind);
     }
-    static boolean applies(Gpu gpu, Spec.Mode mode) {
-        if (FrostpunkHooks.panvkRenderer(mode.id)) return Gpu.panvkCandidate(gpu.renderer);
+    static boolean applies(Gpu gpu, Spec.Mode mode, Map<String, String> report) {
+        if (FrostpunkHooks.panvkRenderer(mode.id))
+            return gpu.mali() || (report != null && Probe.vendor(report, "stock") == Probe.ARM);
         return FrostpunkHooks.NATIVE_RENDERER.equals(mode.id) || applies(gpu.qualcomm(), mode.kind);
     }
     static Set<String> missing(Map<String, String> report, String driver, boolean needsBC) {
@@ -75,7 +76,7 @@ final class FrostpunkDevice {
         return new Renderers.Status(mode, accepted, accepted, accepted ? null : reason.toString());
     }
     static String tr(Context context, String english, String russian) {
-        return "ru".equals(Texts.language(context)) ? russian : english;
+        return "ru".equals(Texts.language(context)) ? russian : Texts.translated(context, english);
     }
     static boolean yes(Map<String, String> report, String driver, String key) {
         return "1".equals(report.get(driver + "." + key));

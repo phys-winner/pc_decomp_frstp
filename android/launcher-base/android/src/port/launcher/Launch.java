@@ -71,10 +71,12 @@ public final class Launch {
 
     public String distribution() { return distribution.id; }
 
-    /** The launcher's language for the game's own messages: "en", "ru", "de" or "pl". */
+    /** The launcher's language for the game's own messages. */
     public String language() { return language(activity); }
 
     public static String language(Context context) { return Texts.language(context); }
+
+    public static String translated(Context context, String english) { return Texts.translated(context, english); }
 
     /** The renderer the launcher chose for this start; null when started without the launcher. */
     public String renderer() { return activity.getIntent().getStringExtra(EXTRA_RENDERER); }

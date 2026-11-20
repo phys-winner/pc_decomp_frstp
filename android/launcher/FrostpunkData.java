@@ -129,7 +129,12 @@ public final class FrostpunkData extends Work.Job {
         Os.setenv("FROSTPUNK_SYSTEM_LANGUAGE", locales.isEmpty() ? "en" : locales.get(0).toLanguageTag(), true);
         FrostpunkFiles.attach(context); File game = FrostpunkFiles.game(context);
         bundled(context, game);
-        Os.setenv("FROSTPUNK_PORT_DATA", installed(context, game, "port-ui") ? "1" : "0", true);
+        boolean portUi = installed(context, game, "port-ui");
+        Os.setenv("FROSTPUNK_PORT_DATA", portUi ? "1" : "0", true);
+        JSONArray fan = portUi ? manifest(context, "port-ui").optJSONArray("fan_languages") : null;
+        List<String> fanLanguages = new ArrayList<>();
+        if (fan != null) for (int i = 0; i < fan.length(); i++) fanLanguages.add(fan.getString(i));
+        Os.setenv("FROSTPUNK_FAN_LANGUAGES", String.join(",", fanLanguages), true);
         Os.setenv("FROSTPUNK_SWITCH_DATA", installed(context, game, "switch-ui") ? "1" : "0", true);
         Os.setenv("FROSTPUNK_TEXTURE_QUALITY", new File(game, ".frostpunk-dxt/conversion.json").isFile()
             ? FrostpunkTextures.convertedQuality(game) : "pc", true);

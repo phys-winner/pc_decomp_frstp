@@ -37,26 +37,28 @@ def packed(payload):
     return (result, 1) if len(result) * 100 <= len(payload) * 85 else (payload, 0)
 
 
-def resource_patch(kind, changes, output=None):
+def resource_patch(kind, changes, output=None, *, private=False):
     folder = (output or OUT / 'bundle-resources') / kind
     folder.mkdir(parents=True, exist_ok=True)
     manifest = dict(schema=1, kind=kind, original_exe_sha256=HOST['original_exe_sha256'], archives=[], payloads={})
     for stem, replacements in changes.items():
         original = Archive(STEAM / stem)
         index = bytearray((STEAM / (stem + '.idx')).read_bytes())
-        alternate = bytearray(index)
+        rows = {row[0]: row for row in RECORD.iter_unpack(index[11:])}
         tail = bytearray()
+        stored_payloads = {}
         offset = (STEAM / (stem + '.dat')).stat().st_size
-        for number, row in enumerate(RECORD.iter_unpack(index[11:])):
-            key = row[0]
+        for key in dict.fromkeys([*rows, *sorted(replacements.keys() - rows.keys())]):
             if key not in replacements:
                 continue
             payload = replacements[key]
-            assert payload != original.read(key), 'A patch must change its resource'
-            stored, flag = packed(payload)
-            RECORD.pack_into(alternate, 11 + number * RECORD.size, key, len(stored), len(payload), offset + len(tail), flag)
-            tail.extend(stored)
-        assert len(replacements) == sum(a != b for a, b in zip(RECORD.iter_unpack(index[11:]), RECORD.iter_unpack(alternate[11:]), strict=True))
+            assert key not in rows or payload != original.read(key), 'A patch must change its resource'
+            if payload not in stored_payloads:
+                stored, flag = packed(payload)
+                stored_payloads[payload] = len(stored), len(payload), offset + len(tail), flag
+                tail.extend(stored)
+            rows[key] = (key, *stored_payloads[payload])
+        alternate = index[:3] + struct.pack('<Q', len(rows)) + b''.join(RECORD.pack(*rows[key]) for key in sorted(rows))
         append_name = kind + '.' + stem + '.append'
         index_name = kind + '.' + stem + ('-switch.idx' if kind == 'switch-ui' else '.idx')
         (folder / append_name).write_bytes(tail)
@@ -74,22 +76,48 @@ def resource_patch(kind, changes, output=None):
         for source in sorted((ROOT / 'android/switch-ui').glob('*.png')):
             (folder / ('switch-ui.' + source.name)).write_bytes(source.read_bytes())
     manifest['payloads'] = {path.name: identify(path)
-                            for path in sorted(folder.rglob('*')) if path.is_file() and not path.name.endswith('.json')}
+                            for path in sorted(folder.iterdir()) if path.is_file() and not path.name.endswith('.json')}
     marker = kind + '.json'
     write_json(folder / marker, manifest)
-    write_json(ROOT / ('android/game-data-' + kind + '.json'), manifest)
+    if not private:
+        write_json(ROOT / ('android/game-data-' + kind + '.json'), manifest)
     return folder, manifest
 
 
-def port_ui_patch(output):
+def port_ui_patch(output, fan_files=None):
     from prepare_android_port_settings_asset import resource, SOURCE, KEY
-    from port_settings_localization import localize_table, TABLE_LANGUAGES
+    from port_settings_localization import encode_table, localize_table, parse_table, TABLE_LANGUAGES, FAN_LANGUAGES
     original = Archive(STEAM / 'localizations')
     setting = resource(Archive(SOURCE / 'common').read(KEY))[0]
-    return resource_patch('port-ui', {
+    # The settings font lacks the Czech diacritics even in the Czech locale.
+    names = {'UI/Menu/Settings/LanguageNames/' + name: caption
+             for lang, (name, caption) in FAN_LANGUAGES.items() if lang in (fan_files or {})}
+
+    def localized(payload, code):
+        if names:
+            payload = encode_table({**parse_table(payload), **names})
+        return localize_table(payload, code)
+
+    tables = {key: localized(original.read(key), code) for key, code in TABLE_LANGUAGES.items()}
+    if fan_files:
+        # Both installers store their translation in english.lang.
+        english = parse_table(original.read('english.lang'))
+        english_name = 'UI/Menu/Settings/LanguageNames/English'
+        for code, path in fan_files.items():
+            fan = Archive(path / 'localizations').read('english.lang')
+            rows = {**english, **parse_table(fan)}
+            # The Hungarian installer renames the English slot it replaces.
+            rows[english_name] = english[english_name]
+            key = original.key(FAN_LANGUAGES[code][0] + '.lang')
+            assert key not in original.rows and key not in tables
+            tables[key] = localized(encode_table(rows), code)
+    folder, manifest = resource_patch('port-ui', {
         'common': {KEY: setting},
-        'localizations': {key: localize_table(original.read(key), language)
-                          for key, language in TABLE_LANGUAGES.items()}}, output)
+        'localizations': tables}, output, private=bool(fan_files))
+    if fan_files:
+        manifest['fan_languages'] = list(fan_files)
+        write_json(folder / 'port-ui.json', manifest)
+    return folder, manifest
 
 
 def package(sources, expected, originals):

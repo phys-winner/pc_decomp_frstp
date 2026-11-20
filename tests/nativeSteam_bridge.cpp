@@ -106,6 +106,7 @@ int main(int argc,char**argv){
     require(!method(p[unsigned(Kind::ISteamUtils)],Kind::ISteamUtils,"IsOverlayEnabled").rax,"offline overlay disabled");
     uint64_t monument_url=text("https://store.steampowered.com/publisher/11bitstudios?utm_source=frostpunk&utm_medium=ingame&utm_campaign=monument");
     method(p[unsigned(Kind::ISteamFriends)],Kind::ISteamFriends,"ActivateGameOverlayToWebPage",{monument_url,0});win64_free(monument_url);
+    method(p[unsigned(Kind::ISteamFriends)],Kind::ISteamFriends,"ActivateGameOverlayToStore",{1125020,0});  // menu link with a numeric app id
     const uint32_t dlc_ids[]={1125020,1146960,1147010};
     const char *dlc_names[]={"Frostpunk: The Rifts","Frostpunk: The Last Autumn","Frostpunk: On The Edge"};
     require(method(apps_proxy,Kind::ISteamApps,"GetDLCCount").rax==3,"DLC count");
@@ -146,6 +147,15 @@ int main(int argc,char**argv){
     uint64_t stat=text("bridge_probe_stat"),out=win64_alloc(4,1);require(method(stats,Kind::ISteamUserStats,"SetStat",{stat,31337}).rax==1,"int32 stat setter");require(method(stats,Kind::ISteamUserStats,"GetStat",{stat,out}).rax==1&&*(int32_t*)win64_pointer(out,4,0)==31337,"typed int32 output");
     CPU float_call=cpu({stats,stat,0});float_call.xmm[2].f32[0]=3.25f;require(win64_steam_dispatch(&float_call,read(read(stats)+8*slot(Kind::ISteamUserStats,"SetStat",1)))&&float_call.rax==1,"positional XMM2 float argument");
     require(method(stats,Kind::ISteamUserStats,"GetStat",{stat,out},1).rax==1&&*(float*)win64_pointer(out,4,0)==3.25f,"typed float output");
+    // Frostpunk passes achievement display names to SetAchievement, IndicateAchievementProgress and SetStat.
+    const char *display_names[]={"Endless: Backup Plan","Builders: I'll Be Home for Christmass","Society: The scienitfic method, vol 2","Refugee: Iron man (Refugees)"};
+    for(const char *display:display_names){uint64_t n=text(display);
+        method(stats,Kind::ISteamUserStats,"SetAchievement",{n});method(stats,Kind::ISteamUserStats,"IndicateAchievementProgress",{n,1,2});
+        require(method(stats,Kind::ISteamUserStats,"SetStat",{n,7}).rax==1&&method(stats,Kind::ISteamUserStats,"GetStat",{n,out}).rax==1&&*(int32_t*)win64_pointer(out,4,0)==7,"display-name stat round trip");win64_free(n);}
+    uint64_t token=text("bridge probe: slot?1.bin"),bad=text("bridge<probe>.bin"),token_out=win64_alloc(8,1);
+    require(method(storage,Kind::ISteamRemoteStorage,"FileWrite",{token,payload,8}).rax==1&&method(storage,Kind::ISteamRemoteStorage,"FileRead",{token,token_out,8}).rax==8&&!memcmp(win64_pointer(token_out,8,0),bytes,8)&&method(storage,Kind::ISteamRemoteStorage,"FileDelete",{token}).rax==1,"Goldberg-tokenized file name round trip");
+    require(!method(storage,Kind::ISteamRemoteStorage,"FileWrite",{bad,payload,8}).rax&&method(storage,Kind::ISteamRemoteStorage,"FileWriteStreamOpen",{bad}).rax==k_UGCFileStreamHandleInvalid,"refused storage name fails only its call");
+    win64_free(token);win64_free(bad);win64_free(token_out);
     uint64_t record=win64_alloc(24,1);write(record,0x20010000);require(imported("SteamInternal_ContextInit",{record}).rax==record+16&&read(record+16)==apps_proxy,"guest ContextInit callback");imported("SteamInternal_ContextInit",{record});require(context_calls==1,"context generation cached");
     uint64_t cb=callback(0,24);imported("SteamAPI_RegisterCallback",{cb,1101});require(*(int32_t*)win64_pointer(cb+12,4,0)==1101,"registration updates guest callback id");require(method(stats,Kind::ISteamUserStats,"RequestCurrentStats").rax==1,"local current stats request");
     std::thread worker,shutdown;

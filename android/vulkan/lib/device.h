@@ -88,12 +88,22 @@ private:
     uint64_t bytes_ = 0;
 };
 
+enum : uint32_t {
+    SHADER_FEATURE_TESSELLATION = 1u << 0, SHADER_FEATURE_GEOMETRY = 1u << 1, SHADER_FEATURE_READ_WITHOUT_FORMAT = 1u << 2,
+    SHADER_FEATURE_WRITE_WITHOUT_FORMAT = 1u << 3, SHADER_FEATURE_DRAW_PARAMETERS = 1u << 4, SHADER_FEATURE_MEMORY_MODEL = 1u << 5,
+    SHADER_FEATURE_DEMOTE = 1u << 6, SHADER_FEATURE_CUBE_ARRAY = 1u << 7, SHADER_FEATURE_GATHER_EXTENDED = 1u << 8,
+    SHADER_FEATURE_INT16 = 1u << 9, SHADER_FEATURE_FLOAT16 = 1u << 10, SHADER_FEATURE_SAMPLE_RATE = 1u << 11,
+    SHADER_FEATURE_CLIP_DISTANCE = 1u << 12, SHADER_FEATURE_CULL_DISTANCE = 1u << 13, SHADER_FEATURE_MULTI_VIEWPORT = 1u << 14,
+    SHADER_FEATURE_INT64 = 1u << 15, SHADER_FEATURE_FLOAT64 = 1u << 16, SHADER_FEATURE_COUNT = 17
+};
 struct Features {
     bool push_descriptor = false, extended_dynamic_state3_clamp = false, extended_dynamic_state3_clip = false;
     bool robustness2_null = false, tessellation = false, geometry = false, bc = false, astc = true;
     bool depth_clamp = false, sampler_anisotropy = false, independent_blend = false, index_uint8 = false;
     bool depth_bias_clamp = false, dual_src_blend = false, depth_clip = false;
     bool host_query_reset = false, occlusion_precise = false;
+    /* SPIR-V capabilities of the game's shaders that depend on optional device features. */
+    uint32_t shader_features = 0;   /* SHADER_FEATURE_* supported by the device */
     bool reset_dynamic_per_pass = false;   /* re-set all dynamic state after each vkCmdBeginRendering (Mali) */
     bool defer_attachment_transitions = false;
     uint32_t vendor = 0, device_id = 0, driver_id = 0, api = 0;

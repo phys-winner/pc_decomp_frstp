@@ -1,4 +1,4 @@
-# Frostpunk for Android — 0.3-dev
+# Frostpunk for Android — 0.3.1-dev
 
 Experimental native ARM64 Android port of Frostpunk using static recompilation,
 with Vulkan rendering, touch controls, and on-device texture conversion.
@@ -21,10 +21,11 @@ You need:
 - Android 11 / API 30 or newer on a 64-bit ARM device.
 - A compatible Vulkan 1.3 GPU and driver. Adreno uses Mesa Turnip; supported Mali
   and PowerVR devices use system Vulkan. The launcher reports the actual features; attempting launch despite a warning does not guarantee compatibility.
-- Mali-G615 and Mali-G715 on a 4 KiB kernel can try the experimental PanVK
-  renderer choices after the launcher verifies the driver. Frostpunk uses the
-  same ASTC texture pack in both PanVK modes. The bundled PanVK uses Kraid for
-  fragment shaders on these GPUs.
+- The launcher checks experimental PanVK on all Mali and Immortalis GPUs.
+  Both PanVK modes use the same ASTC texture pack and require the driver to pass
+  the compatibility check. The bundled driver requires 4 KiB kernel pages.
+  On other page sizes, import a compatible PanVK driver. The bundled driver
+  uses Kraid for fragment shaders on Valhall and newer architectures.
 - Your own supported Steam PC installation of Frostpunk. The pinned
   `Frostpunk.exe` SHA-256 is
   `45d6a087515fab5e5fc55e673699b04f4d207da09958fd274ffe7467d5a09bdc`.
@@ -41,8 +42,8 @@ manifests in `android/` contain names, sizes, and hashes, not game payloads.
 
 ## Install and play
 
-1. Install `Frostpunk-0.3-dev-<commit>.apk` (eight commit hash characters): package `com.frostpunk.staticrecomp`, version
-   name `0.3-dev`, version code `5`.
+1. Install `Frostpunk-0.3.1-dev-<commit>.apk` (eight commit hash characters): package `com.frostpunk.staticrecomp`, version
+   name `0.3.1-dev`, version code `6`.
 2. Open the launcher and grant storage access as needed. The Play card shows
    unsupported GPU features and insufficient Vulkan versions. The launcher stays
    usable when the device cannot run the game.
@@ -60,8 +61,8 @@ The **Renderer** card lists DXVK and experimental Native Vulkan. The first DXVK
 start offers Native Vulkan on compatible devices. If a Native Vulkan session
 crashes, the launcher reports it and uses DXVK for the next start.
 
-On supported Mali devices, **Own driver…** under **PanVK driver** imports a ZIP
-driver package or an ARM64 `.so` file. The choice applies to Native Vulkan (PanVK)
+**Own driver…** under **PanVK driver** imports a ZIP driver package or an ARM64
+`.so` file. On supported Mali devices, the choice applies to Native Vulkan (PanVK)
 and DXVK (PanVK). **Use the port's driver** restores the bundled library.
 
 Optional `port-ui.*` patches and `switch-ui.*` resources are generated separately
@@ -115,6 +116,19 @@ request 200% UI scale, subject to the resource guard; saved preferences are kept
 The default game language follows a supported Android system language, otherwise
 English, unless the player already selected a game language.
 
+The launcher and Android port settings cover all game localization tables,
+plus Czech and Hungarian. Use the launcher language picker for the Android UI.
+In a private build, select **Czech** or **Magyar** in the game's own
+**Settings → General → Language** menu. Each installed community language
+appears alongside the original languages.
+
+For a private build, use the `localizations.dat` and `localizations.idx` from
+[Jetro's Czech translation 1.18](https://hernipreklady.cz/seznam-prekladu/frostpunk)
+or the [Wolf 4dító Team's Hungarian translation 1.13](https://magyaritasok.hu/download/3760/frostpunk).
+Place the two files together in `cs/` or `hu/` under one folder and run
+`python tools/build_localized_apk.py <folder>`. The signed APK is written under
+`build/`. The Steam installation remains untouched.
+
 ## Graphics
 
 The Switch graphics master option is enabled by default. **Snow and terrain use
@@ -133,7 +147,7 @@ interface patches in the game ZIP. The built-in driver is purple-turnip T30
 
 Turnip disables hardware tessellation to avoid GPU hangs observed in development.
 Upscaling, frame generation, and reduced graphics are experimental and depend on
-the GPU and driver. `0.3-dev` remains an early development build.
+the GPU and driver. `0.3.1-dev` remains an early development build.
 
 ## Sources and building
 
@@ -195,9 +209,9 @@ APK tooling and the existing signing key are read from the local
 `~/.agents/skills/adapt-arm32-game/machine_config.json` used by `tools/fastbuild.py`.
 Provide your own private machine configuration and signer; no key or keystore is
 distributed here. The recipe checks the base pin, source stability, APK signature,
-and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3-dev-<commit>.apk`, where
+and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3.1-dev-<commit>.apk`, where
 `<commit>` matches the eight-character commit embedded in the APK, with a SHA-256
-sidecar. Local aliases `pub/Frostpunk-0.3-dev.apk` and `pub/Frostpunk.apk` are also
+sidecar. Local aliases `pub/Frostpunk-0.3.1-dev.apk` and `pub/Frostpunk.apk` are also
 updated. The whole `pub/` directory is Git-ignored.
 
 A portable localization check needs no device or game files:

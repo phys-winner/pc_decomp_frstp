@@ -38,17 +38,20 @@ def build_bridge(out):
     return out / 'host/libwin64_d3d11-fastlift.a'
 
 
-def link_runtime(out, bridge_archive, extra_objects=(), rdvk=True):
+def link_runtime(out, bridge_archive, extra_objects=(), rdvk=True, unit_overrides=None):
     builder.OUT = out
     extra = ['android/host/zip_files.c', 'reference/launcher-zipmount/zipmount.c']
     sources = json.loads(builder.CANONICAL.read_text())['sources']
     builder.EXTRA_HOST = ['android/host/mobile_lod.c', 'android/host/thread_placement.c'] + [n for n in extra if n not in sources]
     builder.ARCHIVES['build/dxvk-bridge/libwin64_d3d11.a'] = str(bridge_archive.relative_to(ROOT))
-    replaced = {}
+    replaced = dict(unit_overrides or {})
     if rdvk:
         import build_rdvk
         manifest = build_rdvk.build_hooks()
-        replaced = {int(unit): str(ROOT / path) for unit, path in manifest['units'].items()}
+        for unit, path in manifest['units'].items():
+            if int(unit) in replaced:
+                raise ValueError(f'Unit {unit} has two runtime replacements')
+            replaced[int(unit)] = str(ROOT / path)
         builder.EXTRA_HOST += ['android/vulkan/rdvk_runtime.c', manifest['stubs'].replace('\\', '/')]
         for include in ('android/vulkan', 'build/vulkan-native/hooks'):
             if include not in fb.INCLUDES:

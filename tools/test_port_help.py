@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 from fastbuild import ROOT,CLANG
 from leaf_probe import windows_toolchain
-from port_settings_localization import translations,TABLE_LANGUAGES,parse_table
+from port_settings_localization import LANGUAGES,translations,TABLE_LANGUAGES,parse_table
 from prepare_raw_archives import entries
 
 out=ROOT/'build/audit-20261108/help-check';out.mkdir(parents=True,exist_ok=True)
@@ -27,7 +27,7 @@ run=subprocess.run([str(bins/'cl.exe'),'/nologo','/O2','/std:c11','/W3',*['/I'+f
 assert not run.returncode,run.stdout+run.stderr
 overlay=json.loads(subprocess.check_output([str(overlay_host)],text=True));assert overlay['success']
 result['overlay']=overlay
-data=translations();assert set(data)==set(TABLE_LANGUAGES.values())
+data=translations();assert set(data)==LANGUAGES
 assert all(all(0<len(row['UI/Android/'+key].encode('utf-16-le'))//2<8192 for key in ['GestureHelp','GestureHelpText','GestureHelpClose']) for row in data.values())
 archive=ROOT/'build/raw-archives/localizations';raw=(archive/'localizations.dat').read_bytes();seen=set()
 for key,size,_,offset,_ in entries((archive/'localizations.idx').read_bytes(),len(raw)):

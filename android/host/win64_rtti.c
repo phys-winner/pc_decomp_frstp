@@ -87,8 +87,30 @@ done:
     atomic_flag_clear_explicit(&rtti_name_lock,memory_order_release);
     win64_set_error(saved_error);errno=saved_errno;
 }
+/* vcruntime's std_exception.cpp over __std_exception_data {const char *_What; bool _DoFree;}: copy
+ * duplicates an owned message (the copy owns the duplicate; on allocation failure the target stays
+ * empty) and shares a borrowed one; destroy frees an owned message and clears both fields. The game
+ * reaches them when it throws or catches std::exception types. */
+static void std_exception_data(CPU *c,int copy){
+    uint64_t what;uint8_t owned;
+    memcpy(&what,win64_pointer(c->rcx,8,0),8);memcpy(&owned,win64_pointer(c->rcx+8,1,0),1);
+    if(!copy){
+        if(owned&&what)win64_free(what);
+        what=0;owned=0;memcpy(win64_pointer(c->rcx,8,1),&what,8);memcpy(win64_pointer(c->rcx+8,1,1),&owned,1);
+        return;
+    }
+    uint64_t target=c->rdx;
+    if(owned&&what){
+        size_t bytes=strlen(win64_string_a(what))+1;uint64_t buffer=win64_alloc(bytes,0);
+        if(!buffer)return;
+        memcpy(win64_pointer(buffer,bytes,1),win64_pointer(what,bytes,0),bytes);what=buffer;
+    }else owned=0;
+    memcpy(win64_pointer(target,8,1),&what,8);memcpy(win64_pointer(target+8,1,1),&owned,1);
+}
 int win64_rtti_call(CPU *c,const char *name){
     if(!strcmp(name,"__std_type_info_name")){rtti_type_info_name(c);return 1;}
+    if(!strcmp(name,"__std_exception_copy")){std_exception_data(c,1);return 1;}
+    if(!strcmp(name,"__std_exception_destroy")){std_exception_data(c,0);return 1;}
     if(strcmp(name,"__RTDynamicCast"))return 0;
     int saved_errno=errno;
     /* Native's null fast path ignores every other argument, even isReference. */

@@ -68,6 +68,14 @@ static uint32_t extract_icon(CPU *c){
     win64_set_error(50);return UINT32_MAX;
 }
 int win64_shell_call(CPU *c,const char *name){
+    if(!strcmp(name,"ShellExecuteA")||!strcmp(name,"ShellExecuteW")){
+        /* No shell or browser is launched, like the disabled offline overlay: Frostpunk opens the
+         * Kickstarter link of the credits (0x140E1C180) and Lua/UI menu links (0x140E8AC40) this way
+         * and ignores the result. A value <= 32 is a failure: SE_ERR_NOASSOC, no handler. */
+        static _Atomic unsigned declined;
+        if(declined++<16){fprintf(stderr,"SHELL_EXECUTE_DECLINED %s\n",name);fflush(stderr);}
+        c->rax=31;return 1;
+    }
     if(!strcmp(name,"DragAcceptFiles")){win64_window_drag_accept_files(c);return 1;}
     if(!strcmp(name,"ExtractIconExW")){c->rax=extract_icon(c);return 1;}
     if(strcmp(name,"SHGetFolderPathW"))return 0;c->rax=folder_path(c);return 1;

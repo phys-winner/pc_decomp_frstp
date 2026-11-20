@@ -210,8 +210,11 @@ static void law_photo_touch_control(uint64_t node) {
         if(object)law_photo_camera_cache(object);
         if(applied_scale>100)law_photo_touch_bind(object,reference?rd64(reference):0);
     }
-    if(applied_scale<=100||!ui_visible_chain(node))return;
-    if(rd64(node)==GVA(0x141D79F78)&&law_photo_touch_button_count<128&&law_photo_family(node)==1){
+    if(applied_scale<=100)return;
+    /* Every UI control passes here on each snapshot: the ancestor walk only for the two kinds used below. */
+    unsigned button=rd64(node)==GVA(0x141D79F78),tree=name[0]=='S'&&!strcmp(name,"SOCIOTECHTREE");
+    if((!button&&!tree)||!ui_visible_chain(node))return;
+    if(button&&law_photo_touch_button_count<128&&law_photo_family(node)==1){
         float x,y,sx,sy;parent_transform(node,&x,&y,&sx,&sy);
         float width=rdss(GVA(0x142980E60)),height=rdss(GVA(0x142980E64));
         if(width>0&&height>0&&sx>0&&sy>0){
@@ -221,7 +224,7 @@ static void law_photo_touch_control(uint64_t node) {
                 (x+sx*rdss(node+0xf0)*rdss(node+0x100))/width,(y+sy*rdss(node+0xf4)*rdss(node+0x104))/height,0};
         }
     }
-    if(strcmp(name,"SOCIOTECHTREE"))return;
+    if(!tree)return;
     uint32_t id=rd32(node+0x1e4);
     for(unsigned i=0;i<law_photo_camera_count;++i){
         law_photo_camera_saved *saved=&law_photo_cameras[i];

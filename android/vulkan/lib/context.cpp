@@ -495,7 +495,8 @@ void retire(std::vector<uint32_t>& slots, uint64_t serial) {
 
 void Context::trace_poll() {
     static std::string last = property("debug.fp.rdvk_trace");
-    if (tracing) { tracing = false; log("RDVK_TRACE end frame=%llu", (unsigned long long)frames); }
+    if (tracing && trace_left_ > 1) { --trace_left_; log("RDVK_TRACE frame=%llu", (unsigned long long)frames); }
+    else if (tracing) { tracing = false; trace_left_ = 0; log("RDVK_TRACE end frame=%llu", (unsigned long long)frames); }
     if (Texture* t = dump_pending) {
         dump_pending = nullptr;
         uint32_t w = 0, h = 0, f = 0;
@@ -554,7 +555,7 @@ void Context::trace_poll() {
     }
     if (frames % 60) return;
     std::string now = property("debug.fp.rdvk_trace");
-    if (now != last && !now.empty() && now != "0") { tracing = true; log("RDVK_TRACE begin frame=%llu draws so far=%llu", (unsigned long long)frames + 1, (unsigned long long)draws); }
+    if (now != last && !now.empty() && now != "0") { tracing = true; trace_left_ = uint32_t(std::max(1, atoi(now.c_str()))); log("RDVK_TRACE begin frame=%llu draws so far=%llu", (unsigned long long)frames + 1, (unsigned long long)draws); }
     last = now;
 }
 
@@ -1057,6 +1058,7 @@ void Context::draw_indexed(uint32_t count, uint32_t first, int32_t base, uint32_
 void Context::dispatch(uint32_t x, uint32_t y, uint32_t z) {
     Shader* cs = shader_[CS];
     if (!cs || !x || !y || !z) return;
+    if (tracing) log("RDVK_TRACE dispatch %ux%ux%u cs=%s", x, y, z, cs->name);
     fp_clamp_dispatch(x, y);
     end_pass(PE_DISPATCH);
     cmd_ = gpu.cmd();
@@ -1195,6 +1197,12 @@ uint32_t Context::map(Resource* r, uint32_t sub, uint32_t type, uint32_t flags, 
         out->pData = reinterpret_cast<uint64_t>(t->linear_memory.mapped + t->sub_offset[sub]);
         out->RowPitch = t->sub_pitch[sub];
         out->DepthPitch = t->sub_pitch[sub] * row_count(f, t->sub_height(mip));
+        if (tracing && type == d3d::MAP_READ) {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(out->pData);
+            size_t n = out->DepthPitch, nz = 0;
+            for (size_t i = 0; i < n; ++i) nz += p[i] != 0;
+            log("RDVK_TRACE map_read tex=%p dxgi=%u %ux%u sub=%u bytes=%zu nonzero=%zu", static_cast<void*>(t), t->dxgi, t->width, t->height, sub, n, nz);
+        }
         return d3d::HR_S_OK;
     }
     if (t->usage == d3d::USAGE_DYNAMIC) {
@@ -1394,6 +1402,11 @@ void Context::update_subresource(Resource* r, uint32_t sub, const d3d::BOX* box,
 
 void Context::copy_resource(Resource* dst, Resource* src) {
     if (!dst || !src) return;
+    if (tracing && dst->kind != Kind::Buffer && src->kind != Kind::Buffer) {
+        auto* d = static_cast<Texture*>(dst); auto* s = static_cast<Texture*>(src);
+        log("RDVK_TRACE copy dst=%p:%u:%ux%u:u%u src=%p:%u:%ux%u:u%u", static_cast<void*>(d), d->dxgi, d->width, d->height, d->usage,
+            static_cast<void*>(s), s->dxgi, s->width, s->height, s->usage);
+    }
     end_pass(PE_COPY);
     cmd_ = gpu.cmd();
     if (dst->kind == Kind::Buffer && src->kind == Kind::Buffer) {
@@ -1463,6 +1476,11 @@ void Context::copy_resource(Resource* dst, Resource* src) {
 
 void Context::copy_region(Resource* dst, uint32_t dst_sub, uint32_t x, uint32_t y, uint32_t z, Resource* src, uint32_t src_sub, const d3d::BOX* box) {
     if (!dst || !src || dst->kind == Kind::Buffer || src->kind == Kind::Buffer) { if (dst && src) copy_resource(dst, src); return; }
+    if (tracing) {
+        auto* d = static_cast<Texture*>(dst); auto* s = static_cast<Texture*>(src);
+        log("RDVK_TRACE copy_region dst=%p:%u:%ux%u:u%u sub%u at %u,%u src=%p:%u:%ux%u:u%u sub%u box=%d", static_cast<void*>(d), d->dxgi, d->width, d->height,
+            d->usage, dst_sub, x, y, static_cast<void*>(s), s->dxgi, s->width, s->height, s->usage, src_sub, int(box != nullptr));
+    }
     end_pass(PE_COPY_REGION);
     cmd_ = gpu.cmd();
     auto* d = static_cast<Texture*>(dst); auto* s = static_cast<Texture*>(src);

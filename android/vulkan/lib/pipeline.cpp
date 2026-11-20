@@ -84,9 +84,14 @@ const PipelineLayout* pipeline_layout(const Shader* const* shaders, uint32_t cou
         }
     }
     std::sort(entries.begin(), entries.end(), [](const LayoutEntry& a, const LayoutEntry& b) { return a.binding < b.binding; });
+    /* The entries carry the slot and the declared view type that bind_descriptors uses: two shader
+     * sets with the same bindings but another view type (t0 as CUBE in one shader, 2D in the other)
+     * must not share a layout, or the slot gets the stand-in view and reads zeros (the snow base
+     * heightmap of a new game sampled as 0: no snow on the ground). */
     uint64_t key = compute ? 7 : 3;
     for (const LayoutEntry& e : entries) {
-        uint64_t words[4] = {e.binding, uint64_t(e.type), e.stages, uint64_t(uintptr_t(e.icb))};
+        uint64_t words[5] = {e.binding, uint64_t(e.type), e.stages, uint64_t(uintptr_t(e.icb)),
+                             uint64_t(e.view) | uint64_t(e.slot) << 8 | uint64_t(e.space) << 16 | uint64_t(e.stage) << 24};
         for (uint64_t w : words) { key ^= w; key *= 1099511628211ull; }
     }
     std::lock_guard lock(mutex);
@@ -125,6 +130,12 @@ VkPipeline graphics_pipeline(const GraphicsKey& key, const PipelineLayout* layou
         if (it != graphics.end()) return it->second;
     }
     /* Optional stages (external-theories T02 b): without the feature such draws are skipped. */
+    for (const Shader* s : key.shader)
+        if (s && !s->module) {   /* a shader the driver cannot run (Shader::missing_features): the draw is skipped */
+            std::lock_guard lock(mutex);
+            graphics.emplace(key, VK_NULL_HANDLE);
+            return VK_NULL_HANDLE;
+        }
     bool uses_gs = key.shader[GS] != nullptr, uses_tess = key.shader[HS] || key.shader[DS];
     if ((uses_gs && !gpu.caps.geometry) || (uses_tess && !gpu.caps.tessellation)) {
         if (first_time(uses_gs ? "pipeline_gs" : "pipeline_tess"))
@@ -242,6 +253,11 @@ VkPipeline compute_pipeline(const Shader* cs, const PipelineLayout* layout) {
         std::lock_guard lock(mutex);
         auto it = computes.find(cs);
         if (it != computes.end()) return it->second;
+    }
+    if (!cs->module) {   /* Shader::missing_features: the dispatch is skipped */
+        std::lock_guard lock(mutex);
+        computes.emplace(cs, VK_NULL_HANDLE);
+        return VK_NULL_HANDLE;
     }
     VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     info.stage = VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};

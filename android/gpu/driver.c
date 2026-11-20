@@ -84,18 +84,16 @@ PFN_vkGetInstanceProcAddr frostpunk_gpu_open_turnip(const char *runtime_dir,
 
 PFN_vkGetInstanceProcAddr frostpunk_gpu_open_panvk(const char *runtime_dir, char *error, size_t error_size) {
     char hooks[PATH_MAX], bundled[PATH_MAX];
-    if (sysconf(_SC_PAGESIZE)!=4096) {
-        snprintf(error,error_size,"PanVK requires a 4 KiB kernel page size");
-        return NULL;
-    }
-    if (access("/dev/mali0",R_OK|W_OK)) {
-        snprintf(error,error_size,"PanVK requires an accessible Mali GPU");
+    const char *custom=getenv("PORT_PANVK_DRIVER");
+    int has_custom=custom && *custom;
+    const char *page_error=port_panvk_page_size_error(!has_custom);
+    if (page_error) {
+        snprintf(error,error_size,"%s",page_error);
         return NULL;
     }
     int n=snprintf(hooks,sizeof(hooks),"%s/",runtime_dir);
     int m=snprintf(bundled,sizeof(bundled),"%s/" PORT_PANVK_DRIVER,runtime_dir);
-    const char *custom=getenv("PORT_PANVK_DRIVER");
-    const char *path=custom && *custom ? custom : bundled;
+    const char *path=has_custom ? custom : bundled;
     if (n<0 || (size_t)n>=sizeof(hooks) || m<0 || (size_t)m>=sizeof(bundled) || path[0]!='/' || access(path,R_OK)) {
         snprintf(error,error_size,"Cannot read PanVK driver at %s",path);
         return NULL;

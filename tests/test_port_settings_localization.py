@@ -1,18 +1,54 @@
 import json
 import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-from port_settings_localization import (LABELS, PHOTO_HELP_KEY, PHOTO_PATH_KEY, PREFIX, TABLE_LANGUAGES, encode_table,
+from port_settings_localization import (LABELS, LANGUAGES, PHOTO_HELP_KEY, PHOTO_PATH_KEY, PREFIX, TABLE_LANGUAGES, encode_table,
                                         localize_table, parse_table, translations)
 from prepare_android_port_settings_asset import GENERAL, GRAPHICS, KEY, ROWS, SOURCE, resource
 from prepare_raw_archives import entries
+from android_launcher import game_input_manifest
+from liquid_archive import Archive, RECORD, packed_key
+from package_game_data import resource_patch
 
 
 class PortSettingsLocalizationTest(unittest.TestCase):
+    def test_language_archive_adds_both_fan_entries_alongside_english(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / 'localizations.dat'
+            data.write_bytes(b'English')
+            idx = root / 'localizations.idx'
+            idx.write_bytes(b'\x00\x02\x01' + struct.pack('<Q', 1) +
+                            RECORD.pack(packed_key('english.lang'), 7, 7, 0, 0))
+            additions = {packed_key('czech.lang'): b'Czech text', packed_key('hungarian.lang'): b'Hungarian text'}
+            with patch('package_game_data.STEAM', root):
+                folder, _ = resource_patch('port-ui', {'localizations': additions}, root, private=True)
+            idx.write_bytes((folder / 'port-ui.localizations.idx').read_bytes())
+            with data.open('ab') as stream:
+                stream.write((folder / 'port-ui.localizations.append').read_bytes())
+            result = Archive(root / 'localizations')
+            self.assertEqual(list(result.rows), sorted({packed_key('english.lang'), *additions}))
+            self.assertEqual(result.read('english.lang'), b'English')
+            self.assertEqual(result.read('czech.lang'), b'Czech text')
+            self.assertEqual(result.read('hungarian.lang'), b'Hungarian text')
+
+    def test_native_input_manifest_accepts_each_localization_variant(self):
+        def sizes(text, suffix):
+            return next(set(row.split('\t')[0].split(',')) for row in text.splitlines()
+                        if row.endswith('\tlocalizations' + suffix))
+
+        original = game_input_manifest()
+        variants = [{'archives': [{'stem': 'localizations', 'output': {'.dat': {'bytes': 9871234}, '.idx': {'bytes': 649}}}]}]
+        localized = game_input_manifest(variants)
+        self.assertEqual(sizes(localized, '.dat'), sizes(original, '.dat') | {'9871234'})
+        self.assertEqual(sizes(localized, '.idx'), sizes(original, '.idx') | {'649'})
+
     def test_utf16_lengths_and_old_text_roundtrip(self):
         original = encode_table({'A': 'Snow \U0001f328', PHOTO_PATH_KEY: '写真: {Path}',
                                  PHOTO_HELP_KEY: 'Original desktop help', 'Z': '\ud800'})
@@ -53,7 +89,7 @@ class PortSettingsLocalizationTest(unittest.TestCase):
         required.add(PREFIX + LABELS[0])
         required.update(name[1:] for _, _, options in ROWS for _, name in options
                         if name.startswith('@UI/Android/'))
-        self.assertEqual(set(all_translations), set(TABLE_LANGUAGES.values()))
+        self.assertEqual(set(all_translations), LANGUAGES)
         for language, values in all_translations.items():
             self.assertTrue(required <= values.keys(), language)
             self.assertEqual(set(values), expected_keys, language)

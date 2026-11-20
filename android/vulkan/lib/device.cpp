@@ -317,6 +317,27 @@ bool Gpu::init() {
     caps.independent_blend = want.independentBlend;
     caps.depth_bias_clamp = want.depthBiasClamp; caps.dual_src_blend = want.dualSrcBlend;
     caps.occlusion_precise = want.occlusionQueryPrecise;
+    caps.shader_features =
+        (core.tessellationShader ? SHADER_FEATURE_TESSELLATION : 0) | (core.geometryShader ? SHADER_FEATURE_GEOMETRY : 0) |
+        (core.shaderStorageImageReadWithoutFormat ? SHADER_FEATURE_READ_WITHOUT_FORMAT : 0) |
+        (core.shaderStorageImageWriteWithoutFormat ? SHADER_FEATURE_WRITE_WITHOUT_FORMAT : 0) |
+        (f11.shaderDrawParameters ? SHADER_FEATURE_DRAW_PARAMETERS : 0) | (f12.vulkanMemoryModel ? SHADER_FEATURE_MEMORY_MODEL : 0) |
+        (f13.shaderDemoteToHelperInvocation ? SHADER_FEATURE_DEMOTE : 0) | (core.imageCubeArray ? SHADER_FEATURE_CUBE_ARRAY : 0) |
+        (core.shaderImageGatherExtended ? SHADER_FEATURE_GATHER_EXTENDED : 0) | (core.shaderInt16 ? SHADER_FEATURE_INT16 : 0) |
+        (f12.shaderFloat16 ? SHADER_FEATURE_FLOAT16 : 0) | (core.sampleRateShading ? SHADER_FEATURE_SAMPLE_RATE : 0) |
+        (core.shaderClipDistance ? SHADER_FEATURE_CLIP_DISTANCE : 0) | (core.shaderCullDistance ? SHADER_FEATURE_CULL_DISTANCE : 0) |
+        (core.multiViewport ? SHADER_FEATURE_MULTI_VIEWPORT : 0) | (core.shaderInt64 ? SHADER_FEATURE_INT64 : 0) |
+        (core.shaderFloat64 ? SHADER_FEATURE_FLOAT64 : 0);
+    {   /* diagnostics: debug.fp.rdvk_shader_mask=0xN hides features to exercise the fallbacks */
+        std::string mask = property("debug.fp.rdvk_shader_mask");
+        if (!mask.empty()) caps.shader_features &= ~uint32_t(strtoul(mask.c_str(), nullptr, 0));
+    }
+    want.sampleRateShading = core.sampleRateShading;
+    want.shaderClipDistance = core.shaderClipDistance;
+    want.shaderCullDistance = core.shaderCullDistance;
+    want.multiViewport = core.multiViewport;
+    want.shaderInt64 = core.shaderInt64;
+    want.shaderFloat64 = core.shaderFloat64;
     core = want;
     VkPhysicalDeviceVulkan11Features w11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     w11.shaderDrawParameters = f11.shaderDrawParameters;
@@ -450,6 +471,8 @@ bool Gpu::init() {
     }
     log("RDVK_FEATURES depth_bias_clamp=%d dual_src_blend=%d depth_clip=%d independent_blend=%d depth_clamp=%d dynamic_reset_per_pass=%d",
         caps.depth_bias_clamp, caps.dual_src_blend, caps.depth_clip, caps.independent_blend, caps.depth_clamp, caps.reset_dynamic_per_pass);
+    log("RDVK_SHADER_FEATURES supported=0x%05x (tess geom read_wo_fmt write_wo_fmt draw_params memory_model demote cube_array gather_ext int16 "
+        "float16 sample_rate clip cull multi_viewport int64 float64)", caps.shader_features);
     log("RDVK_GPU device=%s vendor=0x%x driver_id=%u api=%u.%u.%u push_descriptors=%d(%u) null_descriptor=%d tessellation=%d "
         "geometry=%d bc=%d astc=%d eds3_clamp=%d eds3_clip=%d",
         caps.name, caps.vendor, caps.driver_id, VK_API_VERSION_MAJOR(caps.api), VK_API_VERSION_MINOR(caps.api), VK_API_VERSION_PATCH(caps.api),

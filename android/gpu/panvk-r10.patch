@@ -16,6 +16,18 @@
        },
     };
     if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc)) {
+@@ -2884,6 +2886,11 @@
++DEBUG_GET_ONCE_BOOL_OPTION(kbase_cpu_fence_export, "PANVK_KBASE_CPU_FENCE_EXPORT", false)
++
+ int
+ pan_kmod_kbase_csf_fence_fd(struct pan_kmod_kbase_csf_group *g, uint64_t seq)
+ {
++   if (debug_get_option_kbase_cpu_fence_export())
++      return -1; /* Use the existing CPU wait when exporting the completed fence. */
++
+    struct kbase_kmod_dev *kdev = g->kdev;
+    struct kbase_csf_dev *c = kdev->csfq;
+    struct base_cqs_wait_operation_info objs[PAN_KMOD_KBASE_CSF_MAX_QUEUES];
 --- a/build.sh
 +++ b/build.sh
 @@ -38,7 +38,7 @@

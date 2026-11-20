@@ -98,10 +98,22 @@ size_t count_file(uint32_t n){if(n>k_unMaxCloudFileChunkSize)trap("oversized fil
 size_t count_file_u(CPU*c,unsigned i){return count_file((uint32_t)arg(c,i));}
 size_t count_file_s(CPU*c,unsigned i){int32_t n=(int32_t)arg(c,i);if(n<0)trap("negative service buffer count");return count_file((uint32_t)n);}
 size_t product(size_t a,size_t b){if(b&&a>SIZE_MAX/b)trap("buffer multiplication overflow");return a*b;}
-void relative_name(uint64_t address,int is_stat){const char *s=win64_string_a(address);if(!*s||*s=='/'||*s=='\\'||strchr(s,':')){
-    fprintf(stderr,"STEAM_NAME_REJECT is_stat=%d guest_return=0x%llx name_prefix=\"%.256s\"\n",is_stat,(unsigned long long)(active_cpu?rd(active_cpu->rsp):0),s);fflush(stderr);
+void name_log(const char *tag,int is_stat,const char *s){
+    fprintf(stderr,"%s is_stat=%d guest_return=0x%llx name_prefix=\"%.256s\"\n",tag,is_stat,(unsigned long long)(active_cpu?rd(active_cpu->rsp):0),s);fflush(stderr);
+}
+/* A stat or remote-storage name that the backend turns into a file of its profile. Goldberg's
+ * Local_Storage::sanitize_file_name replaces : | * " ? with tokens, so these characters are plain
+ * name text: the game passes achievement display names such as "Endless: Backup Plan" to SetStat.
+ * An absolute or traversing name stays fatal (the game's own SteamGamerProfile rejects both before
+ * calling); a name the storage preflight refuses fails only this call and touches no file. */
+bool storage_name(uint64_t address,int is_stat){const char *s=win64_string_a(address);if(!*s||*s=='/'||*s=='\\'){
+    name_log("STEAM_NAME_REJECT",is_stat,s);
     trap("service filename/stat name must be relative");
-}const char *component=s;for(const char *p=s;;++p)if(!*p||*p=='/'||*p=='\\'){size_t n=p-component;if(!n||(n==1&&component[0]=='.')||(n==2&&component[0]=='.'&&component[1]=='.'))trap("service path traversal rejected");if(!*p)break;component=p+1;}if(!api.validate_name(s,is_stat))trap("service storage symlink/anchor preflight rejected");}
+}const char *component=s;for(const char *p=s;;++p)if(!*p||*p=='/'||*p=='\\'){size_t n=p-component;if(!n||(n==1&&component[0]=='.')||(n==2&&component[0]=='.'&&component[1]=='.')){name_log("STEAM_NAME_REJECT",is_stat,s);trap("service path traversal rejected");}if(!*p)break;component=p+1;}
+    if(api.validate_name(s,is_stat))return true;
+    static std::atomic<unsigned> refused{0};if(refused.fetch_add(1)<32)name_log("STEAM_NAME_REFUSED",is_stat,s);
+    return false;
+}
 Kind version(const char *s){for(unsigned i=0;i<unsigned(Kind::Count);++i)if(!strcmp(s,versions[i]))return Kind(i);trap("unrepresented requested interface version");}
 uint64_t wrap(void *native,Kind kind){
     if(!native)return 0;std::lock_guard lock(metadata_mutex);uint64_t e=epoch.load();

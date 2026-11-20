@@ -1,5 +1,7 @@
 package com.frostpunk.staticrecomp.probe;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -35,6 +37,41 @@ final class CrashReport {
             int newline = start > 0 ? text.indexOf('\n') : -1;
             return newline >= 0 ? text.substring(newline + 1) : text;
         }
+    }
+
+    private static long varint(DataInputStream input) throws IOException {
+        long value = 0;
+        for (int shift = 0; shift < 64; shift += 7) {
+            int part = input.readUnsignedByte();
+            if (shift == 63 && part > 1) break;
+            value |= (long) (part & 127) << shift;
+            if (part < 128) return value;
+        }
+        throw new IOException("Invalid tombstone varint");
+    }
+
+    static String nativeAbortMessage(byte[] prefix) throws IOException {
+        // Android debuggerd's Tombstone protobuf stores abort_message in field 14.
+        DataInputStream input = new DataInputStream(new ByteArrayInputStream(prefix));
+        while (input.available() != 0) {
+            long tag = varint(input);
+            long length;
+            switch ((int) (tag & 7)) {
+                case 0: varint(input); continue;
+                case 1: length = 8; break;
+                case 2: length = varint(input); break;
+                case 5: length = 4; break;
+                default: return "";
+            }
+            if (length < 0 || length > input.available()) return "";
+            if (tag == ((14 << 3) | 2)) {
+                byte[] message = new byte[(int) Math.min(length, 4096)];
+                input.readFully(message);
+                return new String(message, StandardCharsets.UTF_8).trim();
+            }
+            input.skipBytes((int) length);
+        }
+        return "";
     }
 
     static void write(File file, String text) throws IOException {

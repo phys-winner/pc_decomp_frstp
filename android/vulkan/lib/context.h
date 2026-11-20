@@ -114,6 +114,7 @@ public:
     uint64_t query_stats[6] = {};   /* begins, ends, getdata, ready, not ready, ready and visible */
     /* One-frame draw trace (debug.fp.rdvk_trace=N: each new N traces the next frame). */
     bool tracing = false;
+    uint32_t trace_left_ = 0;   /* debug.fp.rdvk_trace=N with N>1: N consecutive frames */
     Texture* dump_pending = nullptr;
     Texture* capture_copy_ = nullptr;   /* debug.fp.rdvk_capture=FI: rt0 right after draw FI of the traced frame */
     void capture_after_draw();

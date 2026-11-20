@@ -56,13 +56,32 @@ extern "C" int FrostpunkOffline_Configure(const char *profile,const char *game) 
     return !setenv("SteamAppPath",path.c_str(),1)&&!setenv("SteamAppId","323190",1)&&
         !setenv("SteamGameId","323190",1)&&!setenv("XDG_DATA_HOME",path.c_str(),1);
 }
+/* The relative path exactly as the backend opens it: Steam_User_Stats lower-cases stat and
+ * leaderboard names (ascii_to_lowercase), then Local_Storage::sanitize_file_name drops a leading
+ * "./", turns '\' into '/' and replaces | : * " ? with tokens (reference/goldberg/dll). */
+static std::string storage_path(const char *name,int is_stat) {
+    std::string raw(name);
+    if(is_stat)for(char &ch:raw)if(ch>='A'&&ch<='Z')ch=(char)(ch-'A'+'a');
+    if(raw.size()>2&&raw[0]=='.'&&(raw[1]=='\\'||raw[1]=='/'))raw.erase(0,2);
+    std::string path;path.reserve(raw.size());
+    for(char ch:raw)switch(ch){
+        case '\\':path+='/';break;
+        case '|':path+=".V_SLASH.";break;
+        case ':':path+=".COLON.";break;
+        case '*':path+=".ASTERISK.";break;
+        case '"':path+=".QUOTE.";break;
+        case '?':path+=".Q_MARK.";break;
+        default:path+=ch;
+    }
+    return path;
+}
 /* Side-effect-free preflight, not an atomic replacement for the upstream
  * fstream IO. The final app must use a private profile with no untrusted writer
  * capable of replacing a checked component with a symlink between calls. */
 extern "C" int FrostpunkOffline_ValidateStorageName(const char *name,int is_stat) {
     if(!name||!*name||name[0]=='/'||name[0]=='\\'||strlen(name)>4096)return 0;
-    std::string path(name);for(char &ch:path){unsigned char byte=(unsigned char)ch;if(byte<32||byte==127||strchr(":|*?\"<>",ch))return 0;
-        if(ch=='\\')ch='/';else if(is_stat&&ch>='A'&&ch<='Z')ch=(char)(ch-'A'+'a');}
+    std::string path=storage_path(name,is_stat);
+    for(char ch:path){unsigned char byte=(unsigned char)ch;if(byte<32||byte==127||ch=='<'||ch=='>')return 0;}
     std::vector<std::string> components;
     for(size_t start=0;;){size_t end=path.find('/',start);std::string part=path.substr(start,end==std::string::npos?std::string::npos:end-start);
         if(part.empty()||part=="."||part==".."||part.size()>255)return 0;components.push_back(part);if(end==std::string::npos)break;start=end+1;}

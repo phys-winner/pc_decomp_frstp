@@ -34,7 +34,7 @@ public final class GameWatchActivity extends Activity {
         if (language == null) language = java.util.Locale.getDefault().getLanguage();
         return language.startsWith("ru");
     }
-    private String say(String english, String russian) { return russian() ? russian : english; }
+    private String say(String english, String russian) { return russian() ? russian : Launch.translated(this, english); }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -162,25 +162,33 @@ public final class GameWatchActivity extends Activity {
                 .append("\nRenderer: ").append(String.valueOf(renderer))
                 .append("\n\n").append(summary);
             if (info != null) text.append("\nLast PSS (KiB): ").append(info.getPss()).append("\nLast RSS (KiB): ").append(info.getRss());
+            File saved = new File(getFilesDir(), "crashes/frostpunk-" + System.currentTimeMillis() + ".txt");
+            if (info != null) try (InputStream trace = info.getTraceInputStream()) {
+                if (trace != null) {
+                    boolean nativeCrash = info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE
+                        && Build.VERSION.SDK_INT >= 31;
+                    if (nativeCrash) {
+                        File tombstone = new File(saved.getPath() + ".pb");
+                        java.nio.file.Files.createDirectories(tombstone.getParentFile().toPath());
+                        java.nio.file.Files.copy(trace, tombstone.toPath());
+                        text.append("\nAndroid tombstone: ").append(tombstone.getAbsolutePath());
+                        String abort;
+                        try (InputStream prefix = new java.io.FileInputStream(tombstone)) {
+                            abort = CrashReport.nativeAbortMessage(readTracePrefix(prefix));
+                        }
+                        if (!abort.isEmpty()) text.append("\nAbort message: ").append(abort);
+                    } else {
+                        text.append("\n\n--- Android trace ---\n")
+                            .append(new String(readTracePrefix(trace), StandardCharsets.UTF_8));
+                    }
+                }
+            } catch (IOException error) { text.append("\nAndroid trace: ").append(error); }
             for (String name : new String[] {"render.log", "native.log"}) {
                 text.append("\n\n--- ").append(name).append(" ---\n");
                 try { text.append(CrashReport.tail(name.equals("render.log") ? CrashReport.renderLog() : new File(getFilesDir(), name), 32768)); }
                 catch (IOException error) { text.append(error.toString()); }
             }
-            if (info != null) try (InputStream trace = info.getTraceInputStream()) {
-                if (trace != null) {
-                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                    byte[] buffer = new byte[4096];
-                    while (bytes.size() < 65536) {
-                        int count = trace.read(buffer, 0, Math.min(buffer.length, 65536 - bytes.size()));
-                        if (count < 0) break;
-                        bytes.write(buffer, 0, count);
-                    }
-                    text.append("\n\n--- Android trace ---\n").append(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
-                }
-            } catch (IOException error) { text.append("\nAndroid trace: ").append(error); }
             String full = text.toString();
-            File saved = new File(getFilesDir(), "crashes/frostpunk-" + System.currentTimeMillis() + ".txt");
             CrashReport.write(saved, full);
             if (session().exists() && !session().delete()) android.util.Log.w("Frostpunk", "Cannot retire crash session");
             shown = true;
@@ -206,6 +214,17 @@ public final class GameWatchActivity extends Activity {
             android.util.Log.e("Frostpunk", "crash report", error);
             return false;
         }
+    }
+
+    private static byte[] readTracePrefix(InputStream trace) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        while (bytes.size() < 65536) {
+            int count = trace.read(buffer, 0, Math.min(buffer.length, 65536 - bytes.size()));
+            if (count < 0) break;
+            bytes.write(buffer, 0, count);
+        }
+        return bytes.toByteArray();
     }
 
     private void close() {

@@ -7,7 +7,7 @@ typedef struct {unsigned type;int width,height;} FrostpunkAndroidEvent;
 typedef struct {int mutex;ANativeWindow *window;uint64_t generation;int physical_width,physical_height;} app_context;
 enum {FP_ANDROID_WINDOW=1};
 static app_context state;
-static unsigned votes,events;
+static unsigned votes,events,notifications,render_notes;
 static FrostpunkAndroidEvent last_event;
 static int pthread_mutex_lock(int *p){assert(!*p);*p=1;return 0;}
 static int pthread_mutex_unlock(int *p){assert(*p);*p=0;return 0;}
@@ -19,6 +19,8 @@ static void request_window_frame_rate(ANativeWindow *w,uint64_t generation){
     assert(!state.mutex&&state.window==w&&state.generation==generation&&w->refs>=2);++votes;
 }
 static void push(app_context *c,FrostpunkAndroidEvent event){assert(!c->mutex);++events;last_event=event;}
+static void notify_foreground(void){assert(!state.mutex);++notifications;}
+static void render_note(const char *line){assert(!state.mutex&&*line);++render_notes;}
 #include "window_resize.inc"
 
 int main(void){
@@ -36,6 +38,6 @@ int main(void){
     resize_window(&state,&a);assert(state.generation==4&&a.refs==2&&votes==3);
     set_window(&state,&a);assert(state.generation==5&&a.refs==2&&votes==4);
     set_window(&state,0);assert(state.generation==6&&a.refs==1&&b.refs==1&&!state.window);
-    assert(events==1031);
+    assert(events==1031&&notifications==6&&render_notes==1028);
     puts("{\"success\":true,\"same_surface_resizes\":1024,\"generations\":6,\"events\":1031,\"frame_rate_votes\":4,\"ownership_balanced\":true}");
 }

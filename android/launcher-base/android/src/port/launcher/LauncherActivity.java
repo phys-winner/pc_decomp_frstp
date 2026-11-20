@@ -1450,7 +1450,7 @@ public final class LauncherActivity extends Activity {
             /* A mode the driver check has not confirmed says so, and is never picked by itself. */
             String hint = !s.available ? Texts.t(this, Texts.UNAVAILABLE) + ": " + s.reason
                 : s.verified ? description : (description.isEmpty() ? "" : description + "\n") + s.reason;
-            card.addView(ui.choice(s.mode.title, hint, s.mode.id.equals(chosen), s.available, !s.available ? null : () -> {
+            card.addView(ui.choice(Texts.translated(this, s.mode.title), hint, s.mode.id.equals(chosen), s.available, !s.available ? null : () -> {
                 Renderers.choose(this, selected, hooks, s.mode.id);
                 refresh(Texts.RENDERER, Texts.TEXTURES, Texts.PLAY);
             }));
@@ -1459,14 +1459,16 @@ public final class LauncherActivity extends Activity {
         Renderers.Status current = Renderers.status(statuses, chosen);
         Spec.Mode used = spec.mode(effective), fallback = spec.mode(spec.defaultMode);
         if (!effective.equals(chosen) && current != null) {
-            card.addView(ui.label(Texts.fmt(this, Texts.N_FALLBACK, current.mode.title, current.reason, used != null ? used.title : effective), 13, ui.error));
+            card.addView(ui.label(Texts.fmt(this, Texts.N_FALLBACK, Texts.translated(this, current.mode.title), current.reason,
+                used != null ? Texts.translated(this, used.title) : effective), 13, ui.error));
         } else if (current != null && !current.verified && fallback != null && !fallback.id.equals(chosen)) {
-            card.addView(ui.label(Texts.fmt(this, Texts.N_UNCHECKED, current.mode.title, fallback.title), 13, ui.error));
+            card.addView(ui.label(Texts.fmt(this, Texts.N_UNCHECKED, Texts.translated(this, current.mode.title),
+                Texts.translated(this, fallback.title)), 13, ui.error));
         }
         Spec.Mode turnip = Probe.turnipMode(spec);
         if (turnip != null && selected.renderers.contains(turnip.id) && gpu.qualcomm())
             driverControls(card, VulkanDriver.TURNIP, ASK_DRIVER);
-        if (Gpu.panvkCandidate(gpu.renderer) && statuses.stream().anyMatch(s -> "panvk".equals(s.mode.kind)))
+        if (selected.renderers.stream().map(spec::mode).anyMatch(mode -> mode != null && "panvk".equals(mode.kind)))
             driverControls(card, VulkanDriver.PANVK, ASK_PANVK_DRIVER);
         card.addView(ui.label(Texts.fmt(this, Texts.GPU, gpu.renderer.isEmpty() ? "?" : gpu.renderer, Gpu.version(gpu.vulkan)), 12, ui.muted));
         card.addView(ui.label(Texts.t(this, Texts.N_APPLIES), 12, ui.muted));
@@ -1554,6 +1556,8 @@ public final class LauncherActivity extends Activity {
                     continue;
                 }
                 card.addView(ui.label(Texts.of(this, o.title), 15, ui.text));
+                String choiceHint = Texts.of(this, o.hint);
+                if (!choiceHint.isEmpty()) card.addView(ui.label(choiceHint, 13, ui.muted));
                 for (int i = 0; i < o.choices.size(); ++i) {
                     String choice = o.choices.get(i);
                     card.addView(ui.choice(Texts.of(this, o.choiceTitles.get(i)), null, choice.equals(value), true, () -> {
@@ -1846,7 +1850,7 @@ public final class LauncherActivity extends Activity {
         if (spec.languages.size() > 1) {
             String current = State.get(this, State.CHOICES, "language", "");
             TextView language = ui.button(Texts.t(this, Texts.LANGUAGE) + ": " + (current.isEmpty() ? Texts.t(this, Texts.SYSTEM_LANGUAGE)
-                : current.toUpperCase(java.util.Locale.ROOT)), Ui.QUIET, this::chooseLanguage);
+                : languageName(current)), Ui.QUIET, this::chooseLanguage);
             card.addView(ui.buttons(language));
         }
         List<Spec.License> licenses = licenses();
@@ -1881,13 +1885,18 @@ public final class LauncherActivity extends Activity {
         for (String code : spec.languages) {
             if (Texts.index(code) == 0 && !"en".equals(code)) continue;
             codes.add(code);
-            names.add(new java.util.Locale(code).getDisplayLanguage(new java.util.Locale(code)));
+            names.add(languageName(code));
         }
         ui.show(ui.dialog().setTitle(Texts.t(this, Texts.LANGUAGE)).setItems(names.toArray(new String[0]), (d, which) -> {
             State.put(this, State.CHOICES, "language", codes.get(which));
             Texts.reset();
             recreate();
         }));
+    }
+
+    private static String languageName(String code) {
+        java.util.Locale locale = java.util.Locale.forLanguageTag(code);
+        return locale.getDisplayName(locale);
     }
 
     /** License texts the APK carries: port.json "licenses" (asset files with their titles, and

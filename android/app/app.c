@@ -15,7 +15,6 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -55,11 +54,16 @@ typedef struct {
 } app_context;
 static app_context *current;
 static pthread_mutex_t current_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t foreground_changed=PTHREAD_COND_INITIALIZER;
 static void log_text(const char *text){__android_log_print(ANDROID_LOG_INFO,"FrostpunkProbe","%s",text);fprintf(stderr,"%s\n",text);}
+static void notify_foreground(void){
+    pthread_mutex_lock(&current_mutex);pthread_cond_broadcast(&foreground_changed);pthread_mutex_unlock(&current_mutex);
+}
 static void set_game_paused(app_context *c,int paused) {
     pthread_mutex_lock(&c->mutex);c->paused=paused;
     void (*apply)(int)=c->runtime_handle?dlsym(c->runtime_handle,"frostpunk_android_set_paused"):NULL;
     if(apply)apply(paused);pthread_mutex_unlock(&c->mutex);
+    notify_foreground();
 }
 __attribute__((visibility("default"))) int frostpunk_android_timezone_offset(int64_t seconds,int32_t *offset,int32_t *is_dst) {
     if(!offset || !is_dst || seconds>INT64_MAX/1000 || seconds<INT64_MIN/1000)return 0;
@@ -180,11 +184,21 @@ __attribute__((visibility("default"))) void frostpunk_android_presented(void) {
     if(current && !current->stopping)set_status(current,"\1");
     pthread_mutex_unlock(&current_mutex);
 }
-/* Hang watchdog (host/frame_profile.c): presents stop legitimately while paused or without a window. */
+/* current_mutex keeps the Activity context alive while reading its lifecycle state. */
+static int foreground_state(void){
+    if(!current)return -1;
+    pthread_mutex_lock(&current->mutex);
+    int result=current->stopping?-1:current->window&&!current->paused;
+    pthread_mutex_unlock(&current->mutex);return result;
+}
 __attribute__((visibility("default"))) int frostpunk_android_foreground(void){
-    int result=0;pthread_mutex_lock(&current_mutex);
-    if(current&&!current->stopping){pthread_mutex_lock(&current->mutex);result=current->window&&!current->paused;pthread_mutex_unlock(&current->mutex);}
+    pthread_mutex_lock(&current_mutex);int result=foreground_state()>0;
     pthread_mutex_unlock(&current_mutex);return result;
+}
+__attribute__((visibility("default"))) int frostpunk_android_wait_foreground(void){
+    pthread_mutex_lock(&current_mutex);int state;
+    while((state=foreground_state())==0)pthread_cond_wait(&foreground_changed,&current_mutex);
+    pthread_mutex_unlock(&current_mutex);return state>0;
 }
 __attribute__((visibility("default"))) void frostpunk_android_cancel_input(void){
     pthread_mutex_lock(&current_mutex);if(current&&!current->stopping)set_status(current,"\4");pthread_mutex_unlock(&current_mutex);
@@ -408,32 +422,6 @@ static void request_window_frame_rate(ANativeWindow *window,uint64_t generation)
 }
 #endif
 static void render_note(const char *line);
-static int crash_fd=-1;
-static void crash_signal(int sig) {
-    const char *text="native signal\n";
-    size_t bytes=sizeof("native signal\n")-1;
-    if(sig==SIGSEGV){text="native SIGSEGV\n";bytes=sizeof("native SIGSEGV\n")-1;}
-    else if(sig==SIGABRT){text="native SIGABRT\n";bytes=sizeof("native SIGABRT\n")-1;}
-    else if(sig==SIGBUS){text="native SIGBUS\n";bytes=sizeof("native SIGBUS\n")-1;}
-    if(crash_fd>=0){ssize_t wrote=write(crash_fd,text,bytes);(void)wrote;}
-    raise(sig);
-}
-static void install_crash_log(const char *directory) {
-    char path[PATH_MAX];
-    struct sigaction action;
-    int fd;
-    if(!directory||snprintf(path,sizeof(path),"%s/frostpunk-crash.txt",directory)>=(int)sizeof(path))return;
-    fd=open(path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600);
-    if(fd<0)return;
-    memset(&action,0,sizeof(action));
-    action.sa_handler=crash_signal;
-    action.sa_flags=SA_RESETHAND;
-    sigaction(SIGSEGV,&action,NULL);
-    sigaction(SIGABRT,&action,NULL);
-    sigaction(SIGBUS,&action,NULL);
-    crash_fd=fd;
-    if(ftruncate(fd,0)){/* the watcher treats an empty file as a clean run */}
-}
 static void set_window(app_context *c,ANativeWindow *window) {
     pthread_mutex_lock(&c->mutex);ANativeWindow *old=c->window;if(window)ANativeWindow_acquire(window);c->window=window;++c->generation;pthread_mutex_unlock(&c->mutex);
     if(window){
@@ -443,6 +431,7 @@ static void set_window(app_context *c,ANativeWindow *window) {
         c->physical_width=ANativeWindow_getWidth(window);c->physical_height=ANativeWindow_getHeight(window);
         char noted[96];snprintf(noted,sizeof(noted),"window init %dx%d",c->physical_width,c->physical_height);render_note(noted);}if(old)ANativeWindow_release(old);
     push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_WINDOW,.width=window?ANativeWindow_getWidth(window):0,.height=window?ANativeWindow_getHeight(window):0});
+    notify_foreground();
 }
 static void resize_window(app_context *c,ANativeWindow *window) {
     pthread_mutex_lock(&c->mutex);int same=c->window==window;pthread_mutex_unlock(&c->mutex);
@@ -728,7 +717,11 @@ static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t e
            (!mkdir(cache,0700)||errno==EEXIST))setenv("MESA_SHADER_CACHE_DIR",cache,0);
         /* The TB373FU display composer can corrupt scaled AFBC PanVK window buffers. */
         __system_property_get("ro.product.device",product);
-        if(!strcmp(product,"TB373FU"))setenv("MESA_GRALLOC_LINEAR","1",0);
+        if(!strcmp(product,"TB373FU")){
+            setenv("MESA_GRALLOC_LINEAR","1",0);
+            // The KCPU fence path can cause a Mali shareability fault on window resume.
+            setenv("PANVK_KBASE_CPU_FENCE_EXPORT","1",0);
+        }
         char reason[256]={0};
         PFN_vkGetInstanceProcAddr panvk=frostpunk_gpu_open_panvk(c->libraries,reason,sizeof(reason));
         setenv("FROSTPUNK_VULKAN_DRIVER",panvk?"panvk":"none",1);
@@ -772,6 +765,7 @@ static void start_probe(app_context *c) {
 }
 static void stop_game_worker(app_context *c) {
     pthread_mutex_lock(&c->mutex);c->stopping=1;++c->wake_sequence;pthread_cond_broadcast(&c->changed);
+    pthread_mutex_unlock(&c->mutex);notify_foreground();pthread_mutex_lock(&c->mutex);
     struct timespec end;clock_gettime(CLOCK_MONOTONIC,&end);end.tv_sec+=2;
     while(c->worker_started&&!c->worker_finished){int status=pthread_cond_timedwait(&c->changed,&c->mutex,&end);if(status==ETIMEDOUT)break;}
     int started=c->worker_started,finished=c->worker_finished;pthread_mutex_unlock(&c->mutex);ALooper_wake(c->app->looper);
@@ -883,7 +877,6 @@ void android_main(struct android_app *app) {
     }
     int output=open(log,O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW|O_CLOEXEC,0600);
     if(output>=0){dup2(output,STDOUT_FILENO);dup2(output,STDERR_FILENO);close(output);setvbuf(stderr,NULL,_IOLBF,0);}
-    install_crash_log(c->private_path);
     library_path(c);
     c->api=(FrostpunkAndroidHost){.abi_version=1,.struct_size=sizeof(FrostpunkAndroidHost),.context=c,.acquire_window=acquire_window,.release_window=release_window,
         .poll_event=poll_event,.wait=wait_event,.wake=wake,.is_stopping=stopping,.set_status=set_status,.game_path=c->game,.profile_path=c->profile,.private_path=c->private_path,

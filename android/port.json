@@ -17,7 +17,18 @@
       "en",
       "ru",
       "de",
-      "pl"
+      "pl",
+      "fr",
+      "es",
+      "it",
+      "pt-BR",
+      "tr",
+      "ja",
+      "ko",
+      "zh-CN",
+      "fa",
+      "cs",
+      "hu"
     ],
     "github": "phys-winner/pc_decomp_frstp",
     "hooks": "com.frostpunk.staticrecomp.launcher.FrostpunkHooks"
@@ -118,7 +129,7 @@
           "en": "Experimental native Vulkan with Mesa PanVK.",
           "ru": "Экспериментальный нативный Vulkan с Mesa PanVK."
         },
-        "minSdk": 31,
+        "minSdk": 30,
         "vulkan": "1.3",
         "needsBC": false,
         "driver": "libvulkan_panfrost.so",
@@ -132,7 +143,7 @@
           "en": "Experimental DXVK with Mesa PanVK.",
           "ru": "Экспериментальный DXVK с Mesa PanVK."
         },
-        "minSdk": 31,
+        "minSdk": 30,
         "vulkan": "1.3",
         "needsBC": false,
         "driver": "libvulkan_panfrost.so",

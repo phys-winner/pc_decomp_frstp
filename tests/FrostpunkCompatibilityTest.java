@@ -34,14 +34,16 @@ public final class FrostpunkCompatibilityTest {
         Spec.Mode nativeVulkan = spec.mode(FrostpunkHooks.NATIVE_RENDERER);
         Spec.Mode panvk = spec.mode(FrostpunkHooks.NATIVE_PANVK_RENDERER);
         Spec.Mode dxvkPanvk = spec.mode(FrostpunkHooks.DXVK_PANVK_RENDERER);
+        need(panvk.minSdk == 30 && dxvkPanvk.minSdk == 30, "PanVK can be checked starting at Frostpunk's minimum Android version");
         need(FrostpunkDevice.applies(true, "turnip") && !FrostpunkDevice.applies(true, "vulkan"), "Adreno uses only Turnip");
         need(!FrostpunkDevice.applies(false, "turnip") && FrostpunkDevice.applies(false, "vulkan"), "other GPUs use only system Vulkan");
         Gpu gpu = Gpu.get(context);
-        need(Gpu.panvkCandidate("Mali-G615") == (Gpu.pageSize() == 4096)
-            && Gpu.panvkCandidate("Mali-G715") == (Gpu.pageSize() == 4096)
-            && !Gpu.panvkCandidate("Adreno 750"), "PanVK requires a supported Mali and 4 KiB kernel pages");
+        for (String name : Arrays.asList("Mali-G52", "mali-g76", "Mali-G615", "Mali-G715", "Immortalis-G925"))
+            need(Gpu.maliRenderer(name), "PanVK can be checked on " + name);
+        need(!Gpu.maliRenderer("Adreno 750") && !Gpu.maliRenderer(null), "other GPUs do not match Mali renderer names");
+        need(FrostpunkDevice.applies(gpu, panvk, Probe.parse("stock.vendor=13b5\n")), "ARM Vulkan devices can check PanVK");
         List<Renderers.Status> visible = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false);
-        boolean supportsPanvk = Gpu.panvkCandidate(gpu.renderer);
+        boolean supportsPanvk = gpu.mali();
         need(visible.size() == (supportsPanvk ? 4 : 2) && visible.get(0).mode.id.equals(gpu.qualcomm() ? "turnip" : "dxvk")
             && visible.get(1).mode == nativeVulkan, "native Vulkan is listed alongside the device's DXVK mode");
         if (supportsPanvk) need(visible.get(2).mode == panvk && visible.get(3).mode == dxvkPanvk, "both PanVK renderers are listed");
@@ -62,7 +64,9 @@ public final class FrostpunkCompatibilityTest {
         File probe = new File(State.folder(context), Probe.REPORT);
         Probe.write(probe, Probe.key(context) + "\n" + driver + ".status=missing\n" + driver + ".api=1.0.335\n"
             + driver + ".missing=vulkan13,multiViewport\n");
-        need(launchProblem(context, spec, gpu).contains("1.0.335"), "Play card explains insufficient Vulkan without launching the game");
+        String oldApi = !gpu.qualcomm() && gpu.vulkan != 0 && Integer.compareUnsigned(gpu.vulkan, stock.vulkan) < 0
+            ? Gpu.version(gpu.vulkan) : "1.0.335";
+        need(launchProblem(context, spec, gpu).contains(oldApi), "Play card explains insufficient Vulkan without launching the game");
         need(probe.delete(), "remove synthetic driver report");
 
         String libraries = app.getApplicationInfo().nativeLibraryDir;
@@ -72,13 +76,18 @@ public final class FrostpunkCompatibilityTest {
         nativeProbe.setAccessible(true);
         String live = (String) nativeProbe.invoke(null, libraries, null, false);
         if (gpu.qualcomm()) live += (String) nativeProbe.invoke(null, libraries, turnip.driver, false);
-        if (supportsPanvk && new File(libraries, panvk.driver).isFile()) {
+        File bundledPanvk = new File(libraries, panvk.driver);
+        if (FrostpunkDevice.applies(gpu, panvk, Probe.parse(live)) && bundledPanvk.isFile()) {
             String result = (String) nativeProbe.invoke(null, libraries, panvk.driver, true);
             live += result;
-            need("20".equals(Probe.parse(result).get("panvk.driverId")), "the actual PanVK library reports its driver ID");
+            Map<String, String> checked = Probe.parse(result);
+            String status = checked.get("panvk.status");
+            need(Arrays.asList("ok", "missing", "error").contains(status), "the probe reports the PanVK result");
+            if (Gpu.pageSize() != 4096)
+                need("error".equals(status) && checked.get("panvk.error").contains("4 KiB"), "bundled PanVK requires 4 KiB pages");
+            if ("ok".equals(status)) need("20".equals(checked.get("panvk.driverId")), "a passing probe uses Mesa PanVK");
         }
         Probe.write(probe, Probe.key(context) + "\n" + live);
-        File bundledPanvk = new File(libraries, panvk.driver);
         if (bundledPanvk.isFile()) {
             String bundledKey = Probe.key(context);
             VulkanDriver.PANVK.install(context, null, bundledPanvk);
@@ -96,9 +105,10 @@ public final class FrostpunkCompatibilityTest {
             need(Probe.key(context).equals(bundledKey) && Probe.report(context) != null,
                 "reset returns to the bundled PanVK and its probe identity");
         }
-        Renderers.Status actual = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false).get(0);
+        List<Renderers.Status> actualStatuses = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false);
+        Renderers.Status actual = actualStatuses.get(0);
         String problem = launchProblem(context, spec, gpu);
-        need((problem == null) == (actual.available && actual.verified), "Play card agrees with the real driver check");
+        need((problem == null) == actualStatuses.stream().anyMatch(s -> s.available && s.verified), "Play card agrees with the real driver check");
         if (problem != null) need(problem.contains(actual.reason), "Play card retains the actual rejection details");
         System.out.println("DEVICE: " + gpu.renderer + "; system Vulkan " + Gpu.version(gpu.vulkan)
             + "; selected " + actual.mode.id + "; available=" + actual.available + "; verified=" + actual.verified);

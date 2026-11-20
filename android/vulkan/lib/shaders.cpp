@@ -31,6 +31,49 @@ uint32_t u32(const uint8_t* data, size_t size, size_t at) {
     return v;
 }
 
+/* SPIR-V capabilities that need an optional device feature (external-theories T02: a missing
+ * feature turns into a logged fallback, never into an invalid module handed to the driver). */
+uint32_t capability_feature(uint32_t capability) {
+    switch (capability) {
+    case 2: case 24: case 54: return SHADER_FEATURE_GEOMETRY;          /* Geometry, GeometryPointSize, GeometryStreams */
+    case 3: case 23: return SHADER_FEATURE_TESSELLATION;               /* Tessellation, TessellationPointSize */
+    case 9: return SHADER_FEATURE_FLOAT16;
+    case 10: return SHADER_FEATURE_FLOAT64;
+    case 11: return SHADER_FEATURE_INT64;
+    case 22: return SHADER_FEATURE_INT16;
+    case 25: return SHADER_FEATURE_GATHER_EXTENDED;
+    case 32: return SHADER_FEATURE_CLIP_DISTANCE;
+    case 33: return SHADER_FEATURE_CULL_DISTANCE;
+    case 34: case 45: return SHADER_FEATURE_CUBE_ARRAY;               /* ImageCubeArray, SampledCubeArray */
+    case 35: return SHADER_FEATURE_SAMPLE_RATE;
+    case 55: return SHADER_FEATURE_READ_WITHOUT_FORMAT;
+    case 56: return SHADER_FEATURE_WRITE_WITHOUT_FORMAT;
+    case 57: return SHADER_FEATURE_MULTI_VIEWPORT;
+    case 4427: return SHADER_FEATURE_DRAW_PARAMETERS;
+    case 5345: return SHADER_FEATURE_MEMORY_MODEL;
+    case 5379: return SHADER_FEATURE_DEMOTE;
+    default: return 0;
+    }
+}
+
+uint32_t missing_shader_features(const uint32_t* code, uint32_t words) {
+    uint32_t need = 0;
+    for (uint32_t at = 5; at < words;) {
+        uint32_t op = code[at] & 0xffff, len = code[at] >> 16;
+        if (!len) break;
+        if (op == 17 && len >= 2) need |= capability_feature(code[at + 1]);   /* OpCapability */
+        else if (op != 17 && op != 10 && op != 11 && op != 14) break;           /* past the capabilities and extensions */
+        at += len;
+    }
+    return need & ~gpu.caps.shader_features;
+}
+
+const char* const kShaderFeatureNames[SHADER_FEATURE_COUNT] = {
+    "tessellationShader", "geometryShader", "shaderStorageImageReadWithoutFormat", "shaderStorageImageWriteWithoutFormat",
+    "shaderDrawParameters", "vulkanMemoryModel", "shaderDemoteToHelperInvocation", "imageCubeArray", "shaderImageGatherExtended",
+    "shaderInt16", "shaderFloat16", "sampleRateShading", "shaderClipDistance", "shaderCullDistance", "multiViewport", "shaderInt64",
+    "shaderFloat64"};
+
 uint32_t ssbo_alignment() {
     uint32_t a = uint32_t(gpu.caps.min_storage_offset ? gpu.caps.min_storage_offset : 16);
     return a < shaderlib::kMinAlignment ? shaderlib::kMinAlignment : a;
@@ -100,10 +143,19 @@ uint32_t create_shader(Kind kind, const uint8_t* bytecode, size_t size, Shader**
     std::vector<uint32_t> scratch;
     const uint32_t* code = shaderlib_spirv(entry, scratch);
     if (!code) { release(s); return d3d::HR_E_INVALIDARG; }
-    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = size_t(entry.spirv_words) * 4;
-    mi.pCode = code;
-    vk_check(vk.vkCreateShaderModule(gpu.device, &mi, nullptr, &s->module), "vkCreateShaderModule");
+    s->missing_features = missing_shader_features(code, entry.spirv_words);
+    if (s->missing_features) {
+        /* No module: pipelines with this shader are not created and their draws/dispatches are skipped. */
+        for (uint32_t f = 0; f < SHADER_FEATURE_COUNT; ++f)
+            if ((s->missing_features & (1u << f)) && first_time(kShaderFeatureNames[f]))
+                log("RDVK_FALLBACK %s unsupported by this driver: draws of shaders that need it are skipped (first: %s)",
+                    kShaderFeatureNames[f], s->name);
+    } else {
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = size_t(entry.spirv_words) * 4;
+        mi.pCode = code;
+        vk_check(vk.vkCreateShaderModule(gpu.device, &mi, nullptr, &s->module), "vkCreateShaderModule");
+    }
     if (!s->uniform_data.empty()) {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bi.size = (s->uniform_data.size() + 255) & ~size_t(255);

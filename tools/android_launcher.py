@@ -9,15 +9,19 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = 'com.frostpunk.staticrecomp'
+VERSION = ('0.3.1-dev', 6)
 
 
-def game_input_manifest():
+def game_input_manifest(port_ui_variants=()):
     originals = json.loads((ROOT / 'android/game-data-originals.json').read_text())
     legacy = json.loads((ROOT / 'research/game-host-data-port-settings.json').read_text())['files']
     sizes = {name: {row['bytes'], legacy[name]['bytes']} for name, row in originals.items()}
-    for kind in ('port-ui', 'switch-ui'):
-        for archive in json.loads((ROOT / ('android/game-data-' + kind + '.json')).read_text())['archives']:
-            sizes[archive['stem'] + '.dat'].add(archive['output']['.dat']['bytes'])
+    resources = [json.loads((ROOT / ('android/game-data-' + kind + '.json')).read_text())
+                 for kind in ('port-ui', 'switch-ui')]
+    for resource in [*resources, *port_ui_variants]:
+        for archive in resource['archives']:
+            for suffix in ('.dat', '.idx'):
+                sizes[archive['stem'] + suffix].add(archive['output'][suffix]['bytes'])
     # The validated texture converter retains the entry count but changes the data length.
     return ''.join(('*' if name == 'textures-s3.dat' else ','.join(map(str, sorted(values)))) + '\t' + name + '\n'
                    for name, values in sorted(sizes.items()))
@@ -34,6 +38,35 @@ def game_data_contract():
                 texture_conversion='Original DXT on supported GPUs; on-device ASTC conversion to sidecars')
 
 
+def fan_localizations(source, assets, work):
+    from package_game_data import port_ui_patch, sha
+    from port_settings_localization import FAN_LANGUAGES
+    pins = {
+        'cs': ('9e9c58be4efdb55e777d843d190a31734c56ebf207886a4375634388c1fae7e9',
+               '5e5ac52409e65e2bd9f1345c784e17ab70b75d0b3bced74d9a2548978e4f652b'),
+        'hu': ('3bc68c99bd7ab3027b0989e607e5889b95e4a4fc3cefc10f98b6052420a9e13a',
+               '58a621ad47d9797fd0516a64b32dd44b0f89c19cd7142056a9da55c7756f0cb4'),
+    }
+    fan_files = {}
+    for language in FAN_LANGUAGES:
+        folder = source / language
+        if not folder.is_dir():
+            continue
+        actual = tuple(sha(folder / f'localizations.{suffix}') for suffix in ('dat', 'idx'))
+        if actual != pins[language]:
+            raise ValueError(f'Unrecognized {language} community localization files')
+        fan_files[language] = folder
+    if not fan_files:
+        raise ValueError('No community localization files found')
+    variant, manifest = port_ui_patch(work / 'fan-ui', fan_files)
+    shutil.copytree(variant, assets / 'port-ui', dirs_exist_ok=True)
+    shutil.copyfile(variant / 'port-ui.json', assets / 'game-data-port-ui.json')
+    (assets / 'game-inputs.tsv').write_text(game_input_manifest([manifest]), encoding='utf-8', newline='\n')
+    contract = game_data_contract()
+    contract['optional_resources']['port-ui']['sha256'] = sha(assets / 'game-data-port-ui.json')
+    (assets / 'game-data-contract.json').write_text(json.dumps(contract, indent=2) + '\n', encoding='utf-8')
+
+
 def prepare(work, manifest_text):
     candidates = [Path(os.environ['PORT_LAUNCHER'])] if os.environ.get('PORT_LAUNCHER') else []
     candidates += [ROOT / 'android/launcher-base', ROOT / 'android/launcher', ROOT.parent / 'launcher']
@@ -48,8 +81,8 @@ def prepare(work, manifest_text):
     work.mkdir(parents=True, exist_ok=True)
     manifest = work / 'game-manifest.xml'
     manifest_text = manifest_text.replace('android:targetSdkVersion="36"', 'android:targetSdkVersion="37"')
-    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', 'android:versionName="0.3-dev"')
-    manifest_text = manifest_text.replace('android:versionCode="1"', 'android:versionCode="5"')
+    manifest_text = manifest_text.replace('android:versionName="0.1-static-startup"', f'android:versionName="{VERSION[0]}"')
+    manifest_text = manifest_text.replace('android:versionCode="1"', f'android:versionCode="{VERSION[1]}"')
     manifest_text = manifest_text.replace('<application ', '<application android:appCategory="game" ', 1) if 'android:appCategory=' not in manifest_text else manifest_text
     manifest_text = manifest_text.replace('<uses-sdk ', '<!-- launcher:manifest -->\n  <uses-sdk ', 1)
     manifest_text = manifest_text.replace('<activity ', '<!-- launcher:application -->\n    <activity ', 1)
@@ -65,6 +98,7 @@ def prepare(work, manifest_text):
     (Path(result['assets']) / 'game-inputs.tsv').write_text(game_input_manifest(), encoding='utf-8', newline='\n')
     (Path(result['assets']) / 'game-data-contract.json').write_text(json.dumps(game_data_contract(), indent=2) + '\n', encoding='utf-8')
     shutil.copyfile(ROOT / 'android/launcher-compatibility-localization.json', Path(result['assets']) / 'launcher/compatibility.json')
+    shutil.copyfile(ROOT / 'android/launcher-localization.json', Path(result['assets']) / 'launcher/translations.json')
     renderer_source = next(Path(p) for p in result['sources'] if Path(p).name == 'Renderers.java')
     renderer_text = renderer_source.read_text(encoding='utf-8')
     start = renderer_text.index('    static Status judge(')
@@ -76,7 +110,7 @@ def prepare(work, manifest_text):
 ''' + renderer_text[end:]
     edits = {
         '        if (converted) return new Status(mode, false, false, Texts.t(context, Texts.R_CONVERTED));\n': '',
-        'if (mode != null) result.add(': 'if (mode != null && FrostpunkDevice.applies(gpu, mode)) result.add(',
+        'if (mode != null) result.add(': 'if (mode != null && FrostpunkDevice.applies(gpu, mode, report)) result.add(',
         '        return chosen;': '        return status(statuses, chosen) != null || statuses.isEmpty() ? chosen : statuses.get(0).mode.id;',
         'Texts.fmt(context, Texts.R_ANDROID, version(mode.minSdk), Build.VERSION.SDK_INT)': 'FrostpunkDevice.text(context, "android", version(mode.minSdk), Build.VERSION.SDK_INT)',
         'Texts.fmt(context, Texts.R_LIBRARIES, String.join(", ", missing))': 'FrostpunkDevice.text(context, "libraries", String.join(", ", missing))',

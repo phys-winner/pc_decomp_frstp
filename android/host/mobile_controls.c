@@ -3,6 +3,7 @@
 #include "text_input.h"
 #include "win64.h"
 #include <pthread.h>
+#include <time.h>
 #include <stdatomic.h>
 #include <math.h>
 #include <stdio.h>
@@ -95,6 +96,10 @@ typedef struct {uint64_t node;uint32_t id;float x,y,sx,sy,w,h;unsigned dock;floa
 static mobile_layout mobile_layouts[4096];
 static unsigned mobile_layout_count;
 static void snapshot_ui(void);
+/* Touch activity (JNI queries of the touch layer), for the UI snapshot rate. */
+static _Atomic uint64_t touch_activity_ns;
+static uint64_t monotonic_ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec;}
+static void touch_activity(void){atomic_store_explicit(&touch_activity_ns,monotonic_ns(),memory_order_relaxed);}
 static void parent_transform(uint64_t node,float *x,float *y,float *sx,float *sy);
 static unsigned map_gate_next_opens(void);
 static void selection_tab_fit(CPU *cpu,uint64_t node);
@@ -189,6 +194,7 @@ void fp_mobile_debug_menu_request(void){atomic_store(&debug_requested,1);}
 __attribute__((visibility("default"))) int frostpunk_dxvk_scene_active(void){return atomic_load(&saved_controller)!=0;}
 
 __attribute__((visibility("default"))) int frostpunk_mobile_submit(unsigned action,float dx,float dy,float zoom,float angle) {
+    touch_activity();
     if(action>9 || !isfinite(dx)||!isfinite(dy)||!isfinite(zoom)||!isfinite(angle)
        ||fabsf(dx)>4||fabsf(dy)>4||fabsf(zoom)>4||fabsf(angle)>3.141593f)return 0;
     /* Triggers and the farthest city level use the original, bounded wheel command; pinches send a
@@ -225,6 +231,7 @@ __attribute__((visibility("default"))) int frostpunk_mobile_submit(unsigned acti
 }
 
 __attribute__((visibility("default"))) unsigned frostpunk_mobile_context(float x,float y) {
+    touch_activity();
     if(!isfinite(x)||!isfinite(y)||x<0||x>1||y<0||y>1)return 0;
     // IsLoadingScreenActive: world UI exists before the loading screen has finished.
     if(!applied_scale||__atomic_load_n((uint8_t*)(uintptr_t)GVA(0x142982F8D),__ATOMIC_ACQUIRE))return 2048;
@@ -260,6 +267,7 @@ static uint64_t touch_point(float x,float y){
 }
 
 __attribute__((visibility("default"))) uint64_t frostpunk_mobile_swipe_target(float x,float y,int direction) {
+    touch_activity();
     if(!isfinite(x)||!isfinite(y)||x<0||x>1||y<0||y>1||direction<-1||direction>11)return 0;
     uint64_t result=0;float nearest=INFINITY;
     pthread_mutex_lock(&input_mutex);
@@ -2117,7 +2125,24 @@ static void dump_ui(FILE *file,uint64_t node,unsigned depth,unsigned *budget) {
     for(uint64_t child=rd64(node+0x220);child&&count++<1024;child=rd64(child+0x240))dump_ui(file,child,depth+1,budget);
 }
 
+/* The snapshot walks every UI control of the game (thousands, three cache lines each) and was
+ * taken twice per frame (UI pass and camera update): 14 % of the main thread on Adreno 735 in the
+ * paused city.  It is taken once per UI pass, and every other pass while nobody touches the screen
+ * (1.5 s after the last touch query); at most 100 ms old in any case.  Touch hit tests and the
+ * overlay read the last snapshot, so idle frames see the state of one frame earlier at most. */
+static unsigned snapshot_due(void){
+    static unsigned last_pass=~0u,skipped;static uint64_t last_ns;
+    uint64_t now=monotonic_ns();
+    unsigned fresh=last_ns&&now-last_ns<100000000u;
+    if(fresh&&last_pass==ui_pass)return 0;
+    unsigned idle=now-atomic_load_explicit(&touch_activity_ns,memory_order_relaxed)>1500000000u;
+    if(fresh&&idle&&!skipped&&ui_pass==last_pass+1){skipped=1;last_pass=ui_pass;return 0;}
+    skipped=0;last_pass=ui_pass;last_ns=now;
+    return 1;
+}
+
 static void snapshot_ui(void) {
+    if(!snapshot_due())return;
     uint64_t list=rd64(GVA(0x142A89088));uint32_t count=rd32(GVA(0x142A89090));
     uint64_t screens[32];unsigned used=0,modal=0;
     uint32_t clock_ids[8];unsigned clock_count=0;

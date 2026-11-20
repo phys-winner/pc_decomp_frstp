@@ -1,4 +1,4 @@
-"""Build Frostpunk 0.3-dev from the validated private AOT/base-APK inputs."""
+"""Build a Frostpunk release from the validated private AOT/base-APK inputs."""
 import shutil
 import hashlib
 import json
@@ -8,7 +8,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = ('0.3-dev', 5)
+from android_launcher import VERSION
 OUT = ROOT / ('build/release-' + VERSION[0])
 import android_release as builder
 import build_dxvk

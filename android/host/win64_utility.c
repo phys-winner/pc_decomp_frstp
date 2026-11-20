@@ -34,6 +34,35 @@ static uint32_t windows_atoi(uint64_t address){
     if(overflow){win64_stdio_set_errno(34);value=limit;}
     return negative?UINT32_C(0)-value:value;
 }
+/* UCRT _atoi64: decimal with ASCII whitespace, saturating at INT64 bounds with ERANGE. */
+static uint64_t windows_atoi64(uint64_t address){
+    if(!address){win64_stdio_set_errno(22);utility_stop("_atoi64 invalid-parameter callback required for NULL");}
+    unsigned c=decimal_byte(address);
+    while(c==' '||(c>=9&&c<=13))c=decimal_next(&address);
+    int negative=c=='-';if(c=='-'||c=='+')c=decimal_next(&address);
+    uint64_t value=0,limit=negative?UINT64_C(9223372036854775808):UINT64_C(9223372036854775807);int overflow=0;
+    while(c>='0'&&c<='9'){unsigned digit=c-'0';
+        if(value>limit/10||(value==limit/10&&digit>limit%10))overflow=1;
+        else if(!overflow)value=value*10+digit;
+        c=decimal_next(&address);
+    }
+    if(overflow){win64_stdio_set_errno(34);value=limit;}
+    return negative?UINT64_C(0)-value:value;
+}
+/* UCRT _itoa_s(int value, char *buffer, size_t size, int radix): a minus sign only for radix 10,
+ * other radixes print the 32-bit two's complement. Invalid arguments and a short buffer invoke the
+ * invalid-parameter handler in UCRT, which this runtime models as STOP. */
+static uint32_t windows_itoa_s(CPU *cpu){
+    int32_t value=(int32_t)cpu->rcx;uint64_t buffer=cpu->rdx,size=cpu->r8;int radix=(int32_t)cpu->r9;
+    if(!buffer||!size||radix<2||radix>36){win64_stdio_set_errno(22);utility_stop("_itoa_s invalid-parameter callback required");}
+    char digits[40];size_t n=0;int negative=radix==10&&value<0;
+    uint32_t magnitude=negative?UINT32_C(0)-(uint32_t)value:(uint32_t)value;
+    do{unsigned d=magnitude%(unsigned)radix;digits[n++]=(char)(d<10?'0'+d:'a'+d-10);magnitude/=(unsigned)radix;}while(magnitude);
+    if(negative)digits[n++]='-';
+    if(n+1>size){win64_stdio_set_errno(34);utility_stop("_itoa_s buffer too small: invalid-parameter callback required");}
+    char *out=win64_pointer(buffer,n+1,1);for(size_t i=0;i<n;++i)out[i]=digits[n-1-i];out[n]=0;
+    return 0;
+}
 static void numeric_end(uint64_t output,uint64_t address){if(output)memcpy(win64_pointer(output,8,1),&address,8);}
 static unsigned numeric_digit(unsigned c){
     if(c>='0'&&c<='9')return c-'0';
@@ -45,15 +74,26 @@ static unsigned numeric_digit(unsigned c){
  * integer parser uses the supported C/UTF8 locale's ASCII whitespace/digits;
  * native UCRT accepts0x without digits as no conversion (endptr=input).
  * Invalid input/base retains the existing explicit callback STOP policy. */
-static uint32_t windows_integer(uint64_t input,uint64_t output,int base,int is_signed){
+/* One code unit of a narrow (width 1) or UTF-16 (width 2) guest string. */
+static unsigned numeric_unit(uint64_t address,unsigned width){
+    if(width==1)return decimal_byte(address);
+    uint16_t unit;memcpy(&unit,win64_pointer(address,2,0),2);return unit;
+}
+static unsigned numeric_next(uint64_t *address,unsigned width){
+    if(*address>UINT64_MAX-width)utility_stop("integer parse address overflow");
+    *address+=width;return numeric_unit(*address,width);
+}
+/* wcstol (width 2) shares the parser; like the narrow forms it accepts ASCII whitespace and digits
+ * only (Frostpunk reads the numeric "-N" suffix of its save names with it). */
+static uint32_t windows_integer(uint64_t input,uint64_t output,int base,int is_signed,unsigned width){
     numeric_end(output,input);
     if(!input||base<0||base==1||base>36){win64_stdio_set_errno(22);utility_stop(is_signed?"strtol invalid-parameter callback required":"strtoul invalid-parameter callback required");}
-    uint64_t address=input;unsigned c=decimal_byte(address);
-    while(c==' '||(c>=9&&c<=13))c=decimal_next(&address);
-    int negative=c=='-';if(c=='-'||c=='+')c=decimal_next(&address);
+    uint64_t address=input;unsigned c=numeric_unit(address,width);
+    while(c==' '||(c>=9&&c<=13))c=numeric_next(&address,width);
+    int negative=c=='-';if(c=='-'||c=='+')c=numeric_next(&address,width);
     if((base==0||base==16)&&c=='0'){
-        uint64_t next=address;unsigned look=decimal_next(&next);
-        if(look=='x'||look=='X'){base=16;address=next;c=decimal_next(&address);}
+        uint64_t next=address;unsigned look=numeric_next(&next,width);
+        if(look=='x'||look=='X'){base=16;address=next;c=numeric_next(&address,width);}
         else if(!base)base=8;
     }
     if(!base)base=10;
@@ -63,7 +103,7 @@ static uint32_t windows_integer(uint64_t input,uint64_t output,int base,int is_s
         any=1;
         if(value>limit/(unsigned)base||(value==limit/(unsigned)base&&digit>limit%(unsigned)base))overflow=1;
         else if(!overflow)value=value*(unsigned)base+digit;
-        c=decimal_next(&address);
+        c=numeric_next(&address,width);
     }
     if(any)numeric_end(output,address);
     if(overflow){win64_stdio_set_errno(34);return limit;}
@@ -249,13 +289,15 @@ static void windows_qsort(CPU *cpu){
 int win64_utility_call(CPU *cpu,const char *name) {
     if(!strcmp(name,"qsort")){windows_qsort(cpu);return 1;}
     if(!strcmp(name,"bsearch")){cpu->rax=windows_bsearch(cpu);return 1;}
-    if(!strcmp(name,"strtod")||!strcmp(name,"strtoul")||!strcmp(name,"strtol")){
+    if(!strcmp(name,"strtod")||!strcmp(name,"strtoul")||!strcmp(name,"strtol")||!strcmp(name,"wcstol")){
         int saved_errno=errno;
         if(!strcmp(name,"strtod"))cpu->xmm[0].u64[0]=windows_strtod(cpu->rcx,cpu->rdx,(cpu->mxcsr>>13)&3u);
-        else cpu->rax=windows_integer(cpu->rcx,cpu->rdx,(int32_t)cpu->r8,!strcmp(name,"strtol"));
+        else cpu->rax=windows_integer(cpu->rcx,cpu->rdx,(int32_t)cpu->r8,strcmp(name,"strtoul")!=0,name[0]=='w'?2u:1u);
         errno=saved_errno;return 1;
     }
     if(!strcmp(name,"atoi")){cpu->rax=windows_atoi(cpu->rcx);return 1;}
+    if(!strcmp(name,"_atoi64")){cpu->rax=windows_atoi64(cpu->rcx);return 1;}
+    if(!strcmp(name,"_itoa_s")){cpu->rax=windows_itoa_s(cpu);return 1;}
     if(!strcmp(name,"srand")){random_state=(uint32_t)win64_argument(cpu,0);cpu->rax=0;return 1;}
     if(!strcmp(name,"rand")){
         random_state=random_state*UINT32_C(214013)+UINT32_C(2531011);

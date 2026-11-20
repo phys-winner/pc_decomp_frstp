@@ -108,7 +108,7 @@
         for (Renderers.Status status : statuses) {
             if (status.available && status.verified) return null;
             if (why.length() != 0) why.append("\n\n");
-            why.append(status.mode.title).append(": ").append(status.reason);
+            why.append(Texts.translated(this, status.mode.title)).append(": ").append(status.reason);
         }
         return why.length() == 0 ? FrostpunkDevice.text(this, "no_renderer") : why.toString();
     }
@@ -166,9 +166,12 @@
                     if (!FrostpunkTextures.coversQuality(root, reduced)) {
                         boolean nativeDxt = FrostpunkDevice.dxt(report, renderer);
                         ui.show(ui.dialog().setTitle(FrostpunkDevice.tr(this, "Texture quality is not ready", "Текстур нужного качества нет"))
-                            .setMessage(FrostpunkDevice.tr(this,
-                                "The existing conversion has Switch mips; PC quality requires the full chain. Restore the originals" + (nativeDxt ? " and start the game?" : " and convert at PC quality? The source ZIP is kept."),
-                                "Готовый набор содержит mip-уровни Switch; для качества ПК нужна полная цепочка. Вернуть оригиналы" + (nativeDxt ? " и запустить игру?" : " и сконвертировать качество ПК? Исходный ZIP сохранится.")))
+                            .setMessage(nativeDxt ? FrostpunkDevice.tr(this,
+                                "The existing conversion only has Switch mips. Restore the originals and start the game?",
+                                "Готовый набор содержит только mip-уровни Switch. Вернуть оригиналы и запустить игру?")
+                                : FrostpunkDevice.tr(this,
+                                "The existing conversion only has Switch mips. Restore the originals and convert at PC quality? The source ZIP is kept.",
+                                "Готовый набор содержит только mip-уровни Switch. Вернуть оригиналы и сконвертировать в качестве ПК? Исходный ZIP сохранится."))
                             .setPositiveButton(FrostpunkDevice.tr(this, "Prepare and play", "Подготовить и играть"), (dialog, which) -> {
                                 textures = backend; fpTexturePlay = distribution; fpTextureRebuild = !nativeDxt;
                                 startTextures(nativeDxt ? 0 : TextureBackend.ASTC);

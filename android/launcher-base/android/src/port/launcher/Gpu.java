@@ -24,6 +24,7 @@ final class Gpu {
     int adreno;              /* the Adreno model number; 0 on other GPUs */
 
     private static Gpu cached;
+    private static final Pattern MALI_NAME = Pattern.compile("\\b(?:Mali|Immortalis)\\b", Pattern.CASE_INSENSITIVE);
 
     private Gpu() { }
 
@@ -54,9 +55,9 @@ final class Gpu {
 
     static long pageSize() { return android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE); }
 
-    static boolean panvkCandidate(String device) {
-        return device != null && (device.contains("Mali-G615") || device.contains("Mali-G715")) && pageSize() == 4096;
-    }
+    static boolean maliRenderer(String device) { return device != null && MALI_NAME.matcher(device).find(); }
+
+    boolean mali() { return maliRenderer(renderer) || "ARM".equalsIgnoreCase(vendor); }
 
     static String version(int v) { return v == 0 ? "—" : (v >>> 22) + "." + ((v >>> 12) & 0x3FF); }
 

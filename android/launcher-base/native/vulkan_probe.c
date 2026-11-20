@@ -271,11 +271,12 @@ static jstring JNICALL port_native_probe(JNIEnv *env, jclass cls, jstring direct
         const char *prefix = panvk ? "panvk" : "turnip";
         char path[1024];
         snprintf(path, sizeof path, "%s/%s", dir ? dir : "", name);
-        PFN_vkGetInstanceProcAddr gipa = port_open_custom(dir, name, error, sizeof error);
+        const char *page_error = panvk ? port_panvk_page_size_error(name[0] != '/') : NULL;
+        PFN_vkGetInstanceProcAddr gipa = page_error ? NULL : port_open_custom(dir, name, error, sizeof error);
         if (gipa) port_probe(gipa, prefix, !panvk, panvk ? (name[0] == '/' ? name : path) : NULL, &report);
         else {
             port_line(&report, prefix, "status", "error");
-            port_line(&report, prefix, "error", error);
+            port_line(&report, prefix, "error", page_error ? page_error : error);
         }
     }
     if (dir) (*env)->ReleaseStringUTFChars(env, directory, dir);

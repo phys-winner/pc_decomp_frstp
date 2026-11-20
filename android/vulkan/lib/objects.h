@@ -177,6 +177,7 @@ struct Shader : Object {
     VkBuffer uniform = VK_NULL_HANDLE;
     Allocation uniform_memory;
     uint64_t hash = 0;
+    uint32_t missing_features = 0;        /* SHADER_FEATURE_* the SPIR-V needs and the device lacks: no module */
     char name[48] = {};
 };
 

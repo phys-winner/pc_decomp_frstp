@@ -74,7 +74,7 @@ public final class MainActivity extends NativeActivity {
                 java.io.StringWriter text = new java.io.StringWriter();
                 error.printStackTrace(new java.io.PrintWriter(text));
                 java.io.File file = new java.io.File(getFilesDir(), "frostpunk-crash.txt");
-                try (java.io.FileOutputStream out = new java.io.FileOutputStream(file, true)) {
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(file)) {
                     out.write(("Java " + thread.getName() + "\n" + text).getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 }
             } catch (Throwable ignored) { }

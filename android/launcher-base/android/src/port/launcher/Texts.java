@@ -5,11 +5,11 @@ import java.util.Iterator;
 import java.util.Locale;
 import org.json.JSONObject;
 
-/** The launcher's words in English, Russian, German and Polish. The language follows the system
+/** The launcher's words. The language follows the system
  *  (Ukrainian and Belarusian read Russian) unless the player picks one; the port's own texts in
  *  port.json fall back to English, then to their first language. */
 final class Texts {
-    static final String[] LANGUAGES = {"en", "ru", "de", "pl"};
+    static final String[] LANGUAGES = {"en", "ru", "de", "pl", "fr", "es", "it", "pt-BR", "tr", "ja", "ko", "zh-CN", "fa", "cs", "hu"};
 
     static final int PLAY = 0, RETURN = 1, READY = 2, MISSING = 3, NOT_FOUND_YET = 4, GAME_FILES = 5, FOLDER = 6,
         ARCHIVE = 7, IMPORT_FOLDER = 8, IMPORT_ARCHIVE = 9, FIXED_HINT = 10, SEARCHING = 11, READING = 12,
@@ -385,6 +385,7 @@ final class Texts {
     };
 
     private static int column = -1;
+    private static JSONObject translations;
 
     private Texts() { }
 
@@ -401,6 +402,8 @@ final class Texts {
 
     static String system() {
         String language = Locale.getDefault().getLanguage();
+        if ("pt".equals(language)) return "pt-BR";
+        if ("zh".equals(language)) return "zh-CN";
         return "uk".equals(language) || "be".equals(language) ? "ru" : language;
     }
 
@@ -411,7 +414,22 @@ final class Texts {
 
     static String language(Context context) { return LANGUAGES[column(context)]; }
 
-    static String t(Context context, int id) { return TEXTS[id][column(context)]; }
+    static String t(Context context, int id) {
+        String[] row = TEXTS[id];
+        int selected = column(context);
+        return selected < row.length ? row[selected] : translated(context, row[0]);
+    }
+
+    static synchronized String translated(Context context, String english) {
+        String language = language(context);
+        if (context == null || "en".equals(language) || english.isEmpty()) return english;
+        if (translations == null) {
+            try { translations = new JSONObject(Spec.asset(context, "launcher/translations.json")); }
+            catch (java.io.IOException | org.json.JSONException unavailable) { translations = new JSONObject(); }
+        }
+        JSONObject row = translations.optJSONObject(language);
+        return row == null ? english : row.optString(english, english);
+    }
 
     static String fmt(Context context, int id, Object... args) {
         return String.format(Locale.getDefault(), t(context, id), args);
@@ -423,7 +441,7 @@ final class Texts {
         if (!(value instanceof JSONObject)) return String.valueOf(value);
         JSONObject map = (JSONObject) value;
         String text = map.optString(language(context), "");
-        if (text.isEmpty()) text = map.optString("en", "");
+        if (text.isEmpty()) text = translated(context, map.optString("en", ""));
         if (text.isEmpty()) {
             Iterator<String> keys = map.keys();
             if (keys.hasNext()) text = map.optString(keys.next(), "");

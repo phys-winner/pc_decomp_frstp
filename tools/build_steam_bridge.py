@@ -33,7 +33,8 @@ ALLOWED={
     "ISteamUserStats":set("RequestCurrentStats GetStat SetStat UpdateAvgRateStat GetAchievement SetAchievement ClearAchievement GetAchievementAndUnlockTime StoreStats GetAchievementIcon GetAchievementDisplayAttribute IndicateAchievementProgress GetNumAchievements GetAchievementName RequestUserStats GetUserStat GetUserAchievement GetUserAchievementAndUnlockTime ResetAllStats FindOrCreateLeaderboard FindLeaderboard GetLeaderboardName GetLeaderboardEntryCount GetLeaderboardSortMethod GetLeaderboardDisplayType DownloadLeaderboardEntries DownloadLeaderboardEntriesForUsers GetDownloadedLeaderboardEntry UploadLeaderboardScore AttachLeaderboardUGC GetNumberOfCurrentPlayers".split()),
     "ISteamUtils":set("GetSecondsSinceAppActive GetSecondsSinceComputerActive GetConnectedUniverse GetServerRealTime GetIPCountry GetImageSize GetImageRGBA GetCurrentBatteryPower GetAppID IsAPICallCompleted GetAPICallFailureReason GetAPICallResult GetIPCCallCount SetWarningMessageHook IsOverlayEnabled BOverlayNeedsPresent GetSteamUILanguage IsSteamRunningInVR IsSteamInBigPictureMode IsVRHeadsetStreamingEnabled".split()),
     # The optional monument button saves the profile before requesting the disabled offline overlay.
-    "ISteamFriends":set("GetPersonaName GetPersonaState GetFriendCount GetFriendByIndex GetFriendRelationship GetFriendPersonaState GetFriendPersonaName GetFriendGamePlayed GetFriendPersonaNameHistory GetFriendSteamLevel GetPlayerNickname GetFriendsGroupCount GetFriendsGroupIDByIndex GetFriendsGroupName GetFriendsGroupMembersCount GetFriendsGroupMembersList HasFriend GetClanCount GetClanByIndex GetClanName GetClanTag GetClanActivityCounts GetFriendCountFromSource GetFriendFromSourceByIndex IsUserInSource ActivateGameOverlayToWebPage GetSmallFriendAvatar GetMediumFriendAvatar GetLargeFriendAvatar RequestUserInformation SetRichPresence ClearRichPresence GetFriendRichPresence GetFriendRichPresenceKeyCount GetFriendRichPresenceKeyByIndex".split()),
+    # Menu links with a numeric target (0x141C2AFB0: atoi(link) != 0) open the store overlay of that app.
+    "ISteamFriends":set("GetPersonaName GetPersonaState GetFriendCount GetFriendByIndex GetFriendRelationship GetFriendPersonaState GetFriendPersonaName GetFriendGamePlayed GetFriendPersonaNameHistory GetFriendSteamLevel GetPlayerNickname GetFriendsGroupCount GetFriendsGroupIDByIndex GetFriendsGroupName GetFriendsGroupMembersCount GetFriendsGroupMembersList HasFriend GetClanCount GetClanByIndex GetClanName GetClanTag GetClanActivityCounts GetFriendCountFromSource GetFriendFromSourceByIndex IsUserInSource ActivateGameOverlayToWebPage ActivateGameOverlayToStore GetSmallFriendAvatar GetMediumFriendAvatar GetLargeFriendAvatar RequestUserInformation SetRichPresence ClearRichPresence GetFriendRichPresence GetFriendRichPresenceKeyCount GetFriendRichPresenceKeyByIndex".split()),
 }
 COUNTS={
     "GetUserDataFolder":{1:"count_s(c,2)"}, "BGetDLCDataByIndex":{4:"count_s(c,5)"},
@@ -46,6 +47,14 @@ COUNTS={
     "GetDownloadedLeaderboardEntry":{4:"count_s(c,5)"},"UploadLeaderboardScore":{4:"count_s(c,5)"},
     "GetFriendsGroupMembersList":{2:"count_s(c,3)"},
 }
+# Methods whose name parameter becomes a file of the backend profile (Goldberg Local_Storage):
+# every file name of ISteamRemoteStorage; stats (stats/), leaderboards (leaderboard/). Achievement
+# methods use the name only as a key of the in-memory definitions and achievements.json, so their
+# names are never path-checked: Frostpunk passes display names like "Endless: Backup Plan".
+STORAGE_NAMES={"ISteamRemoteStorage":None,
+               "ISteamUserStats":{"GetStat","SetStat","UpdateAvgRateStat","GetUserStat","FindOrCreateLeaderboard","FindLeaderboard"}}
+# Return value of a call whose storage name the backend preflight refused (default 0/false).
+REFUSED={"FileWriteStreamOpen":"k_UGCFileStreamHandleInvalid"}
 
 
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -99,10 +108,9 @@ def metadata():
                 casts=f"static_cast<{m['returns']}({interface}::*)({','.join(m['types'])})>(&{interface}::{name})"
                 sizes=COUNTS.get(name,{})
                 statement=""
-                # GetAchievement reads an in-memory ID map, never a storage path.
-                if interface in ["ISteamRemoteStorage","ISteamUserStats"] and not (interface=="ISteamUserStats" and name=="GetAchievement"):
+                if interface in STORAGE_NAMES and (STORAGE_NAMES[interface] is None or name in STORAGE_NAMES[interface]):
                     for n,t in enumerate(m["types"],1):
-                        if t.replace(" ","")=="constchar*":statement+=f"relative_name(arg(c,{n}),{int(interface=='ISteamUserStats')});"
+                        if t.replace(" ","")=="constchar*":statement+=f"if(!storage_name(arg(c,{n}),{int(interface=='ISteamUserStats')})){{c->rax={REFUSED.get(name,'0')};return 1;}}"
                 counts=",counts({"+",".join("{"+str(k)+","+v+"}"for k,v in sizes.items())+"})"if sizes else""
                 statement+=f"invoke(c,{casts}{counts});"
             dispatch.append(f"case {slot}: {statement}return 1;");bound.append(slot)

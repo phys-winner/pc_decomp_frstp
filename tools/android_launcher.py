@@ -9,7 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = 'com.frostpunk.staticrecomp'
-VERSION = ('0.3.2-dev', 7)
+VERSION = ('0.3.2.1-dev', 8)
 LANGUAGES = ('en', 'ru', 'de', 'pl', 'fr', 'es', 'it', 'pt-BR', 'tr', 'ja', 'ko', 'zh-CN', 'fa', 'cs', 'hu')
 
 
@@ -337,10 +337,6 @@ def activity_extensions(result):
             '        refresh(Texts.PERM_FILES, Texts.PLAY, Texts.GAME_FILES, Texts.RENDERER, Texts.TEXTURES, Texts.SPACE);\n'
             '        fpFinished(job);\n'
             '        if (job instanceof Install.UnpackJob && job.failure == null) refresh(Texts.OPTIONS);',
-        # A mounted ZIP: the launcher's index is the receipt the game's one-time CRC pass looks for.
-        '            values.setProperty(Install.key(part.distribution, part.part) + ".mount", source);\n        })));':
-            '            values.setProperty(Install.key(part.distribution, part.part) + ".mount", source);\n'
-            '            fpZipReceipt(index, zip, source);\n        })));',
         # Fifteen languages: rows of the base's four fall back to translations.json.
         'names[field.ordinal()] = field.title[Texts.column(this)];': 'names[field.ordinal()] = Texts.pick(this, field.title);',
         'HyperOs.advice(vendor, column)': 'Texts.translated(this, HyperOs.advice(vendor, column))',

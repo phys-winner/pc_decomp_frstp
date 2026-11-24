@@ -342,25 +342,3 @@
             note(Texts.GAME_FILES, String.valueOf(failure.getMessage()), true);
         });
     }
-
-    /** The game checks the CRC-32 of a mounted ZIP once per index, size and mtime (FrostpunkFiles.verifyOnce).
-     *  The launcher has just read the archive's directory and, for a named checksum, its MD5: it leaves the
-     *  receipt so that the first start does not read the archive again. Runs on the mount worker. */
-    private void fpZipReceipt(File index, Zip zip, String source) {
-        try {
-            long mtime;
-            if (source.startsWith("content:")) {
-                try (ParcelFileDescriptor fd = getContentResolver().openFileDescriptor(Uri.parse(source), "r")) {
-                    if (fd == null) return;
-                    mtime = android.system.Os.fstat(fd.getFileDescriptor()).st_mtime;
-                }
-            } else {
-                mtime = android.system.Os.stat(source).st_mtime;
-            }
-            byte[] raw = java.nio.file.Files.readAllBytes(index.toPath());
-            String identity = ZipIntegrity.hex(java.security.MessageDigest.getInstance("SHA-256").digest(raw));
-            ZipIntegrity.write(index, ZipIntegrity.stamp(identity, zip.length(), mtime));
-        } catch (IOException | android.system.ErrnoException | java.security.NoSuchAlgorithmException | RuntimeException failure) {
-            android.util.Log.w("FrostpunkLauncher", "ZIP receipt", failure);
-        }
-    }

@@ -81,7 +81,7 @@ public final class FrostpunkFiles {
         selected = identity;
     }
 
-    /** CRC-32 of every stored ZIP entry, once per index hash, archive size and mtime.
+    /** CRC-32 of every stored ZIP entry, once per index and archive file snapshot.
      *  An unpacked folder, or a mount of another folder, returns without reading. */
     static void verifyOnce(File game) throws IOException { verifyOnce(game, null); }
     static void verifyOnce(File game, Watch watch) throws IOException {
@@ -120,7 +120,7 @@ public final class FrostpunkFiles {
     private static String stampOf(Mount mount) throws IOException {
         try {
             android.system.StructStat stat = Os.fstat(mount.input.getFD());
-            return ZipIntegrity.stamp(mount.identity, stat.st_size, stat.st_mtime);
+            return ZipIntegrity.stamp(mount.identity, stat);
         } catch (android.system.ErrnoException failure) { throw new IOException(failure); }
     }
     public static void attach(Context context) throws IOException {

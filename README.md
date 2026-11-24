@@ -1,4 +1,4 @@
-# Frostpunk for Android — 0.3.2-dev
+# Frostpunk for Android — 0.3.2.1-dev
 
 Experimental native ARM64 Android port of Frostpunk using static recompilation,
 with Vulkan rendering, touch controls, and on-device texture conversion.
@@ -42,8 +42,8 @@ manifests in `android/` contain names, sizes, and hashes, not game payloads.
 
 ## Install and play
 
-1. Install `Frostpunk-0.3.2-dev-<commit>.apk` (eight commit hash characters). The package is
-   `com.frostpunk.staticrecomp`, with version name `0.3.2-dev` and version code `7`.
+1. Install `Frostpunk-0.3.2.1-dev-<commit>.apk` (eight commit hash characters). The package is
+   `com.frostpunk.staticrecomp`, with version name `0.3.2.1-dev` and version code `8`.
 2. Open the launcher and grant storage access as needed. The Play card shows
    unsupported GPU features and insufficient Vulkan versions. The launcher stays
    usable when the device cannot run the game.
@@ -148,7 +148,7 @@ interface patches in the game ZIP. The built-in driver is purple-turnip T30
 
 Turnip disables hardware tessellation to avoid GPU hangs observed in development.
 Upscaling, frame generation, and reduced graphics are experimental and depend on
-the GPU and driver. `0.3.2-dev` remains an early development build.
+the GPU and driver. `0.3.2.1-dev` remains an early development build.
 
 ## Sources and building
 
@@ -211,9 +211,9 @@ APK tooling and the existing signing key are read from the local
 `~/.agents/skills/adapt-arm32-game/machine_config.json` used by `tools/fastbuild.py`.
 Provide your own private machine configuration and signer; no key or keystore is
 distributed here. The recipe checks the base pin, source stability, APK signature,
-and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3.2-dev-<commit>.apk`, where
+and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3.2.1-dev-<commit>.apk`, where
 `<commit>` matches the eight-character commit embedded in the APK, with a SHA-256
-sidecar. Local aliases `pub/Frostpunk-0.3.2-dev.apk` and `pub/Frostpunk.apk` are also
+sidecar. Local aliases `pub/Frostpunk-0.3.2.1-dev.apk` and `pub/Frostpunk.apk` are also
 updated. The whole `pub/` directory is Git-ignored.
 
 A portable localization check needs no device or game files:

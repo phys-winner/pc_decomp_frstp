@@ -1,20 +1,22 @@
 package port.launcher;
 
+import android.system.StructStat;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.Locale;
 
-/** One successful CRC-32 pass of a stored ZIP, remembered beside its ZMI1 index.
- *  A later open of the same index, archive size and mtime skips the read. */
+/** One successful CRC-32 pass of a stored ZIP, remembered beside its ZMI1 index. */
 final class ZipIntegrity {
     private ZipIntegrity() { }
 
     static File receipt(File index) { return new File(index.getPath() + ".ok"); }
 
-    static String stamp(String indexSha256, long size, long mtime) {
-        return "1 " + indexSha256 + " " + size + " " + mtime;
+    static String stamp(String indexSha256, StructStat archive) {
+        // Version 1 receipts could be written before the launcher checked the ZIP contents.
+        return "2 " + indexSha256 + " " + archive.st_dev + " " + archive.st_ino
+            + " " + archive.st_size + " " + archive.st_mtime + " " + archive.st_ctime;
     }
 
     static String hex(byte[] bytes) {

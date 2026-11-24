@@ -48,7 +48,13 @@ final class FrostpunkDevice {
             if (translations == null) translations = new JSONObject(Spec.asset(context, "launcher/compatibility.json"));
             JSONObject words = translations.optJSONObject(language(context));
             if (words == null) words = translations.getJSONObject("en");
-            return String.format(Locale.getDefault(), words.getString(key), args);
+            // A text missing from the file must not close the launcher: these rows are drawn on every refresh.
+            String pattern = words.optString(key, translations.getJSONObject("en").optString(key, ""));
+            if (pattern.isEmpty()) {
+                android.util.Log.e("FrostpunkLauncher", "compatibility text missing: " + key);
+                return key;
+            }
+            return String.format(Locale.getDefault(), pattern, args);
         } catch (java.io.IOException | org.json.JSONException failure) {
             throw new IllegalStateException("Missing compatibility translations", failure);
         }

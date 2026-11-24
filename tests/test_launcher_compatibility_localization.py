@@ -21,6 +21,19 @@ class CompatibilityLocalizationTest(unittest.TestCase):
                 if language != 'en':
                     self.assertNotEqual(value, words['en'][key], (language, key))
 
+    def test_every_text_the_launcher_asks_for_exists(self):
+        # 0.3.2-dev shipped profileProblem() keys without their texts: the launcher closed on every start.
+        words = json.loads((ROOT / 'android/launcher-compatibility-localization.json').read_text(encoding='utf-8'))
+        asked = set()
+        for path in sorted((ROOT / 'android/launcher').glob('*.java*')):
+            source = path.read_text(encoding='utf-8')
+            asked.update(re.findall(r'\btext\(\s*\w+\s*,\s*"(\w+)"', source))
+            problem = re.search(r'static String profileProblem\(.*?\n    }\n', source, re.S)
+            if problem:
+                asked.update(re.findall(r'return "(\w+)";', problem.group(0)))
+        self.assertTrue({'driver_qualcomm', 'no_texture_format', 'features'} <= asked, asked)
+        self.assertEqual(asked - set(words['en']), set())
+
     def test_launcher_settings_and_format_arguments(self):
         spec = json.loads((ROOT / 'android/port.json').read_text(encoding='utf-8'))
         words = json.loads((ROOT / 'android/launcher-localization.json').read_text(encoding='utf-8'))

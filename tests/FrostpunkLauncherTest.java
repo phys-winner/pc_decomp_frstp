@@ -3,6 +3,7 @@ package com.frostpunk.staticrecomp.launcher;
 import java.io.*;
 import java.nio.*;
 import java.nio.file.*;
+import java.security.MessageDigest;
 import java.util.*;
 import java.util.zip.Deflater;
 
@@ -75,14 +76,17 @@ public final class FrostpunkLauncherTest {
             need(value >= 0, "payload byte");
             flipped.seek(dataAt);
             flipped.write(value ^ 1);
-            need(receipt.delete(), "drop ZIP integrity receipt");
+            android.system.StructStat stat = android.system.Os.stat(zip.getPath());
+            String indexSha = ZipIntegrity.hex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(index.toPath())));
+            String legacy = "1 " + indexSha + " " + stat.st_size + " " + stat.st_mtime;
+            Files.write(receipt.toPath(), legacy.getBytes("US-ASCII"));
             boolean rejected = false;
             try { FrostpunkFiles.verifyOnce(sidecar); }
             catch (IOException failure) {
                 rejected = failure.getMessage() != null && failure.getMessage().contains("CRC") && failure.getMessage().contains(PAIR[0]);
                 if (!rejected) throw failure;
             }
-            need(rejected, "damaged ZIP rejected");
+            need(rejected, "damaged ZIP rejected despite the legacy integrity receipt");
             TextureBackend.Scan broken = new FrostpunkTextures().scan(sidecar);
             need(broken.failure != null && broken.failure.contains("CRC"), "texture check names the damaged ZIP: " + broken.failure);
             flipped.seek(dataAt);

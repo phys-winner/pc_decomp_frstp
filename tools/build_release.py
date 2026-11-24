@@ -8,10 +8,12 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-from android_launcher import VERSION
+from android_launcher import VERSION, fan_localizations
 OUT = ROOT / ('build/release-' + VERSION[0])
 import android_release as builder
+import atomic_sites
 import build_dxvk
+import build_localized_apk
 import build_rdvk
 import build_shaderlib
 import build_vulkan_dev as vulkan_dev
@@ -20,7 +22,9 @@ builder.BASE_APK = ROOT / 'build/ui-20261114/v25/Frostpunk-ui-v25.apk'
 assert builder.sha(builder.BASE_APK) == 'a7a62b8f72aa6b2fbd685a0c6c8a8807a9f191a5e56a9da11374b6d0e884b9e6'
 OUT.mkdir(parents=True, exist_ok=True)
 extra_host = ['android/host/zip_files.c', 'reference/launcher-zipmount/zipmount.c']
-source_names = sorted(set(json.loads(builder.CANONICAL.read_text())['sources'] + builder.EXTRA_HOST + extra_host))
+release_host = ['android/host/' + name + '.c' for name in
+                ('fan_languages', 'guid_search_native', 'entity_walk_native', 'visibility_native')]
+source_names = sorted(set(json.loads(builder.CANONICAL.read_text())['sources'] + builder.EXTRA_HOST + extra_host + release_host))
 source_pins = {name: builder.sha(ROOT / builder.SOURCE_OVERRIDE.get(name, name)) for name in source_names}
 source_pins.update({str(p.relative_to(ROOT)): builder.sha(p) for p in sorted((ROOT / 'android/host').glob('*.h'))})
 source_pins['android/host/switch_texture_caps.inc'] = builder.sha(ROOT / 'android/host/switch_texture_caps.inc')
@@ -38,9 +42,60 @@ for name in ('d3d11', 'dxgi'):
     library = 'libdxvk_' + name + '.so'
     shutil.copyfile(build_dxvk.OUT / 'src' / name / library, dxvk / library)
 builder.build_dex()
+fan_localizations(ROOT / 'build/fan-localizations', OUT / 'launcher-assets', OUT)
 builder.build_app()
 archive = vulkan_dev.build_bridge(OUT)
-runtime = vulkan_dev.link_runtime(OUT, archive)
+
+runtime_units = build_localized_apk.language_units(OUT)
+visibility_build = OUT / 'visibility'
+subprocess.run([sys.executable, '-X', 'utf8', '-B', str(ROOT / 'tools/fastlift.py'), 'build',
+                '--units', '822', '--out', str(visibility_build)], check=True)
+native_hooks = {
+    810: ('L_000140E92AF0', 'L_000140E92B80'),
+    812: ('L_000140EB45F0',),
+    822: ('L_000140F8F530',),
+}
+for unit, names in native_hooks.items():
+    source = (visibility_build if unit == 822 else builder.fb.FASTLIFT) / 'obj' / f'recomp_funcs_{unit:04}.o'
+    symbols = build_rdvk.symbols_of(source)
+    args = []
+    for name in names:
+        offset, section, binding, visibility = symbols[name]
+        assert binding == 'GLOBAL', (source, name)
+        alias = 'fp_cpu_original_' + name
+        scope = 'hidden' if visibility == 'HIDDEN' else 'default'
+        args += ['--weaken-symbol=' + name, f'--add-symbol={alias}={section}:0x{offset:x},global,function,{scope}']
+    target = OUT / f'recomp_funcs_{unit:04}-native.o'
+    subprocess.run([str(builder.fb.BIN / 'llvm-objcopy.exe'), *args, str(source), str(target)], check=True)
+    checked = build_rdvk.symbols_of(target)
+    for name in names:
+        assert checked[name][2] == 'WEAK' and checked['fp_cpu_original_' + name][:2] == checked[name][:2]
+    runtime_units[unit] = str(target)
+
+atomic_manifest = atomic_sites.overlay(OUT / 'atomic')
+atomic_objects = {}
+for row in atomic_manifest['units']:
+    original, source = row['source'], row['overlay']
+    path = Path(original)
+    if 'recomp' not in path.parts:
+        if original not in source_names:
+            continue
+        builder.SOURCE_OVERRIDE[original] = source
+    else:
+        key = path.parent.parent / 'objects' / path.with_suffix('.o').name
+        atomic_objects[key.as_posix()] = str(builder.compile_sources([source])[0])
+    source_pins[original] = row['source_sha256']
+    source_pins[source] = row['overlay_sha256']
+base_unit_objects = builder.unit_objects
+
+
+def release_unit_objects(rows):
+    assert atomic_objects.keys() <= {row.replace('\\', '/') for row in rows}
+    return [atomic_objects.get(Path(path).relative_to(ROOT).as_posix(), path) for path in base_unit_objects(rows)]
+
+
+builder.unit_objects = release_unit_objects
+runtime = vulkan_dev.link_runtime(OUT, archive, unit_overrides=runtime_units, host_sources=release_host)
 rdvk = build_rdvk.build_lib()
 source_manifest_sha256 = hashlib.sha256(json.dumps(source_pins, sort_keys=True).encode()).hexdigest()
 apk = builder.package(runtime, 'data-flow', dxvk=dxvk, native_libraries=(rdvk,))
@@ -81,6 +136,7 @@ extra['licenses/runtime-provenance.json'] = proof
 extra['licenses/Frostpunk-port-GPL-3.0.txt'] = ROOT / 'LICENSE'
 extra['licenses/Frostpunk-port-NOTICE.txt'] = ROOT / 'NOTICE'
 extra['licenses/meshoptimizer-MIT.txt'] = ROOT / 'reference/meshoptimizer/LICENSE.md'
+extra['licenses/etcpak-BSD-3-Clause.txt'] = ROOT / 'reference/etcpak/LICENSE.txt'
 extra['licenses/Turnip-Mesa-MIT.txt'] = ROOT / 'android/licenses/Mesa-MIT.txt'
 extra['licenses/Turnip-LICENSE-NOTE.txt'] = ROOT / 'android/licenses/Turnip-LICENSE-NOTE.txt'
 general_origin = json.loads((ROOT / 'reference/turnip-android/provenance.json').read_text())
@@ -101,8 +157,10 @@ fb = builder.fb
 subprocess.run([str(fb.BUILD_TOOLS / 'zipalign.exe'), '-P', '16', '-f', '4', str(unsigned), str(aligned)], check=True)
 final = ROOT / 'pub' / ('Frostpunk-' + VERSION[0] + '-' + build_metadata['commit'] + '.apk')
 final.parent.mkdir(exist_ok=True)
+atomic_originals = {row['source'] for row in atomic_manifest['units']}
 for name, pin in {**pins, **source_pins}.items():
-    assert builder.sha(ROOT / builder.SOURCE_OVERRIDE.get(name, name)) == pin, 'Source changed during build: ' + name
+    actual = name if name in atomic_originals else builder.SOURCE_OVERRIDE.get(name, name)
+    assert builder.sha(ROOT / actual) == pin, 'Source changed during build: ' + name
 subprocess.run([str(fb.JAVA), '-jar', str(fb.SIGNER / fb.MACHINE['signer']['apksigner']), 'sign',
                 '--key', str(fb.SIGNER / fb.MACHINE['signer']['key']), '--cert', str(fb.SIGNER / fb.MACHINE['signer']['cert']),
                 '--out', str(final), str(aligned)], check=True)

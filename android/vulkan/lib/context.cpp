@@ -7,6 +7,7 @@
 #include "geometry.h"
 #include "pipeline.h"
 #include "rdvk.h"
+#include "../ui_texture_shrink.h"
 
 namespace rdvk {
 Context g_ctx;
@@ -113,6 +114,10 @@ struct DynamicCache {
     float blend[4] = {-1, -1, -1, -1};
     VkViewport viewport{}; VkRect2D scissor{};
     bool viewport_valid = false, scissor_valid = false;
+    /* Vertex and index buffers last bound: the engine sets the same buffers again for most draws
+     * (each set marks them dirty), and an unchanged bind still costs the driver a state update. */
+    uint32_t vb_count = ~0u; VkBuffer vb_buffer[MAX_VB] = {}; VkDeviceSize vb_offset[MAX_VB] = {}, vb_stride[MAX_VB] = {};
+    VkBuffer ib_buffer = VK_NULL_HANDLE; VkDeviceSize ib_offset = ~VkDeviceSize(0); VkIndexType ib_type = VK_INDEX_TYPE_MAX_ENUM;
 };
 DynamicCache dyn;
 
@@ -259,7 +264,8 @@ void Context::init() {
 Slice Context::stream_slice(VkDeviceSize bytes) { return gpu.stream.allocate((bytes + 15) & ~VkDeviceSize(15)); }
 
 /* ------------------------------------------------------------------ state setters */
-void Context::set_shader(Stage stage, Shader* shader) { if (shader_[stage] != shader) { shader_[stage] = shader; dirty_ |= D_PIPELINE | D_DESCRIPTORS | D_LAYOUT; } }
+std::atomic<uint64_t> g_layout_epoch{1};
+void Context::set_shader(Stage stage, Shader* shader) { if (shader_[stage] != shader) { shader_[stage] = shader; dirty_ |= D_PIPELINE | D_DESCRIPTORS | D_LAYOUT; ++srv_epoch_; } }
 
 /* Pipeline layouts by shader combination, without building the binding list per draw. */
 const PipelineLayout* Context::layout_for(const Shader* const* shaders, uint32_t count, bool compute) {
@@ -273,7 +279,9 @@ const PipelineLayout* Context::layout_for(const Shader* const* shaders, uint32_t
     return layout;
 }
 void Context::set_constant_buffer(Stage stage, uint32_t slot, Buffer* b) { if (slot < MAX_CB) { stage_[stage].cb[slot] = b; dirty_ |= D_DESCRIPTORS; } }
-void Context::set_srv(Stage stage, uint32_t slot, View* v) { if (slot < MAX_SRV) { stage_[stage].srv[slot] = v; dirty_ |= D_DESCRIPTORS; } }
+void Context::set_srv(Stage stage, uint32_t slot, View* v) {
+    if (slot < MAX_SRV) { if (stage_[stage].srv[slot] != v) ++srv_epoch_; stage_[stage].srv[slot] = v; dirty_ |= D_DESCRIPTORS; }
+}
 void Context::set_sampler(Stage stage, uint32_t slot, Sampler* s) { if (slot < MAX_SAMPLER) { stage_[stage].sampler[slot] = s; dirty_ |= D_DESCRIPTORS; } }
 void Context::set_uav(uint32_t slot, View* v) { if (slot < MAX_UAV) { uav_[slot] = v; dirty_ |= D_DESCRIPTORS; } }
 void Context::set_vertex_buffer(uint32_t slot, Buffer* b, uint32_t offset, uint32_t stride) {
@@ -302,6 +310,7 @@ void Context::set_viewport(const d3d::VIEWPORT& v) { viewport_ = v; viewport_set
 void Context::set_scissor(const d3d::RECT& r) { scissor_ = r; scissor_set_ = true; dirty_ |= D_SCISSOR; }
 
 void Context::set_targets(uint32_t count, View* const* rtvs, View* dsv) {
+    ++srv_epoch_;
     count = std::min(count, MAX_RT);
     View* next[MAX_RT] = {};
     for (uint32_t i = 0; i < count; ++i) next[i] = rtvs ? rtvs[i] : nullptr;
@@ -336,6 +345,7 @@ void Context::transition(Texture* t, const VkImageSubresourceRange& range, VkIma
             barriers.images.push_back(b);
             barriers.src |= src; barriers.dst |= dst;
             current = layout;
+            layout_changed();
             if (!gpu.caps.defer_attachment_transitions &&
                 (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL || layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)) {
                 if (std::find(attachment_layouts_.begin(), attachment_layouts_.end(), t) == attachment_layouts_.end())
@@ -880,7 +890,10 @@ void Context::prepare_draw() {
     cmd_ = gpu.cmd();
     Shader* const graphics[5] = {shader_[VS], shader_[HS], shader_[DS], shader_[GS], shader_[PS]};
     /* Shader resources reach their sampling layout before the pass (or split it). */
-    for (uint32_t s = 0; s < 5; ++s) {
+    uint64_t layouts_now = g_layout_epoch.load(std::memory_order_relaxed);
+    bool check_srv = !srv_clean_ || srv_epoch_ != srv_checked_epoch_ || layouts_now != layouts_checked_epoch_;
+    bool srv_clean = true;
+    for (uint32_t s = 0; check_srv && s < 5; ++s) {
         if (!graphics[s]) continue;
         const StageBindings& sb = stage_[s];
         for (const Shader::BindingInfo& b : graphics[s]->bindings) {
@@ -890,7 +903,7 @@ void Context::prepare_draw() {
             VkImageLayout want = srv_layout(v);
             if (srv_layout_matches(*v, want)) continue;
             if (in_pass_) {
-                if (!gpu.caps.defer_attachment_transitions && dsv_ && dsv_->texture == v->texture && dsv_->read_only_depth) continue;
+                if (!gpu.caps.defer_attachment_transitions && dsv_ && dsv_->texture == v->texture && dsv_->read_only_depth) { srv_clean = false; continue; }
                 static unsigned noted = 0;
                 if (noted < 24 && ++noted)
                     log("RDVK_SPLIT_CAUSE stage=%u slot=%u tex=%p dxgi=%u %ux%u mips=%u layers=%u bind=0x%x layout=%d want=%d is_rt=%d is_ds=%d ps=%s",
@@ -904,6 +917,7 @@ void Context::prepare_draw() {
             transition_view(v, want);
         }
     }
+    if (check_srv) { srv_clean_ = srv_clean; srv_checked_epoch_ = srv_epoch_; layouts_checked_epoch_ = g_layout_epoch.load(std::memory_order_relaxed); }
     if (!in_pass_) begin_pass();
     else barriers.flush(cmd_);
 
@@ -926,7 +940,8 @@ void Context::prepare_draw() {
         key.sample_mask = sample_mask_;
         key.depth_clamp = 1;
         key.depth_clip = raster_ ? raster_->desc.DepthClipEnable : 1;
-        VkPipeline pipeline = graphics_pipeline(key, layout, layout_, blend_);
+        VkPipeline pipeline = last_key_valid_ && key == last_key_ ? last_pipeline_ : graphics_pipeline(key, layout, layout_, blend_);
+        last_key_ = key; last_pipeline_ = pipeline; last_key_valid_ = true;
         if (pipeline != bound_pipeline_) {
             if (pipeline) vk.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             bound_pipeline_ = pipeline;
@@ -1020,11 +1035,26 @@ void Context::prepare_draw() {
             if (Buffer* b = vb_[i].buffer) { buffers[i] = b->buffer; offsets[i] = b->offset + vb_[i].offset; strides[i] = vb_[i].stride; use(b); }
             else { buffers[i] = dummy_buffer; offsets[i] = 0; strides[i] = 0; }
         }
-        if (count) vk.vkCmdBindVertexBuffers2(cmd_, 0, count, buffers, offsets, nullptr, strides);
+        if (count && (count != dyn.vb_count || memcmp(buffers, dyn.vb_buffer, count * sizeof(VkBuffer)) ||
+                      memcmp(offsets, dyn.vb_offset, count * sizeof(VkDeviceSize)) || memcmp(strides, dyn.vb_stride, count * sizeof(VkDeviceSize)))) {
+            vk.vkCmdBindVertexBuffers2(cmd_, 0, count, buffers, offsets, nullptr, strides);
+            dyn.vb_count = count;
+            memcpy(dyn.vb_buffer, buffers, count * sizeof(VkBuffer));
+            memcpy(dyn.vb_offset, offsets, count * sizeof(VkDeviceSize));
+            memcpy(dyn.vb_stride, strides, count * sizeof(VkDeviceSize));
+        }
         dirty_ &= ~D_VB;
     }
     if (dirty_ & D_IB) {
-        if (ib_) { vk.vkCmdBindIndexBuffer(cmd_, ib_->buffer, ib_->offset + ib_offset_, ib_format_ == 42 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16); use(ib_); }
+        if (ib_) {
+            VkDeviceSize offset = ib_->offset + ib_offset_;
+            VkIndexType type = ib_format_ == 42 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+            if (ib_->buffer != dyn.ib_buffer || offset != dyn.ib_offset || type != dyn.ib_type) {
+                vk.vkCmdBindIndexBuffer(cmd_, ib_->buffer, offset, type);
+                dyn.ib_buffer = ib_->buffer; dyn.ib_offset = offset; dyn.ib_type = type;
+            }
+            use(ib_);
+        }
         dirty_ &= ~D_IB;
     }
     bind_descriptors(VK_PIPELINE_BIND_POINT_GRAPHICS, layout, graphics, 5);
@@ -1166,7 +1196,13 @@ void Context::compact_stream() {
 }
 
 uint32_t Context::map(Resource* r, uint32_t sub, uint32_t type, uint32_t flags, d3d::MAPPED_SUBRESOURCE* out) {
-    (void)flags;
+    /* D3D11_MAP_FLAG_DO_NOT_WAIT is not honoured: the game passes MapFlags 0 at all ten of its Map call
+     * sites (IDA, 2026-11-21) and the native hooks pass 0.  A nonzero value is counted (RDVK_SYNC
+     * map_flags) and logged once; the Map then waits as with 0. */
+    if (flags) {
+        ++gpu.sync.map_flags;
+        if (first_time("map_flags")) log("RDVK_MAP_FLAGS type=%u flags=0x%x (waits as with 0)", type, flags);
+    }
     if (r->kind == Kind::Buffer) {
         auto* b = static_cast<Buffer*>(r);
         if (b->dynamic) {
@@ -1326,6 +1362,7 @@ void Context::upload_texture_initial(Texture* t, const d3d::SUBRESOURCE_DATA* da
         vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
     });
     std::fill(t->layouts.begin(), t->layouts.end(), final_layout);
+    layout_changed();
 }
 
 void Context::update_subresource(Resource* r, uint32_t sub, const d3d::BOX* box, const void* data, uint32_t row_pitch, uint32_t depth_pitch) {
@@ -1341,6 +1378,22 @@ void Context::update_subresource(Resource* r, uint32_t sub, const d3d::BOX* box,
     }
     auto* t = static_cast<Texture*>(r);
     if (sub >= t->mips * t->layers) return;
+    std::vector<uint8_t> scaled;
+    d3d::BOX scaled_box;
+    if (t->shrink) {
+        /* Interface art made smaller at creation (ui_texture_shrink.h): an update is in the engine's
+         * coordinates of the full picture, so it is filtered down the same way and clipped. */
+        uint32_t s = t->shrink, x0 = box ? box->left : 0, y0 = box ? box->top : 0;
+        unsigned w0 = box ? box->right - box->left : t->width << s, h0 = box ? box->bottom - box->top : t->height << s;
+        if (!w0 || !h0 || box && box->front + 1 != box->back && box->back) return;
+        unsigned w = w0, h = h0;
+        fp_ui_texture::shrink(static_cast<const uint8_t*>(data), row_pitch ? row_pitch : w0 * 4, w, h, 0, s, scaled);
+        scaled_box = d3d::BOX{x0 >> s, y0 >> s, 0, std::min((x0 >> s) + w, t->width), std::min((y0 >> s) + h, t->height), 1};
+        if (first_time("ui_texture_update"))
+            log("RDVK_UI_TEXTURE_UPDATE %ux%u at %u,%u of a %ux%u texture shrunk %u times", w0, h0, x0, y0, t->width, t->height, s);
+        if (scaled_box.left >= scaled_box.right || scaled_box.top >= scaled_box.bottom) return;
+        box = &scaled_box; data = scaled.data(); row_pitch = w * 4; depth_pitch = 0;
+    }
     const Format& f = format(t->dxgi);
     uint32_t mip = sub % t->mips, layer = sub / t->mips;
     uint32_t x = box ? box->left : 0, y = box ? box->top : 0, z = box ? box->front : 0;
@@ -1397,6 +1450,7 @@ void Context::update_subresource(Resource* r, uint32_t sub, const d3d::BOX* box,
             vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &x);
         });
         t->layouts[layer * t->mips + mip] = final_layout;
+        layout_changed();
     }
 }
 
@@ -1467,6 +1521,9 @@ void Context::copy_resource(Resource* dst, Resource* src) {
             c.srcSubresource = VkImageSubresourceLayers{s->aspect, mip, 0, layers};
             c.dstSubresource = VkImageSubresourceLayers{d->aspect, mip, 0, layers};
             c.extent = VkExtent3D{d->sub_width(mip), d->sub_height(mip), d->sub_depth(mip)};
+            if (d->shrink != s->shrink)   /* interface art made smaller at creation: copy what both hold */
+                c.extent = VkExtent3D{std::min(d->sub_width(mip), s->sub_width(mip)), std::min(d->sub_height(mip), s->sub_height(mip)),
+                                      std::min(d->sub_depth(mip), s->sub_depth(mip))};
             copies.push_back(c);
         }
         vk.vkCmdCopyImage(cmd_, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(copies.size()), copies.data());
@@ -1492,6 +1549,16 @@ void Context::copy_region(Resource* dst, uint32_t dst_sub, uint32_t x, uint32_t 
     c.dstOffset = VkOffset3D{int32_t(x), int32_t(y), int32_t(z)};
     c.extent = box ? VkExtent3D{box->right - box->left, box->bottom - box->top, box->back - box->front}
                    : VkExtent3D{s->sub_width(smip), s->sub_height(smip), s->sub_depth(smip)};
+    if (d->shrink || s->shrink) {
+        /* Interface art made smaller at creation (ui_texture_shrink.h): copy only what lies inside both images. */
+        if (first_time("ui_texture_copy"))
+            log("RDVK_UI_TEXTURE_COPY dst %ux%u shrunk %u at %u,%u <- src %ux%u shrunk %u extent %ux%u", d->width, d->height, d->shrink, x, y,
+                s->width, s->height, s->shrink, c.extent.width, c.extent.height);
+        auto room = [](uint32_t size, int32_t at) { return at < 0 || uint32_t(at) >= size ? 0u : size - uint32_t(at); };
+        c.extent.width = std::min({c.extent.width, room(s->sub_width(smip), c.srcOffset.x), room(d->sub_width(dmip), c.dstOffset.x)});
+        c.extent.height = std::min({c.extent.height, room(s->sub_height(smip), c.srcOffset.y), room(d->sub_height(dmip), c.dstOffset.y)});
+        if (!c.extent.width || !c.extent.height) return;
+    }
     transition(s, VkImageSubresourceRange{s->aspect, smip, 1, slayer, 1}, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     transition(d, VkImageSubresourceRange{d->aspect, dmip, 1, dlayer, 1}, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     barriers.flush(cmd_);
@@ -1525,8 +1592,15 @@ void Context::generate_mips(View* srv) {
  * through flush() (the context's command-buffer caches start over), then the CPU waits. */
 void Context::wait_for(Resource* r) {
     end_pass(PE_WAIT);
+    ++gpu.sync.map_staging;
     if (r->last_use >= gpu.serial()) flush();
+    if (r->last_use <= gpu.completed()) return;
+    timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     gpu.wait_serial(r->last_use);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    ++gpu.sync.map_waits;
+    gpu.sync.map_wait_ns += uint64_t(t1.tv_sec - t0.tv_sec) * 1000000000ull + uint64_t(t1.tv_nsec - t0.tv_nsec);
 }
 
 void Context::flush() {
@@ -1551,6 +1625,8 @@ void Context::reset_command_state() {
 }
 
 void Context::forget(Object* o) {
+    layout_changed(); ++srv_epoch_;
+    last_key_valid_ = false;
     for (auto& s : stage_) {
         for (auto& b : s.cb) if (b == o) b = nullptr;
         for (auto& v : s.srv) if (v == o) v = nullptr;

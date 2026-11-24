@@ -183,6 +183,91 @@ static inline uint64_t atomic_xchg64(uint64_t a, uint64_t v) {
 }
 #endif
 
+/* ---- locked read-modify-write ----
+ * x86 `lock inc/dec/add/sub/or/and/xor/neg/not` on memory and `xchg` with a memory operand
+ * (implicitly locked) are atomic and full barriers.  The shared lifter dropped `lock` and emitted a
+ * plain load/op/store, so two threads could lose an update or both take a spinlock.
+ * tools/lift64_checked.py and tools/atomic_sites.py emit these helpers instead; each returns the
+ * old value, from which the lifted code computes the flags as before.
+ *
+ * x86 allows a locked access at any address, ARM64 atomics fault when it is not naturally aligned.
+ * That rare case takes one process-wide spinlock instead, defined by the host (android/host/
+ * win64_sync.c).  An aligned atomic on overlapping bytes does not take it; the guest code seen so far
+ * never mixes the two on one word. */
+#if defined(_MSC_VER)
+/* x64 Windows: the Interlocked intrinsics are `lock`-prefixed instructions, atomic at any address. */
+#define GUEST_LOCK_MSVC(W, T, SFX) \
+static inline uint##W##_t lock_add##W(uint64_t a, uint##W##_t v) { \
+    return (uint##W##_t)_InterlockedExchangeAdd##SFX((volatile T *)(uintptr_t)a, (T)v); } \
+static inline uint##W##_t lock_sub##W(uint64_t a, uint##W##_t v) { \
+    return (uint##W##_t)_InterlockedExchangeAdd##SFX((volatile T *)(uintptr_t)a, (T)(uint##W##_t)(0 - v)); } \
+static inline uint##W##_t lock_or##W(uint64_t a, uint##W##_t v) { \
+    return (uint##W##_t)_InterlockedOr##SFX((volatile T *)(uintptr_t)a, (T)v); } \
+static inline uint##W##_t lock_and##W(uint64_t a, uint##W##_t v) { \
+    return (uint##W##_t)_InterlockedAnd##SFX((volatile T *)(uintptr_t)a, (T)v); } \
+static inline uint##W##_t lock_xor##W(uint64_t a, uint##W##_t v) { \
+    return (uint##W##_t)_InterlockedXor##SFX((volatile T *)(uintptr_t)a, (T)v); } \
+static inline uint##W##_t lock_xchg##W(uint64_t a, uint##W##_t v) { \
+    return (uint##W##_t)_InterlockedExchange##SFX((volatile T *)(uintptr_t)a, (T)v); } \
+static inline uint##W##_t lock_neg##W(uint64_t a) { \
+    uint##W##_t old = *(volatile uint##W##_t *)(uintptr_t)a, seen; \
+    while ((seen = (uint##W##_t)_InterlockedCompareExchange##SFX((volatile T *)(uintptr_t)a, \
+                                                                (T)(uint##W##_t)(0 - old), (T)old)) != old) \
+        old = seen; \
+    return old; } \
+static inline uint##W##_t lock_not##W(uint64_t a) { return lock_xor##W(a, (uint##W##_t)~(uint##W##_t)0); }
+GUEST_LOCK_MSVC(8, char, 8)
+GUEST_LOCK_MSVC(16, short, 16)
+GUEST_LOCK_MSVC(32, long, )
+GUEST_LOCK_MSVC(64, __int64, 64)
+#undef GUEST_LOCK_MSVC
+#else
+extern int guest_lock_unaligned;
+static inline void guest_lock_enter(void) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    while (__atomic_exchange_n(&guest_lock_unaligned, 1, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&guest_lock_unaligned, __ATOMIC_RELAXED)) {}
+}
+static inline void guest_lock_leave(void) {
+    __atomic_store_n(&guest_lock_unaligned, 0, __ATOMIC_RELEASE);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+#define GUEST_LOCK_MISALIGNED(W, a) __builtin_expect(((a) & (uint64_t)((W) / 8 - 1)) != 0, 0)
+#define GUEST_LOCK_FETCH(OPNAME, W, EXPR) \
+static inline uint##W##_t lock_##OPNAME##W(uint64_t a, uint##W##_t v) { \
+    if (GUEST_LOCK_MISALIGNED(W, a)) { \
+        uint##W##_t old, nv; guest_lock_enter(); \
+        memcpy(&old, (const void *)(uintptr_t)a, (W) / 8); nv = (uint##W##_t)(EXPR); \
+        memcpy((void *)(uintptr_t)a, &nv, (W) / 8); guest_lock_leave(); return old; } \
+    return __atomic_fetch_##OPNAME((uint##W##_t *)(uintptr_t)a, v, __ATOMIC_SEQ_CST); }
+#define GUEST_LOCK_ALL(W) \
+    GUEST_LOCK_FETCH(add, W, old + v) GUEST_LOCK_FETCH(sub, W, old - v) \
+    GUEST_LOCK_FETCH(or, W, old | v) GUEST_LOCK_FETCH(and, W, old & v) GUEST_LOCK_FETCH(xor, W, old ^ v) \
+static inline uint##W##_t lock_xchg##W(uint64_t a, uint##W##_t v) { \
+    if (GUEST_LOCK_MISALIGNED(W, a)) { \
+        uint##W##_t old; guest_lock_enter(); \
+        memcpy(&old, (const void *)(uintptr_t)a, (W) / 8); memcpy((void *)(uintptr_t)a, &v, (W) / 8); \
+        guest_lock_leave(); return old; } \
+    return __atomic_exchange_n((uint##W##_t *)(uintptr_t)a, v, __ATOMIC_SEQ_CST); } \
+static inline uint##W##_t lock_neg##W(uint64_t a) { \
+    uint##W##_t old; \
+    if (GUEST_LOCK_MISALIGNED(W, a)) { \
+        uint##W##_t nv; guest_lock_enter(); memcpy(&old, (const void *)(uintptr_t)a, (W) / 8); \
+        nv = (uint##W##_t)(0 - old); memcpy((void *)(uintptr_t)a, &nv, (W) / 8); guest_lock_leave(); return old; } \
+    old = __atomic_load_n((uint##W##_t *)(uintptr_t)a, __ATOMIC_RELAXED); \
+    while (!__atomic_compare_exchange_n((uint##W##_t *)(uintptr_t)a, &old, (uint##W##_t)(0 - old), 0, \
+                                        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {} \
+    return old; } \
+static inline uint##W##_t lock_not##W(uint64_t a) { return lock_xor##W(a, (uint##W##_t)~(uint##W##_t)0); }
+GUEST_LOCK_ALL(8)
+GUEST_LOCK_ALL(16)
+GUEST_LOCK_ALL(32)
+GUEST_LOCK_ALL(64)
+#undef GUEST_LOCK_ALL
+#undef GUEST_LOCK_FETCH
+#undef GUEST_LOCK_MISALIGNED
+#endif
+
 /* ---- RFLAGS pack/unpack (modelled bits only) ---- */
 static inline uint64_t eflags_pack(CPU *c) {
     return 0x202u | (c->cf) | (c->pf << 2) | (c->af << 4) |

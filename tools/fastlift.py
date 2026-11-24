@@ -52,6 +52,9 @@ ROOT = Path(__file__).resolve().parents[1]
 GENERATED = ROOT / 'generated/frostpunk-x64'
 OVERLAY = ROOT / 'build/arm64/generated-overlay'
 OUT = ROOT / 'build/fastlift'
+# 2026-11-21: lock/xchg-mem statements of the generated trees are rewritten to cpu64.h's atomic
+# helpers in unit_text (tools/atomic_sites.py); FASTLIFT_ATOMICS=0 reproduces the earlier plain lowering.
+ATOMIC_REWRITE = os.environ.get('FASTLIFT_ATOMICS', '1') != '0'
 BASE_LINK = ROOT / 'build/perf/minimum60-20261113/visibility-loop-restrict/production/link.rsp'
 BASE_APK = ROOT / 'build/perf/minimum60-20261113/visibility-loop-restrict/production/Frostpunk-visibility-loop.apk'
 MAIN_BASE, MAIN_END = 0x140000000, 0x144539000
@@ -113,7 +116,11 @@ DROP_PROLOGUE = {'#include "mobile_detail.h"', 'unsigned fp_test_detail_mode(CPU
 # array (index + distance < count, both as the loop itself keeps them) and touches nothing else.
 PREFETCH = {
     # EntityRenderer visibility query: rbx = element, r15 = index, r12 = count.
-    0x140F8F650: 'if (c->r15 + 8 < c->r12) { uint64_t fl_p = rd64(c->rbx + 64); FL_PREFETCH(fl_p + 0x248); '
+    # 2026-11-22 (Adreno 650, native Vulkan): the reject path is short (about 8 ns per element), eight
+    # elements ahead were still missing (half of the function's samples on the +0x248/+0x170 loads):
+    # sixteen ahead.  A parent prefetch needs a real load of the element's +0x40, which then missed
+    # itself (a fifth of the function's samples), so the parent is left to the hardware.
+    0x140F8F650: 'if (c->r15 + 16 < c->r12) { uint64_t fl_p = rd64(c->rbx + 128); FL_PREFETCH(fl_p + 0x248); '
                  'FL_PREFETCH(fl_p + 0x40); FL_PREFETCH(fl_p + 0x140); }',
     # Entity walk before the frame: rbx = element, rbp = index, r14 = count.
     0x140EB4642: 'if (c->rbp + 8 < c->r14) { uint64_t fl_p = rd64(c->rbx + 64); FL_PREFETCH(fl_p + 0x40); '
@@ -571,6 +578,12 @@ def port_settings_patch(text):
 def unit_text(index):
     """Source text of a unit, with the functional patches that are applied as text overlays."""
     text = unit_path(index).read_text(encoding='utf-8').replace(chr(13) + chr(10), chr(10))
+    if ATOMIC_REWRITE:
+        # x86 lock RMW / xchg [mem] as atomic helpers and MSVC's `lock or [rsp], 0` as a fence, each
+        # line proven against the instruction bytes of Frostpunk.exe (tools/atomic_sites.py).
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import atomic_sites
+        text, _ = atomic_sites.rewrite_text(text, 'main')
     if index == 822:
         sys.path.insert(0, str(ROOT / 'tools'))
         import mobile_detail_overlay

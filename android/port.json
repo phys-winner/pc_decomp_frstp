@@ -13,6 +13,8 @@
     "storage": "Frostpunk",
     "allFilesAccess": true,
     "autoLaunch": false,
+    "performanceHud": true,
+    "gameModeNotice": true,
     "languages": [
       "en",
       "ru",
@@ -47,10 +49,11 @@
       "title": "Frostpunk",
       "activity": "com.frostpunk.staticrecomp.MainActivity",
       "renderers": [
+        "native_vulkan",
+        "native_vulkan_turnip",
+        "native_vulkan_panvk",
         "dxvk",
         "turnip",
-        "native_vulkan",
-        "native_vulkan_panvk",
         "dxvk_panvk"
       ],
       "parts": [
@@ -77,81 +80,97 @@
     }
   ],
   "renderers": {
-    "default": "dxvk",
+    "default": "native_vulkan",
     "modes": [
-      {
-        "id": "dxvk",
-        "kind": "vulkan",
-        "title": "Vulkan (DXVK)",
-        "vulkan": "1.3",
-        "needsBC": true,
-        "libraries": [
-          "libdxvk_d3d11.so",
-          "libdxvk_dxgi.so"
-        ]
-      },
-      {
-        "id": "turnip",
-        "kind": "turnip",
-        "title": "DXVK (Turnip)",
-        "vulkan": "1.3",
-        "needsBC": true,
-        "adreno": [
-          600,
-          899
-        ],
-        "driver": "libpurple_turnip.so",
-        "libraries": [
-          "libadrenotools.so",
-          "libdxvk_d3d11.so",
-          "libdxvk_dxgi.so"
-        ]
-      },
       {
         "id": "native_vulkan",
         "kind": "vulkan",
-        "title": "Native Vulkan",
-        "description": {
-          "en": "Experimental renderer. Uses Vulkan directly.",
-          "ru": "Экспериментальный рендерер. Использует Vulkan напрямую.",
-          "de": "Experimenteller Renderer mit direktem Vulkan-Zugriff.",
-          "pl": "Eksperymentalny renderer korzystający bezpośrednio z Vulkan."
-        },
+        "probe": "version",
+        "title": "Vulkan",
         "vulkan": "1.3",
-        "needsBC": true,
+        "needsBC": false,
+        "textureCache": "read",
         "libraries": ["libfrostpunk_rdvk.so"]
+      },
+      {
+        "id": "native_vulkan_turnip",
+        "kind": "turnip",
+        "probe": "version",
+        "title": "Vulkan (Turnip)",
+        "minSdk": 30,
+        "vulkan": "1.3",
+        "needsBC": false,
+        "textureCache": "read",
+        "adreno": [600, 899],
+        "driver": "libpurple_turnip.so",
+        "libraries": ["libfrostpunk_rdvk.so", "libadrenotools.so", "libpurple_turnip.so"]
       },
       {
         "id": "native_vulkan_panvk",
         "kind": "panvk",
-        "title": "Native Vulkan (PanVK)",
-        "description": {
-          "en": "Experimental native Vulkan with Mesa PanVK.",
-          "ru": "Экспериментальный нативный Vulkan с Mesa PanVK."
-        },
+        "probe": "version",
+        "title": "Vulkan (PanVK)",
         "minSdk": 30,
         "vulkan": "1.3",
         "needsBC": false,
+        "textureCache": "read",
         "driver": "libvulkan_panfrost.so",
         "libraries": ["libfrostpunk_rdvk.so", "libadrenotools.so", "libvulkan_panfrost.so"]
       },
       {
-        "id": "dxvk_panvk",
-        "kind": "panvk",
-        "title": "DXVK (PanVK)",
-        "description": {
-          "en": "Experimental DXVK with Mesa PanVK.",
-          "ru": "Экспериментальный DXVK с Mesa PanVK."
-        },
+        "id": "dxvk",
+        "kind": "vulkan",
+        "probe": "dxvk",
+        "title": "DXVK",
+        "vulkan": "1.3",
+        "needsBC": false,
+        "textureCache": "read",
+        "libraries": ["libdxvk_d3d11.so", "libdxvk_dxgi.so"]
+      },
+      {
+        "id": "turnip",
+        "kind": "turnip",
+        "probe": "dxvk",
+        "title": "DXVK (Turnip)",
         "minSdk": 30,
         "vulkan": "1.3",
         "needsBC": false,
+        "textureCache": "read",
+        "adreno": [600, 899],
+        "driver": "libpurple_turnip.so",
+        "libraries": ["libadrenotools.so", "libpurple_turnip.so", "libdxvk_d3d11.so", "libdxvk_dxgi.so"]
+      },
+      {
+        "id": "dxvk_panvk",
+        "kind": "panvk",
+        "probe": "dxvk",
+        "title": "DXVK (PanVK)",
+        "minSdk": 30,
+        "vulkan": "1.3",
+        "needsBC": false,
+        "textureCache": "read",
         "driver": "libvulkan_panfrost.so",
         "libraries": ["libdxvk_d3d11.so", "libdxvk_dxgi.so", "libadrenotools.so", "libvulkan_panfrost.so"]
       }
     ]
   },
   "options": [
+    {
+      "key": "fix_mali_dynamic_state",
+      "type": "bool",
+      "default": "1",
+      "rendererSetting": true,
+      "only": ["frostpunk"],
+      "title": {"en": "Mali: set dynamic state again in every pass", "ru": "Mali: повторно задавать динамическое состояние в каждом проходе"}
+    },
+    {
+      "key": "fix_powervr_compiler",
+      "type": "bool",
+      "default": "1",
+      "rendererSetting": true,
+      "only": ["frostpunk"],
+      "title": {"en": "PowerVR: compile shaders one at a time", "ru": "PowerVR: компилировать шейдеры по одному"}
+    },
     {
       "key": "crash_monitor",
       "type": "bool",
@@ -414,7 +433,10 @@
     }
   ],
   "textures": {
-    "backend": "com.frostpunk.staticrecomp.launcher.FrostpunkTextures"
+    "backend": "com.frostpunk.staticrecomp.launcher.FrostpunkTextures",
+    "formats": ["DXT1", "DXT3", "DXT5"],
+    "etc2Formats": [],
+    "astcFormats": ["ASTC_6x6"]
   },
   "hints": {
     "gameFiles": {

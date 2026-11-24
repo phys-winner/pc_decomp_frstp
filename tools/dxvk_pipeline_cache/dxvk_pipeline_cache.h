@@ -29,6 +29,8 @@ public:
     const VkAllocationCallbacks* allocator, VkPipeline* pipelines) const;
   VkResult createComputePipelines(uint32_t count, const VkComputePipelineCreateInfo* info,
     const VkAllocationCallbacks* allocator, VkPipeline* pipelines) const;
+  // The GPU was lost: a cached pipeline may be the cause, so the file is removed and never saved again.
+  void deviceLost();
 
 private:
   friend struct FrostpunkPipelineCacheTest;
@@ -49,6 +51,7 @@ private:
   mutable uint64_t m_generation = 0;
   uint64_t m_savedGeneration = 0;
   bool m_stop = false;
+  bool m_lost = false;
   std::thread m_writer;
 
   void dirty() const;

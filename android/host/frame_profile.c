@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 extern void frostpunk_android_presented(void) __attribute__((weak));
+extern void frostpunk_android_frame(uint64_t monotonic_ns) __attribute__((weak));
 static unsigned char notified;
 static void render_accept(int32_t result, uint64_t gap, uint64_t now);
 static void render_take(char notes[2][160], int *note_count, char *summary, size_t summary_n, int *have_summary, uint64_t now);
@@ -124,6 +125,8 @@ void frostpunk_frame_profile_present(const void *presenter, uint64_t frame_id,
                 p->last = now; p->last_id = p->bin_last_id = frame_id;
 #if defined(__ANDROID__)
                 render_accept(result, gap, now);
+                /* The launcher's FPS overlay: one timestamp per presented unique frame. */
+                if (frostpunk_android_frame) frostpunk_android_frame(now);
 #endif
             }
         }

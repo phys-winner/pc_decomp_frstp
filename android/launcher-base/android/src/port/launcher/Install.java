@@ -149,6 +149,20 @@ final class Install {
         return State.get(context, State.CHOICES, key(d, p) + ".mount", "");
     }
 
+    static File textureCacheRoot(Context context, Spec spec, Spec.Distribution d, File game) {
+        if (!spec.separateTextureCache) return game;
+        File source = game;
+        try { source = game.getCanonicalFile(); } catch (IOException ignored) { }
+        boolean removable = false;
+        try { removable = android.os.Environment.isExternalStorageRemovable(source); }
+        catch (IllegalArgumentException ignored) { }
+        // A single cache can exceed FAT32's file limit, and media folders can restrict writes.
+        if (!removable && game.canWrite()) return game;
+        String identity = d.id + "\n" + source.getAbsolutePath() + "\n" + mount(context, d, d.parts.get(0));
+        String key = java.util.UUID.nameUUIDFromBytes(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        return new File(context.getFilesDir(), "texture-caches/" + key);
+    }
+
     static void choose(Context context, Spec.Distribution d, Spec.Part p, File folder) {
         State.update(context, State.CHOICES, values -> {
             values.setProperty(key(d, p), folder.getAbsolutePath());
@@ -198,6 +212,39 @@ final class Install {
         List<Found> result = new ArrayList<>();
         for (Found found : discover(group, source)) result.add(new Found(choosing, original, found.folder));
         return result;
+    }
+
+    /** The other distributions' parts in a folder picked for one, as the games' own launchers took
+     *  them (Heroes V: one pick of the folder that holds the shared original + add-on folder and
+     *  Tribes of the East beside it): each folder group once, no fixed part (that needs an import),
+     *  and never a folder found for the chosen distribution or one that holds it too (The Void's
+     *  original needs a subset of its add-on's files), so one installation is never taken for
+     *  another distribution. The launcher takes only those whose distribution is not ready yet. */
+    static List<Found> others(List<Spec.Distribution> distributions, Spec.Distribution choosing, File source, List<Found> chosen) {
+        List<Found> result = new ArrayList<>();
+        HashSet<String> keys = new HashSet<>();
+        for (Spec.Part p : choosing.parts) keys.add(key(choosing, p));
+        for (Spec.Distribution d : distributions) {
+            if (d.id.equals(choosing.id)) continue;
+            boolean open = false;
+            for (Spec.Part p : d.parts) open |= !p.fixed && !keys.contains(key(d, p));
+            if (!open) continue;
+            for (Found f : discover(distributions, d, source))
+                if (!f.part.fixed && keys.add(key(f.distribution, f.part)) && !holds(choosing, chosen, f.folder)) result.add(f);
+        }
+        return result;
+    }
+
+    private static boolean holds(Spec.Distribution choosing, List<Found> chosen, File folder) {
+        for (Spec.Part p : choosing.parts) if (present(p, folder)) return true;
+        for (Found f : chosen) {
+            try {
+                if (f.folder.getCanonicalFile().equals(folder.getCanonicalFile())) return true;
+            } catch (IOException unreadable) {
+                if (f.folder.equals(folder)) return true;
+            }
+        }
+        return false;
     }
 
     static List<Found> discover(List<Spec.Distribution> distributions, File source) {

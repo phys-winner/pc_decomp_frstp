@@ -238,6 +238,7 @@ uint32_t create_texture(uint32_t dimension, const void* raw, const d3d::SUBRESOU
     }
     if (t->vk_format == VK_FORMAT_R32_SFLOAT && (t->bind & d3d::BIND_DEPTH_STENCIL)) { t->vk_format = VK_FORMAT_D32_SFLOAT; t->aspect = VK_IMAGE_ASPECT_DEPTH_BIT; }
     t->layouts.assign(size_t(t->mips) * t->layers, VK_IMAGE_LAYOUT_UNDEFINED);
+    layout_changed();
 
     if (t->usage == d3d::USAGE_STAGING) {
         /* CPU copies: a linear buffer holds every subresource tightly packed. */
@@ -302,6 +303,8 @@ uint32_t create_texture(uint32_t dimension, const void* raw, const d3d::SUBRESOU
     if (dimension == 3) info.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     check_image_format(info.format, info.usage);
+    /* f.view tells UNORM from sRGB (the image itself is UNORM with a mutable sRGB view). */
+    if (f.compressed) data_format_use(f.view, t->width, t->height, t->mips, t->layers);
     VkResult r = vk.vkCreateImage(gpu.device, &info, nullptr, &t->image);
     if (r != VK_SUCCESS) {
         log("RDVK_TEXTURE_FAILED %ux%ux%u mips=%u layers=%u dxgi=%u vk=%d bind=0x%x: %s", t->width, t->height, t->depth, t->mips,

@@ -47,11 +47,13 @@ final class Work {
 
         abstract void work() throws Exception;
 
-        void cancel() { cancelled = true; }
+        boolean permitsPlay() { return false; }
 
         void check() throws Failure {
             if (cancelled) throw new Failure(Failure.CANCELLED, null);
         }
+
+        void cancel() { cancelled = true; }
 
         @Override public final void run() {
             try {
@@ -99,6 +101,11 @@ final class Work {
     static boolean busy() {
         Job job = current;
         return job != null && !job.finished;
+    }
+
+    static boolean blocksPlay() {
+        Job job = current;
+        return job != null && !job.finished && !job.permitsPlay();
     }
 
     public static final class WorkService extends Service {

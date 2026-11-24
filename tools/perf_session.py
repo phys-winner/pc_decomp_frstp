@@ -64,24 +64,37 @@ class Device:
 
 
 class Log:
-    """Incremental reader of files/native.log from the offset at launch."""
+    """Follow the shared or private native log written by this launch."""
 
     def __init__(self, dev):
         self.dev = dev
-        self.offset = int(dev.app('stat', '-c', '%s', 'files/native.log').strip() or 0)
+        self.offsets = {path: self.size(path) for path in ('/sdcard/Frostpunk/native.log', 'files/native.log')}
+        self.path = None
         self.data = b''
         self.lock = threading.Lock()
 
+    def size(self, path):
+        size = self.dev.app('stat', '-c', '%s', path).strip()
+        return int(size) if size.isdecimal() else 0
+
     def poll(self):
-        if not self.data:
-            # The app rotates native.log at start once it passes 16 MB: read from 0 if it shrank.
-            size = int(self.dev.app('stat', '-c', '%s', 'files/native.log').strip() or 0)
-            if size < self.offset:
-                self.offset = 0
-        chunk = self.dev.app('tail', '-c', '+%d' % (self.offset + len(self.data) + 1), 'files/native.log', binary=True)
-        with self.lock:
-            self.data += chunk
-        return chunk
+        paths = (self.path,) if self.path else self.offsets
+        for path in paths:
+            offset = self.offsets[path]
+            if not self.path:
+                size = self.size(path)
+                if not size or size == offset:
+                    continue
+                if size < offset:
+                    offset = 0
+            chunk = self.dev.app('tail', '-c', '+%d' % (offset + len(self.data) + 1), path, binary=True)
+            if chunk:
+                self.path = path
+                self.offsets[path] = offset
+                with self.lock:
+                    self.data += chunk
+                return chunk
+        return b''
 
     def text(self):
         with self.lock:

@@ -1380,13 +1380,22 @@ static fast_import_fn fast_import_for(const char *name,unsigned flags,unsigned s
         if (!strcmp(name,"strlen")) return fast_strlen;
         if (!strcmp(name,"strcmp")) return fast_strcmp;
         if ((f=heap_fast_import(name))) return f;
+        /* Only at the step whose provider these handlers stand in for: step 1 is the CRT copy block
+         * (stdio declines strncmp/strcpy_s, then the string provider), 26 the string provider,
+         * 28 the utility provider (atoi, qsort, bsearch), 29 the math provider. */
+        if (step==1 && (!strcmp(name,"strncmp") || !strcmp(name,"strcpy_s"))) return win64_string_fast_import(name);
+        if (step==26 && (f=win64_string_fast_import(name))) return f;
+        if (step==28 && (f=win64_utility_fast_import(name))) return f;
+        if (step==29 && (f=win64_math_fast_import(name))) return f;
     }
     if (flags&IMPORT_KERNEL) {
         if (!strcmp(name,"QueryPerformanceCounter")) return fast_qpc;
         if (!strcmp(name,"QueryPerformanceFrequency")) return fast_qpf;
         if (!strcmp(name,"Sleep")) return fast_sleep;
         if ((f=(fast_import_fn)win64_threads_fast_import(name))) return f;
+        if (step==36 && (f=win64_kernel_fast_import(name))) return f;
     }
+    if ((flags&IMPORT_USER) && step==32 && (f=win64_window_fast_import(name))) return f;
     return NULL;
 }
 
@@ -1423,6 +1432,40 @@ static import_entry *import_slot(const char *dll,const char *name) {
 static _Atomic uint64_t import_audit_steps[IMPORT_CACHE];
 #endif
 
+/* Diagnostics (debug.fp.import_verify=1): the direct handlers of the pure imports (math, string
+ * comparison and search, atoi) are not handed to the lifted code's inline path; every call then comes
+ * here, runs the handler on a copy of the CPU state and the provider chain on the real one, and logs
+ * IMPORT_VERIFY_MISMATCH when the CPU state or errno differ (IMPORT_VERIFY every 100000 calls). */
+static int import_verify_mode(void) {
+    static _Atomic int mode=-1;int value=atomic_load_explicit(&mode,memory_order_relaxed);
+    if (value<0) {
+        char text[PROP_VALUE_MAX]={0};int saved=errno;
+        value=__system_property_get("debug.fp.import_verify",text)>0&&text[0]=='1';errno=saved;
+        atomic_store_explicit(&mode,value,memory_order_relaxed);
+    }
+    return value;
+}
+static int import_verifiable(const char *name) {
+    static const char *const pure[]={"strncmp","_stricmp","_strnicmp","strchr","strcspn","atoi","floorf","floor","ceilf","ceil",
+        "roundf","round","sinf","cosf","tanf","atan2f","asinf","acosf","atanf","fmodf","expf","logf","log10f","exp2f","tanhf",
+        "sinhf","coshf","sqrtf","sqrt"};
+    for (size_t i=0;i<sizeof(pure)/sizeof(*pure);++i) if (!strcmp(name,pure[i])) return 1;
+    return 0;
+}
+static void import_verify(CPU *c,import_entry *e,const char *dll,const char *name) {
+    static _Atomic uint64_t calls,mismatches;
+    CPU copy=*c;int saved=errno;
+    e->fast(&copy);copy.rsp+=8;int fast_errno=errno;errno=saved;
+    unsigned handled;import_chain(c,dll,name,e->flags,e->step,&handled);
+    uint64_t n=atomic_fetch_add_explicit(&calls,1,memory_order_relaxed)+1;
+    if (memcmp(&copy,c,sizeof(*c))||fast_errno!=errno) {
+        uint64_t m=atomic_fetch_add_explicit(&mismatches,1,memory_order_relaxed)+1;
+        if (m<=50) fprintf(stderr,"IMPORT_VERIFY_MISMATCH %s rax=%" PRIx64 "/%" PRIx64 " xmm0=%" PRIx64 "/%" PRIx64 " mxcsr=%x/%x errno=%d/%d\n",name,
+            copy.rax,c->rax,copy.xmm[0].u64[0],c->xmm[0].u64[0],(unsigned)copy.mxcsr,(unsigned)c->mxcsr,fast_errno,errno);
+    }
+    if (!(n%100000)) fprintf(stderr,"IMPORT_VERIFY calls=%" PRIu64 " mismatches=%" PRIu64 "\n",n,atomic_load(&mismatches));
+}
+
 int win64_dispatch_import(CPU *c, const char *dll, const char *name) {
     FP_PERF_IMPORT_NAME(dll,name);
     import_entry *e=import_slot(dll,name);
@@ -1437,7 +1480,10 @@ int win64_dispatch_import(CPU *c, const char *dll, const char *name) {
     }
 #endif
     if (e && atomic_load_explicit(&e->ready,memory_order_acquire)) {
-        if (e->fast) { e->fast(c); c->rsp+=8; return 1; }
+        if (e->fast) {
+            if (__builtin_expect(import_verify_mode(),0) && import_verifiable(name)) { import_verify(c,e,dll,name); return 1; }
+            e->fast(c); c->rsp+=8; return 1;
+        }
         unsigned handled;
         return import_chain(c,dll,name,e->flags,e->step,&handled);
     }
@@ -1455,6 +1501,7 @@ int win64_dispatch_import(CPU *c, const char *dll, const char *name) {
  * pops the return address exactly as win64_dispatch_import does. */
 fast_import_fn win64_import_fast(const char *dll, const char *name) {
     import_entry *e=import_slot(dll,name);
+    if (import_verify_mode() && import_verifiable(name)) return NULL;
     return e && atomic_load_explicit(&e->ready,memory_order_acquire) ? e->fast : NULL;
 }
 

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #if defined(FP_PIPELINE_CACHE_TEST)
@@ -155,17 +156,52 @@ DxvkPipelineCache::~DxvkPipelineCache() {
 #endif
 }
 
+// FP_PIPELINE_CACHE_SCOPE = bit mask of the pipeline kinds that use the cache (1 graphics pipeline
+// libraries, 2 pipelines linked from libraries, 4 other graphics, 8 compute).  Default: compute only.
+// Mali-G715 driver 54.3.0 (Pixel 10a): a start that loaded a cache holding optimized graphics
+// pipelines lost the device at the title (VK_ERROR_DEVICE_LOST about frame 20, then LOW_MEMORY:
+// nothing is freed after a lost device); empty cache -> fine.  Bisect, each a fresh cache written by
+// one start and loaded by the next: scope 15 and 4 lost the device, 8 (478 KB) did not, the driver
+// stores no data for 1 and 2.
+static uint32_t cacheScope() {
+  static const uint32_t scope = [] {
+    const char* value = std::getenv("FP_PIPELINE_CACHE_SCOPE");
+    return value && value[0] ? uint32_t(std::strtoul(value, nullptr, 0)) : 8u;
+  }();
+  return scope;
+}
+static uint32_t graphicsKind(const VkGraphicsPipelineCreateInfo& info) {
+  if (info.flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) return 1u;
+  for (auto* next = static_cast<const VkBaseInStructure*>(info.pNext); next; next = next->pNext)
+    if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR) return 2u;
+  return 4u;
+}
 VkResult DxvkPipelineCache::createGraphicsPipelines(uint32_t count, const VkGraphicsPipelineCreateInfo* info,
     const VkAllocationCallbacks* allocator, VkPipeline* pipelines) const {
-  VkResult result = m_graphics(m_device, m_cache, count, info, allocator, pipelines);
-  dirty();
+  bool cached = m_cache && (count == 1 ? (cacheScope() & graphicsKind(info[0])) != 0 : (cacheScope() & 15u) == 15u);
+  VkResult result = m_graphics(m_device, cached ? m_cache : VK_NULL_HANDLE, count, info, allocator, pipelines);
+  if (cached) dirty();
   return result;
 }
 VkResult DxvkPipelineCache::createComputePipelines(uint32_t count, const VkComputePipelineCreateInfo* info,
     const VkAllocationCallbacks* allocator, VkPipeline* pipelines) const {
-  VkResult result = m_compute(m_device, m_cache, count, info, allocator, pipelines);
-  dirty();
+  bool cached = m_cache && (cacheScope() & 8u);
+  VkResult result = m_compute(m_device, cached ? m_cache : VK_NULL_HANDLE, count, info, allocator, pipelines);
+  if (cached) dirty();
   return result;
+}
+void DxvkPipelineCache::deviceLost() {
+#if defined(__ANDROID__) || defined(FP_PIPELINE_CACHE_TEST)
+  int saved = errno;
+  { std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_lost || !m_cache) return;
+    m_lost = true;
+  }
+  bool removed = m_directory >= 0 && !m_name.empty();
+  if (removed) pcRemove(m_directory, m_name.c_str());
+  std::fprintf(stderr, "NATIVE_PIPELINE_CACHE device_lost=1 removed=%d\n", removed ? 1 : 0);
+  errno = saved;
+#endif
 }
 void DxvkPipelineCache::dirty() const {
   if (!m_cache) return;
@@ -204,6 +240,7 @@ std::vector<uint8_t> DxvkPipelineCache::envelope(const std::vector<uint8_t>& dat
 }
 bool DxvkPipelineCache::save() {
 #if defined(__ANDROID__) || defined(FP_PIPELINE_CACHE_TEST)
+  { std::lock_guard<std::mutex> lock(m_mutex); if (m_lost) return true; }
   // Cache growth may race the size query. Only a complete VK_SUCCESS snapshot
   // is published; a failed/bounded-out snapshot leaves the previous file intact.
   std::vector<uint8_t> blob;
@@ -239,6 +276,9 @@ bool DxvkPipelineCache::save() {
   if (good) good = !PC_IO_FAIL(5) && pcRename(m_directory, temporary.c_str(), m_name.c_str());
   if (!good) pcRemove(m_directory, temporary.c_str());
   else pcSync(m_directory); // Rename is already atomic; directory durability is best effort.
+  bool lost;
+  { std::lock_guard<std::mutex> lock(m_mutex); lost = m_lost; }
+  if (good && lost) pcRemove(m_directory, m_name.c_str()); // deviceLost() ran during this save
   return good;
 #else
   return false;

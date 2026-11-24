@@ -5,11 +5,11 @@ import java.util.Iterator;
 import java.util.Locale;
 import org.json.JSONObject;
 
-/** The launcher's words. The language follows the system
+/** The launcher's words in English, Russian, German and Polish. The language follows the system
  *  (Ukrainian and Belarusian read Russian) unless the player picks one; the port's own texts in
  *  port.json fall back to English, then to their first language. */
 final class Texts {
-    static final String[] LANGUAGES = {"en", "ru", "de", "pl", "fr", "es", "it", "pt-BR", "tr", "ja", "ko", "zh-CN", "fa", "cs", "hu"};
+    static final String[] LANGUAGES = {"en", "ru", "de", "pl"};
 
     static final int PLAY = 0, RETURN = 1, READY = 2, MISSING = 3, NOT_FOUND_YET = 4, GAME_FILES = 5, FOLDER = 6,
         ARCHIVE = 7, IMPORT_FOLDER = 8, IMPORT_ARCHIVE = 9, FIXED_HINT = 10, SEARCHING = 11, READING = 12,
@@ -22,7 +22,7 @@ final class Texts {
         BROWSER_UP = 51, BROWSER_EMPTY = 52, BROWSER_DENIED = 53, INTERNAL = 54, DOWNLOADS = 55, FREE = 56,
         HAS_GAME = 57, ZIP_STORED = 58, RENDERER = 59, AVAILABLE = 60, UNAVAILABLE = 61, GPU = 62,
         R_ANDROID = 63, R_LIBRARIES = 64, R_VULKAN = 65, R_NO_VULKAN = 66, R_ADRENO = 67, R_CONVERTED = 68,
-        N_FALLBACK = 69, N_FAILED = 70, N_APPLIES = 71, OPTIONS = 72, SKIP_INTRO = 73, SPACE = 74, CLEAN = 75,
+        N_FALLBACK = 69, N_FAILED = 70, SELECTED_RENDERER = 71, OPTIONS = 72, SKIP_INTRO = 73, SPACE = 74, CLEAN = 75,
         CLEAN_SCAN = 76, CLEAN_NONE = 77, CLEAN_ASK = 78, CLEAN_DONE = 79, ABOUT = 80, VERSION = 81, GITHUB = 82,
         RELEASES = 83, LICENSES = 84, LANGUAGE = 85, SYSTEM_LANGUAGE = 86, CHECK_UPDATES = 87, CHECKING = 88,
         UP_TO_DATE = 89, UPDATE_AVAILABLE = 90, DOWNLOAD = 91, WHATS_NEW = 92, SKIP_VERSION = 93,
@@ -36,16 +36,36 @@ final class Texts {
         N_FAILED_DEFAULT = 135, LAN_TITLE = 136, LAN_WHY = 137, NOT_NOW = 138, NOTIFY_TITLE = 139, R_UNCHECKED = 140,
         R_CHECKING = 141, R_CRASH = 142, R_ERROR = 143, R_BC = 144, R_ROBUSTNESS = 145, R_PRESENT = 146, R_FEATURES = 147,
         R_NOT_TURNIP = 148, R_VULKAN13 = 149, R_UNFIT = 150, N_UNCHECKED = 151, TEX_REMOVE = 152, TEX_REMOVE_ASK = 153,
-        TEX_GONE = 154, DRIVER_LABEL = 155, DRIVER_BUILTIN = 156, DRIVER_CHOOSE = 157, DRIVER_RESET = 158,
-        DRIVER_COPYING = 159, DRIVER_HINT = 160, E_DRIVER = 161,
+        TEX_GONE = 154, TURNIP_DRIVER = 155, TURNIP_BUILTIN = 156, TURNIP_CHOOSE = 157, TURNIP_RESET = 158,
+        TURNIP_COPYING = 159, TURNIP_HINT = 160, E_TURNIP = 161,
         TEX_DXT_YES = 162, TEX_DXT_NO = 163, TEX_DXT_UNKNOWN = 164,
         TEX_ORIGINALS = 165, TEX_STATUS = 166, TEX_CHECK_FAILED = 167, COPY_DIAGNOSTICS = 168, DIAGNOSTICS_COPIED = 169, E_CLIPBOARD = 170, RETRY_CHECK = 171, OTHER_ARCHIVE = 172,
         FOLDER_FOR = 173, NO_EDITION = 174,
         GOG_IMPORT = 175, GOG_HINT = 176, GOG_PICK = 177, GOG_READING = 178, GOG_BAD_INPUT = 179,
         GOG_NOT_FOUND = 180, GOG_EDITION = 181, GOG_DESTINATION = 182, GOG_INSTALLING = 183, GROUP_PICK = 184,
-        CHOOSE_GAME_FILES = 185;
+        CHOOSE_GAME_FILES = 185, TURNIP_DOWNLOAD = 186, TURNIP_REPOS = 187, TURNIP_LOADING = 188,
+        TURNIP_NO_RELEASES = 189, TURNIP_RELEASE = 190, TURNIP_NEWER = 191, TURNIP_OLDER = 192,
+        TURNIP_NO_NOTES = 193, TURNIP_NO_FILES = 194, TURNIP_CLEAN = 195, R_MALI = 196,
+        HYPEROS_TITLE = 197, HYPEROS_WHY = 198, HYPEROS_LOG = 199, HYPEROS_OPEN = 200, HYPEROS_NEVER = 201,
+        HYPEROS_CLOSE = 202, HYPEROS_FAILED = 203, HYPEROS_SETTING = 204, TEX_SAMPLE = 205,
+        VERIFY_MD5 = 206, E_MD5_MISMATCH = 207, PANVK_DRIVER = 208,
+        PANVK_HINT = 209, E_PANVK = 210, BROWSER_DRIVER = 211, R_OPTION = 212,
+        TEX_ARCHIVE_HELP = 213, MOD_TEXTURES = 214, MOD_ARCHIVES = 215, MOD_CONVERT = 216,
+        MOD_CONVERT_PLAY = 217, MOD_IGNORE = 218, MOD_WHY = 219, HUD_SETTINGS = 220,
+        TEX_MISSING = 221,
+        TEX_SUPPORTED = 222,
+        TEX_UNCHECKED = 223,
+        TEX_COMPARE = 224,
+        TEX_OFFER = 225,
+        TEX_MODE_ORIGINAL = 226,
+        GL_REQUIRED = 227,
+        MODE_MIN = 228,
+        VK_SYSTEM = 229,
+        TEX_NO_TARGET = 230,
+        TEX_UNKNOWN_SOURCE = 231,
+        LAST_CRASH = 232, E_SAVE_OPTION = 233, TEX_ESTIMATE = 234, R_QUALCOMM = 235;
     /** The last id: the table has one row per id (the selfcheck verifies it). */
-    static final int LAST = CHOOSE_GAME_FILES;
+    static final int LAST = R_QUALCOMM;
 
     private static final String[][] TEXTS = {
         {"Play", "Играть", "Spielen", "Graj"},
@@ -132,7 +152,7 @@ final class Texts {
         {"game files: %s", "файлы игры: %s", "Spieldateien: %s", "pliki gry: %s"},
         {"not compressed: playable without unpacking", "без сжатия: можно играть без распаковки",
          "nicht komprimiert: ohne Entpacken spielbar", "bez kompresji: można grać bez rozpakowywania"},
-        {"Renderer", "Отрисовка", "Renderer", "Renderer"},
+        {"Renderer", "Рендерер", "Renderer", "Renderer"},
         {"available", "доступно", "verfügbar", "dostępny"},
         {"unavailable", "недоступно", "nicht verfügbar", "niedostępny"},
         {"GPU: %1$s · Vulkan %2$s", "Видеочип: %1$s · Vulkan %2$s", "GPU: %1$s · Vulkan %2$s", "GPU: %1$s · Vulkan %2$s"},
@@ -152,8 +172,8 @@ final class Texts {
          "Прошлый запуск с %1$s не дошёл до меню%2$s. Если игра не запускается, выберите %3$s.",
          "Der letzte Start mit %1$s erreichte das Menü nicht%2$s. Startet das Spiel nicht, wählen Sie %3$s.",
          "Ostatnie uruchomienie z %1$s nie dotarło do menu%2$s. Jeśli gra się nie uruchamia, wybierz %3$s."},
-        {"The choice applies from the next start.", "Выбор применяется со следующего запуска.",
-         "Die Auswahl gilt ab dem nächsten Start.", "Wybór obowiązuje od następnego uruchomienia."},
+        {"Selected renderer", "Выбранный рендерер",
+         "Ausgewählter Renderer", "Wybrany renderer"},
         {"Options", "Параметры", "Optionen", "Opcje"},
         {"Skip the opening videos", "Пропускать вступительные ролики", "Intro-Videos überspringen", "Pomijaj filmy wprowadzające"},
         {"Storage", "Место", "Speicher", "Miejsce"},
@@ -190,18 +210,10 @@ final class Texts {
         {"Port update %s is available: see the launcher.", "Доступно обновление порта %s — подробности в лаунчере.",
          "Port-Update %s ist verfügbar: Details im Launcher.", "Dostępna aktualizacja portu %s — szczegóły w launcherze."},
         {"Textures", "Текстуры", "Texturen", "Tekstury"},
-        {"This GPU cannot read the format of the game's textures: the processor unpacks every texture while a screen "
-             + "loads, and in video memory it takes 4–8 times more room. Converted once into a format the GPU reads, "
-             + "the textures load at once and need less memory.",
-         "Видеочип не умеет читать формат текстур игры: каждую текстуру при загрузке распаковывает процессор, и в "
-             + "видеопамяти она занимает в 4–8 раз больше места. Один раз сконвертированные в формат видеочипа, "
-             + "текстуры загружаются сразу и требуют меньше памяти.",
-         "Die GPU kann das Texturformat des Spiels nicht lesen: Der Prozessor entpackt jede Textur beim Laden, und im "
-             + "Grafikspeicher braucht sie 4–8-mal mehr Platz. Einmal in ein GPU-Format konvertiert, laden die Texturen "
-             + "sofort und brauchen weniger Speicher.",
-         "GPU nie odczytuje formatu tekstur gry: procesor rozpakowuje każdą teksturę przy wczytywaniu, a w pamięci "
-             + "wideo zajmuje ona 4–8 razy więcej miejsca. Raz skonwertowane do formatu GPU tekstury wczytują się od razu "
-             + "i zajmują mniej pamięci."},
+        {"Converting unsupported textures can reduce decoding time and memory usage.",
+         "Конвертация неподдерживаемых текстур может ускорить загрузку и уменьшить расход памяти.",
+         "Das Konvertieren nicht unterstützter Texturen kann Ladezeit und Speicherbedarf reduzieren.",
+         "Konwersja nieobsługiwanych tekstur może skrócić czas ładowania i zmniejszyć zużycie pamięci."},
         {"Convert to %s", "Сконвертировать в %s", "In %s konvertieren", "Konwertuj do %s"},
         {"Delete the converted textures", "Удалить сконвертированные текстуры", "Konvertierte Texturen löschen",
          "Usuń skonwertowane tekstury"},
@@ -327,17 +339,16 @@ final class Texts {
          "Оригинальные текстуры удалены; конвертацию больше нельзя отменить.",
          "Die Originaltexturen sind gelöscht; die Konvertierung lässt sich nicht mehr rückgängig machen.",
          "Oryginalne tekstury zostały usunięte; konwersji nie można już cofnąć."},
-        {"%1$s driver: %2$s", "Драйвер %1$s: %2$s", "%1$s-Treiber: %2$s", "Sterownik %1$s: %2$s"},
+        {"Turnip driver: %s", "Драйвер Turnip: %s", "Turnip-Treiber: %s", "Sterownik Turnip: %s"},
         {"the port's own", "встроенный в порт", "der des Ports", "wbudowany w port"},
         {"Own driver…", "Свой драйвер…", "Eigener Treiber…", "Własny sterownik…"},
         {"Use the port's driver", "Вернуть встроенный", "Treiber des Ports nehmen", "Użyj wbudowanego"},
         {"Copying the driver…", "Копирую драйвер…", "Kopiere den Treiber…", "Kopiuję sterownik…"},
-        {"Choose a %s driver package (ZIP with meta.json) or its .so library. The launcher will check the driver after import.",
-         "Выберите пакет драйвера %s (ZIP с meta.json) или его библиотеку .so. После импорта лаунчер проверит драйвер.",
-         "Wähle ein %s-Treiberpaket (ZIP mit meta.json) oder seine .so-Bibliothek. Der Launcher prüft den Treiber nach dem Import.",
-         "Wybierz pakiet sterownika %s (ZIP z meta.json) lub jego bibliotekę .so. Program uruchamiający sprawdzi sterownik po imporcie."},
-        {"Could not import the %1$s driver: %2$s", "Не удалось импортировать драйвер %1$s: %2$s",
-         "Import des %1$s-Treibers fehlgeschlagen: %2$s", "Nie udało się zaimportować sterownika %1$s: %2$s"},
+        {"A Turnip driver package for adrenotools (a ZIP with meta.json) or its .so library. The driver check runs again for it.",
+         "Пакет драйвера Turnip для adrenotools (ZIP с meta.json) или его библиотека .so. Проверка драйвера пройдёт для него заново.",
+         "Ein Turnip-Treiberpaket für adrenotools (ein ZIP mit meta.json) oder seine .so-Bibliothek. Die Treiberprüfung läuft dafür erneut.",
+         "Pakiet sterownika Turnip dla adrenotools (ZIP z meta.json) albo jego biblioteka .so. Sprawdzenie sterownika odbędzie się dla niego ponownie."},
+        {"This is no Turnip driver: %s", "Это не драйвер Turnip: %s", "Das ist kein Turnip-Treiber: %s", "To nie jest sterownik Turnip: %s"},
         {"DXT is supported", "DXT поддерживается", "DXT wird unterstützt", "DXT jest obsługiwany"},
         {"DXT is not supported", "DXT не поддерживается", "DXT wird nicht unterstützt", "DXT nie jest obsługiwany"},
         {"DXT support could not be checked.", "Не удалось проверить поддержку DXT.",
@@ -382,10 +393,100 @@ final class Texts {
          "Укажите путь к игровым данным или ZIP-архив в разделе «Файлы игры» ниже.",
          "Wählen Sie den Spieldatenordner oder das ZIP-Archiv unten unter Spieldateien.",
          "Wskaż folder z danymi gry lub archiwum ZIP w sekcji Pliki gry poniżej."},
+        {"Download a Turnip driver", "Скачать драйвер Turnip", "Turnip-Treiber herunterladen", "Pobierz sterownik Turnip"},
+        {"Turnip repositories", "Репозитории Turnip", "Turnip-Repositories", "Repozytoria Turnip"},
+        {"Loading releases…", "Загрузка релизов…", "Veröffentlichungen werden geladen…", "Wczytywanie wydań…"},
+        {"This repository has no releases.", "В этом репозитории нет релизов.",
+         "Dieses Repository hat keine Veröffentlichungen.", "To repozytorium nie ma wydań."},
+        {"Turnip release", "Релиз Turnip", "Turnip-Veröffentlichung", "Wydanie Turnip"},
+        {"Newer release", "Более новый релиз", "Neuere Veröffentlichung", "Nowsze wydanie"},
+        {"Older release", "Более старый релиз", "Ältere Veröffentlichung", "Starsze wydanie"},
+        {"No release notes.", "Нет описания релиза.", "Keine Versionshinweise.", "Brak opisu wydania."},
+        {"This release has no driver packages (.zip or .so).", "В этом релизе нет пакетов драйверов (.zip или .so).",
+         "Diese Veröffentlichung enthält keine Treiberpakete (.zip oder .so).", "To wydanie nie zawiera pakietów sterowników (.zip lub .so)."},
+        {"Delete unused external drivers", "Удалить неиспользуемые внешние драйверы",
+         "Nicht verwendete externe Treiber löschen", "Usuń nieużywane sterowniki zewnętrzne"},
+        {"requires an ARM Mali or Immortalis GPU. Detected %1$s",
+         "требуется видеочип ARM Mali или Immortalis. Обнаружен %1$s",
+         "benötigt eine ARM Mali- oder Immortalis-GPU. Erkannt wurde %1$s",
+         "wymaga układu ARM Mali lub Immortalis. Wykryto %1$s"},
+        {"Smoother play on %s", "Плавная игра на %s", "Flüssiger spielen unter %s", "Płynniejsza gra na %s"},
+        {"%1$s keeps the processor and the graphics chip of an app that is not on its list of games at power-saving "
+             + "speeds, so even a flagship chip works at half its strength. This causes stutter and long frames at any "
+             + "graphics settings.\n\nFor full performance, %2$s",
+         "%1$s держит процессор и видеочип приложения, которого нет в её списке игр, на частотах энергосбережения, "
+             + "поэтому даже флагманский чип работает вполсилы. Из-за этого возможны подтормаживания и долгие кадры при "
+             + "любых настройках графики.\n\nДля полной производительности %2$s",
+         "%1$s hält Prozessor und Grafikchip einer App, die nicht in der Spieleliste steht, auf Stromspartakt, sodass "
+             + "selbst ein Flaggschiff-Chip nur mit halber Kraft arbeitet. Das führt bei jeder Grafikeinstellung zu "
+             + "Rucklern und langen Frames.\n\nFür die volle Leistung %2$s",
+         "%1$s utrzymuje procesor i układ graficzny aplikacji, której nie ma na liście gier, na oszczędnych "
+             + "częstotliwościach, więc nawet flagowy układ pracuje na pół mocy. Powoduje to przycięcia i długie klatki przy "
+             + "dowolnych ustawieniach grafiki.\n\nAby uzyskać pełną wydajność, %2$s"},
+        {"Game log: %s\nLogs of earlier sessions are in the same folder; attach them to a bug report.",
+         "Журнал игры: %s\nЖурналы прошлых запусков лежат в той же папке; приложите их к сообщению об ошибке.",
+         "Spielprotokoll: %s\nProtokolle früherer Sitzungen liegen im selben Ordner; hängen Sie sie an einen Fehlerbericht an.",
+         "Dziennik gry: %s\nDzienniki wcześniejszych sesji są w tym samym folderze; dołącz je do zgłoszenia błędu."},
+        {"Open %s", "Открыть %s", "%s öffnen", "Otwórz: %s"},
+        {"Don't show again", "Больше не показывать", "Nicht mehr anzeigen", "Nie pokazuj ponownie"},
+        {"Close", "Закрыть", "Schließen", "Zamknij"},
+        {"%s could not be opened. Find it among the apps or in the system settings.",
+         "Не удалось открыть %s. Найдите его среди приложений или в настройках системы.",
+         "%s ließ sich nicht öffnen. Suchen Sie es unter den Apps oder in den Systemeinstellungen.",
+         "Nie udało się otworzyć: %s. Znajdź to narzędzie wśród aplikacji lub w ustawieniach systemu."},
+        {"Game mode tip at start", "Совет об игровом режиме при запуске", "Spielmodus-Hinweis beim Start", "Wskazówka o trybie gry przy starcie"},
+        {"One texture package checked. All packages will be scanned when conversion starts.",
+         "Проверен один пакет текстур. Все пакеты будут проверены при запуске конвертации.",
+         "Ein Texturpaket geprüft. Alle Pakete werden erst bei der Konvertierung durchsucht.",
+         "Sprawdzono jeden pakiet tekstur. Wszystkie pakiety zostaną sprawdzone po rozpoczęciu konwersji."},
+        {"Checking the archive's MD5…", "Проверка MD5 архива…",
+         "MD5-Prüfsumme des Archivs wird geprüft…", "Sprawdzanie sumy MD5 archiwum…"},
+        {"The archive's MD5 checksum does not match the checksum in its file name (%s).",
+         "Контрольная сумма MD5 архива не совпадает с указанной в имени файла (%s).",
+         "Die MD5-Prüfsumme des Archivs stimmt nicht mit der Prüfsumme im Dateinamen überein (%s).",
+         "Suma kontrolna MD5 archiwum nie zgadza się z sumą podaną w nazwie pliku (%s)."},
+        {"PanVK driver (%s)", "Драйвер PanVK (%s)", "PanVK-Treiber (%s)", "Sterownik PanVK (%s)"},
+        {"Choose a PanVK ZIP package or its .so library. The launcher checks the selected driver.",
+         "Выберите пакет PanVK в ZIP или библиотеку .so. Лаунчер проверит выбранный драйвер.",
+         "Wählen Sie ein PanVK-ZIP-Paket oder seine .so-Bibliothek. Der Launcher prüft den ausgewählten Treiber.",
+         "Wybierz pakiet PanVK ZIP lub jego bibliotekę .so. Program uruchamiający sprawdzi wybrany sterownik."},
+        {"Could not import the PanVK driver (%s)", "Не удалось импортировать драйвер PanVK (%s)",
+         "PanVK-Treiber konnte nicht importiert werden (%s)", "Nie udało się zaimportować sterownika PanVK (%s)"},
+        {"Choose a Vulkan driver", "Выберите драйвер Vulkan", "Vulkan-Treiber auswählen", "Wybierz sterownik Vulkan"},
+        {"turn on “%s” in the options", "включите «%s» в опциях", "„%s“ in den Optionen aktivieren", "włącz „%s” w opcjach"},
+        {"Check the app’s file access. If the archive was copied, copy its folder again or verify the game in GOG Galaxy.",
+         "Проверьте доступ приложения к файлам. Если архив скопирован, скопируйте папку заново или проверьте игру в GOG Galaxy.",
+         "Prüfen Sie den Dateizugriff der App. Kopieren Sie den Ordner erneut oder überprüfen Sie das Spiel in GOG Galaxy.",
+         "Sprawdź dostęp aplikacji do plików. Skopiuj folder ponownie lub zweryfikuj grę w GOG Galaxy."},
+        {"Mod textures", "Текстуры модов", "Mod-Texturen", "Tekstury modów"},
+        {"Mod archives to check: %1$d (%2$s)", "Архивов модов для проверки: %1$d (%2$s)",
+         "Zu prüfende Mod-Archive: %1$d (%2$s)", "Archiwa modów do sprawdzenia: %1$d (%2$s)"},
+        {"Convert mods", "Конвертировать моды", "Mods konvertieren", "Konwertuj mody"},
+        {"Convert and play", "Конвертировать и играть", "Konvertieren und spielen", "Konwertuj i graj"},
+        {"Don’t offer for these mods", "Не предлагать для этих модов", "Für diese Mods nicht anbieten", "Nie proponuj dla tych modów"},
+        {"Conversion runs in the background. Compatible textures can load faster and use less memory.",
+         "Конвертация идёт в фоне. Совместимые текстуры могут загружаться быстрее и занимать меньше памяти.",
+         "Die Konvertierung läuft im Hintergrund. Kompatible Texturen können schneller laden und weniger Speicher belegen.",
+         "Konwersja działa w tle. Zgodne tekstury mogą wczytywać się szybciej i zużywać mniej pamięci."},
+        {"FPS display settings", "Настроить отображение FPS", "FPS-Anzeige anpassen", "Ustawienia licznika FPS"},
+        {"Unsupported: %s", "Нет поддержки: %s", "Nicht unterstützt: %s", "Brak obsługi: %s"},
+        {"Supported: %s", "Поддерживаются: %s", "Unterstützt: %s", "Obsługiwane: %s"},
+        {"Support not checked: %s", "Поддержка не проверена: %s", "Unterstützung ungeprüft: %s", "Brak wyniku dla: %s"},
+        {"ETC2 is widely supported on mobile GPUs. ASTC offers a choice of block sizes; larger blocks use less memory but retain less detail.", "ETC2 широко поддерживается мобильными GPU. В ASTC размер блока определяет качество и объём памяти. Чем крупнее блок, тем меньше памяти и деталей.", "ETC2 wird von vielen mobilen GPUs unterstützt. Bei ASTC sparen größere Blöcke Speicher und verringern den Detailgrad.", "ETC2 obsługuje wiele mobilnych GPU. W ASTC większe bloki oszczędzają pamięć kosztem szczegółów."},
+        {"%1$s cannot sample %2$s. Converting textures may improve performance. You can remove the converted textures under Textures later.", "Режим %1$s не поддерживает %2$s. Конвертация текстур может улучшить производительность. Позже копии можно удалить в разделе «Текстуры».", "%1$s unterstützt %2$s nicht. Eine Konvertierung kann die Leistung verbessern. Die konvertierten Texturen lassen sich später unter Texturen entfernen.", "%1$s nie obsługuje %2$s. Konwersja może poprawić wydajność. Przekonwertowane kopie można później usunąć w sekcji Tekstury."},
+        {"This renderer reads the original game textures.", "Этот режим читает исходные текстуры игры.", "Dieser Renderer liest die Originaltexturen des Spiels.", "Ten renderer odczytuje oryginalne tekstury gry."},
+        {"Requires OpenGL ES %s", "Требуется OpenGL ES %s", "Benötigt OpenGL ES %s", "Wymaga OpenGL ES %s"},
+        {"Minimum: Android API %1$d · %2$s", "Минимум: Android API %1$d · %2$s", "Minimum: Android-API %1$d · %2$s", "Minimum: Android API %1$d · %2$s"},
+        {"Vulkan (system driver)", "Vulkan (системный драйвер)", "Vulkan (Systemtreiber)", "Vulkan (sterownik systemowy)"},
+        {"The selected driver supports none of this converter’s output formats.", "Выбранный драйвер не поддерживает форматы этого конвертера.", "Der gewählte Treiber unterstützt keines der Zielformate.", "Wybrany sterownik nie obsługuje formatów wyjściowych tego konwertera."},
+        {"Source formats have not been identified", "Форматы исходных текстур не определены", "Quellformate noch unbekannt", "Formaty źródłowe są nieznane"},
+        {"Last game failure", "Последний сбой игры", "Letzter Spielabsturz", "Ostatnia awaria gry"},
+        {"Could not save the setting.", "Не удалось сохранить настройку.", "Die Einstellung konnte nicht gespeichert werden.", "Nie udało się zapisać ustawienia."},
+        {"Estimated textures: %1$d (%2$s).", "Оценка количества текстур: %1$d (%2$s).", "Geschätzte Texturen: %1$d (%2$s).", "Szacowana liczba tekstur: %1$d (%2$s)."},
+        {"Requires a Qualcomm Adreno GPU. Detected %s", "Требуется видеочип Qualcomm Adreno. Обнаружен %s", "Erfordert eine Qualcomm-Adreno-GPU. Erkannt: %s", "Wymaga układu Qualcomm Adreno. Wykryto %s"},
     };
 
     private static int column = -1;
-    private static JSONObject translations;
 
     private Texts() { }
 
@@ -402,8 +503,6 @@ final class Texts {
 
     static String system() {
         String language = Locale.getDefault().getLanguage();
-        if ("pt".equals(language)) return "pt-BR";
-        if ("zh".equals(language)) return "zh-CN";
         return "uk".equals(language) || "be".equals(language) ? "ru" : language;
     }
 
@@ -414,22 +513,7 @@ final class Texts {
 
     static String language(Context context) { return LANGUAGES[column(context)]; }
 
-    static String t(Context context, int id) {
-        String[] row = TEXTS[id];
-        int selected = column(context);
-        return selected < row.length ? row[selected] : translated(context, row[0]);
-    }
-
-    static synchronized String translated(Context context, String english) {
-        String language = language(context);
-        if (context == null || "en".equals(language) || english.isEmpty()) return english;
-        if (translations == null) {
-            try { translations = new JSONObject(Spec.asset(context, "launcher/translations.json")); }
-            catch (java.io.IOException | org.json.JSONException unavailable) { translations = new JSONObject(); }
-        }
-        JSONObject row = translations.optJSONObject(language);
-        return row == null ? english : row.optString(english, english);
-    }
+    static String t(Context context, int id) { return TEXTS[id][column(context)]; }
 
     static String fmt(Context context, int id, Object... args) {
         return String.format(Locale.getDefault(), t(context, id), args);
@@ -441,7 +525,7 @@ final class Texts {
         if (!(value instanceof JSONObject)) return String.valueOf(value);
         JSONObject map = (JSONObject) value;
         String text = map.optString(language(context), "");
-        if (text.isEmpty()) text = translated(context, map.optString("en", ""));
+        if (text.isEmpty()) text = map.optString("en", "");
         if (text.isEmpty()) {
             Iterator<String> keys = map.keys();
             if (keys.hasNext()) text = map.optString(keys.next(), "");
@@ -473,6 +557,7 @@ final class Texts {
         case Failure.CANCELLED: return t(context, E_CANCELLED);
         case Failure.REMOTE: return t(context, E_REMOTE);
         case Failure.CHANGED: return t(context, E_CHANGED);
+        case Failure.MD5_MISMATCH: return fmt(context, E_MD5_MISMATCH, f.detail);
         default: return fmt(context, E_IO, f.detail);
         }
     }

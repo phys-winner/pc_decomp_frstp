@@ -98,6 +98,7 @@ struct Texture : Resource {
     uint32_t mapped_count = 0;
     ReadbackRing* readback = nullptr;   /* tiny staging readback target: its private copies */
     bool readback_slot = false;         /* one of those copies */
+    uint8_t shrink = 0;                 /* halvings of interface art at creation (ui_texture_shrink.h) */
     VkImageLayout layout(uint32_t mip, uint32_t layer) const { return layouts[layer * mips + mip]; }
     uint32_t sub_width(uint32_t mip) const { return std::max(1u, width >> mip); }
     uint32_t sub_height(uint32_t mip) const { return std::max(1u, height >> mip); }

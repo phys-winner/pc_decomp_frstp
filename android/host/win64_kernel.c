@@ -46,7 +46,7 @@ struct object {
         struct { int fd, readable, writable, delete_access, zipped; uint32_t share; dev_t dev; ino_t ino; fp_data_file data; uint64_t position; } file;
         struct { int fd; uint64_t bytes; uint32_t protection; object *file; } mapping;
         struct {void *payload;void (*destroy)(void *);int completed;uint32_t exit_code;} thread;
-        struct {DIR *directory;char *pattern;int all,directories,sensitive,parent,ziproot,physical_done;size_t zip_cursor;} find;
+        struct {DIR *directory;char *pattern;const char *excluded;int all,directories,sensitive,parent,ziproot,physical_done;size_t zip_cursor;} find;
     } u;
 };
 typedef struct handle { uint64_t id; object *obj; uint32_t access, flags; struct handle *next; } handle;
@@ -65,6 +65,7 @@ static pthread_once_t kernel_once=PTHREAD_ONCE_INIT;
 static pthread_condattr_t wait_clock;
 static const char *game_root="/sdcard/Frostpunk/game";
 static const char *profile_root="/sdcard/Frostpunk/profile";
+static const char *profile_in_game;
 extern int frostpunk_switch_ui(void) __attribute__((weak));
 static int kernel_started,roots_configured;
 static const char guest_game[]="C:/Program Files (x86)/Steam/steamapps/common/Frostpunk";
@@ -341,14 +342,17 @@ int win64_kernel_configure_roots(const char *game,const char *profile) {
     if(!game||!profile||game[0]!='/'||profile[0]!='/')return 0;
     char *game_path=realpath(game,NULL),*profile_path=realpath(profile,NULL);
     struct stat gs,ps;
-    if(!game_path||!profile_path||strlen(game_path)<=1||strlen(profile_path)<=1||
-       prefix(game_path,profile_path,0)||prefix(profile_path,game_path,0)||
-       stat(game_path,&gs)||stat(profile_path,&ps)||!S_ISDIR(gs.st_mode)||!S_ISDIR(ps.st_mode)) {
+    if(!game_path||!profile_path||strlen(game_path)<=1||strlen(profile_path)<=1||prefix(game_path,profile_path,0)||
+       stat(game_path,&gs)||stat(profile_path,&ps)||!S_ISDIR(gs.st_mode)||!S_ISDIR(ps.st_mode)||
+       (gs.st_dev==ps.st_dev&&gs.st_ino==ps.st_ino)) {
         free(game_path);free(profile_path);return 0;
     }
     pthread_mutex_lock(&kernel_mutex);
     int accepted=!kernel_started&&!roots_configured;
-    if(accepted){game_root=game_path;profile_root=profile_path;roots_configured=1;}
+    if(accepted){
+        game_root=game_path;profile_root=profile_path;roots_configured=1;
+        if(prefix(profile_path,game_path,0))profile_in_game=profile_path+strlen(game_path)+1;
+    }
     pthread_mutex_unlock(&kernel_mutex);
     if(!accepted){free(game_path);free(profile_path);}return accepted;
 }
@@ -365,8 +369,8 @@ static int translate_path(const char *input,path_info *out,int writing) {
     else if(prefix(p,guest_profile,1)){p+=strlen(guest_profile);out->profile=1;}
     else if(prefix(p,guest_profile_root,1)){p+=strlen(guest_profile_root);out->profile=1;}
     else if(prefix(p,guest_documents,1)){p+=strlen(guest_documents);out->profile=1;}
-    else if(prefix(p,game_root,0))p+=strlen(game_root);
     else if(prefix(p,profile_root,0)){p+=strlen(profile_root);out->profile=1;}
+    else if(prefix(p,game_root,0))p+=strlen(game_root);
     else if(*p=='/' || strchr(p,':')){win64_set_error(ERROR_PATH_NOT_FOUND);return 0;}
     if(writing && !out->profile){win64_set_error(ERROR_ACCESS_DENIED);return 0;}
     while(*p=='/')++p;
@@ -385,6 +389,9 @@ static int translate_path(const char *input,path_info *out,int writing) {
         if(!end)break;p=end+1;
     }
     out->relative[used]=0;
+    if(!out->profile&&profile_in_game&&prefix(out->relative,profile_in_game,1)){
+        win64_set_error(ERROR_ACCESS_DENIED);return 0;
+    }
     if(!out->profile&&frostpunk_switch_ui&&frostpunk_switch_ui()&&!strcasecmp(out->relative,"templates.idx"))
         strcpy(out->relative,"templates-switch.idx");
     return 1;
@@ -572,6 +579,7 @@ static int find_next(object *o,uint64_t output,int wide,int first) {
             name=archive_name;archived=1;
         }else name=entry->d_name;
         if(!strcmp(name,"..")&&!o->u.find.parent)continue;
+        if(o->u.find.excluded&&!strcasecmp(name,o->u.find.excluded))continue;
         if(!o->u.find.all && (o->u.find.sensitive?strcmp(name,o->u.find.pattern):strcasecmp(name,o->u.find.pattern)))continue;
         if(!archived&&fstatat(dirfd(o->u.find.directory),name,&st,AT_SYMLINK_NOFOLLOW)) {
             if(errno==ENOENT)continue;win64_set_error(posix_error(errno));return 0;
@@ -609,6 +617,12 @@ static uint64_t find_first(CPU *c,int wide,int extended) {
     o->u.find.directory=directory;o->u.find.pattern=saved_pattern;o->u.find.all=all;o->u.find.directories=search==1;
     o->u.find.sensitive=(flags&1)!=0;o->u.find.parent=*path.relative!=0;
     o->u.find.ziproot=!path.profile&&!*path.relative&&fp_data_root_matches(game_root);
+    if(!path.profile&&profile_in_game){
+        const char *slash=strrchr(profile_in_game,'/');
+        size_t parent_length=slash?(size_t)(slash-profile_in_game):0;
+        if(strlen(path.relative)==parent_length&&!strncasecmp(path.relative,profile_in_game,parent_length))
+            o->u.find.excluded=slash?slash+1:profile_in_game;
+    }
     if(!find_next(o,output,wide,1)){o->refs=1;release_object(o);return INVALID_HANDLE;}
     uint64_t id=new_handle(o,0,0);if(!id){o->refs=1;release_object(o);return INVALID_HANDLE;}return id;
 }
@@ -848,6 +862,37 @@ int win64_kernel_call(CPU *c,const char *name) {
     }
     pthread_mutex_unlock(&kernel_mutex);return 0;
 }
+/* Direct handlers for win64.c's import cache (cached step 36): the branches of win64_kernel_call
+ * above, without its strlen and name comparisons.  The game thread calls SetEvent for every block
+ * of render commands it hands to the render thread. */
+static int fast_event(CPU *c,int signaled){
+    pthread_once(&kernel_once,initialize);pthread_mutex_lock(&kernel_mutex);
+    handle *h=find_handle(c->rcx);if(!h||h->obj->type!=OBJ_EVENT)RETURN(error_value(ERROR_INVALID_HANDLE,0));
+    if(!(h->access&2))RETURN(error_value(ERROR_ACCESS_DENIED,0));
+    h->obj->u.event.signaled=signaled;notify_waiters();RETURN(1);
+}
+static int fast_set_event(CPU *c){return fast_event(c,1);}
+static int fast_reset_event(CPU *c){return fast_event(c,0);}
+static int fast_release_semaphore(CPU *c){
+    pthread_once(&kernel_once,initialize);pthread_mutex_lock(&kernel_mutex);
+    handle *h=find_handle(c->rcx);if(!h||h->obj->type!=OBJ_SEMAPHORE)RETURN(error_value(ERROR_INVALID_HANDLE,0));
+    if(!(h->access&2))RETURN(error_value(ERROR_ACCESS_DENIED,0));
+    int32_t amount=(int32_t)c->rdx;if(amount<=0)RETURN(error_value(ERROR_INVALID_PARAMETER,0));
+    if(amount>h->obj->u.semaphore.maximum-h->obj->u.semaphore.count)RETURN(error_value(ERROR_TOO_MANY_POSTS,0));
+    if(c->r8)store32(c->r8,(uint32_t)h->obj->u.semaphore.count);
+    h->obj->u.semaphore.count+=amount;notify_waiters();RETURN(1);
+}
+static int fast_wait_single(CPU *c){
+    pthread_once(&kernel_once,initialize);pthread_mutex_lock(&kernel_mutex);
+    uint64_t id=c->rcx;RETURN(wait_objects(&id,1,0,(uint32_t)c->rdx));
+}
+int (*win64_kernel_fast_import(const char *name))(CPU *){
+    if(!strcmp(name,"SetEvent"))return fast_set_event;
+    if(!strcmp(name,"ResetEvent"))return fast_reset_event;
+    if(!strcmp(name,"ReleaseSemaphore"))return fast_release_semaphore;
+    if(!strcmp(name,"WaitForSingleObject"))return fast_wait_single;
+    return NULL;
+}
 #undef RETURN
 #undef ARG
 
@@ -895,7 +940,7 @@ void win64_kernel_roots_self_test(void) {
     test_require(!mkdir(game,0700)&&!mkdir(profile,0700),"root fixture children");
     pid_t child=fork();test_require(child>=0,"root fixture fork");
     if(!child) {
-        path_info path;int ok=!win64_kernel_configure_roots(base,profile) &&
+        path_info path;int ok=!win64_kernel_configure_roots(game,base) &&
             !win64_kernel_configure_roots("relative",profile) &&
             win64_kernel_configure_roots(game,profile) && !win64_kernel_configure_roots(game,profile) &&
             translate_path(guest_profile,&path,1) && path.profile && !*path.relative &&
@@ -915,7 +960,7 @@ void win64_kernel_roots_self_test(void) {
     }
     int status;test_require(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status),"host root configuration/alias/isolation");
     test_require(!rmdir(game)&&!rmdir(profile)&&!rmdir(base),"root fixture cleanup");
-    fprintf(stderr,"KERNEL_ROOTS_SELF_TEST existing_disjoint_directories=1 overlap_rejected=1 immutable_after_first_API=1 physical_and_Windows_aliases=1 game_writes_denied=1 passed\n");
+    fprintf(stderr,"KERNEL_ROOTS_SELF_TEST existing_disjoint_directories=1 profile_parent_rejected=1 immutable_after_first_API=1 physical_and_Windows_aliases=1 game_writes_denied=1 passed\n");
 }
 void win64_kernel_self_test(void) {
     uint32_t saved_error=win64_get_error();
@@ -980,7 +1025,8 @@ void win64_kernel_self_test(void) {
     snprintf(fixture,sizeof(fixture),"%s/game/input.bin",temporary);
     int fd=open(fixture,O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC,0600);unsigned char payload[]={1,2,0x1a,0,0xff},readback[5]={0};
     test_require(fd>=0&&write(fd,payload,sizeof(payload))==(ssize_t)sizeof(payload),"create read-only fixture");close(fd);
-    const char *saved_game=game_root,*saved_profile=profile_root;game_root=inputs;profile_root=profile;
+    const char *saved_game=game_root,*saved_profile=profile_root,*saved_nested=profile_in_game;
+    game_root=inputs;profile_root=profile;profile_in_game=NULL;
     char input_name[]="input.bin";uint32_t transferred=0;uint64_t size=0;unsigned char info[52];
     win64_region_add(ADDRESS(input_name),sizeof(input_name),0);win64_region_add(ADDRESS(payload),sizeof(payload),0);
     win64_region_add(ADDRESS(readback),sizeof(readback),1);win64_region_add(ADDRESS(&transferred),sizeof(transferred),1);
@@ -1058,7 +1104,7 @@ void win64_kernel_self_test(void) {
     test_require(CALL("CreateFileA",ADDRESS(symlink_path),GENERIC_WRITE,7,0,1,0x80,0)==INVALID_HANDLE&&access(escaped,F_OK),"symlink write boundary");
     win64_region_remove(ADDRESS(symlink_path));win64_region_remove(ADDRESS(profile_name));win64_region_remove(ADDRESS(input_name));
     win64_region_remove(ADDRESS(payload));win64_region_remove(ADDRESS(readback));win64_region_remove(ADDRESS(&transferred));win64_region_remove(ADDRESS(&size));win64_region_remove(ADDRESS(info));
-    game_root=saved_game;profile_root=saved_profile;
+    game_root=saved_game;profile_root=saved_profile;profile_in_game=saved_nested;
     test_require(!unlink(escape)&&!unlink(fixture)&&!rmdir(inputs)&&!rmdir(profile)&&!rmdir(temporary),"remove own filesystem fixtures");
     win64_region_remove(ADDRESS(event_name));win64_region_remove(ADDRESS(mapping_name));
     win64_set_error(saved_error);

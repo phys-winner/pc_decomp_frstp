@@ -305,7 +305,9 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
     if (s && s->swapchain && s->back) {
         VkSemaphore acquire = s->acquire[s->acquire_index];
         uint32_t index = 0;
+        uint64_t acquire_start = now_ns();
         VkResult result = vk.vkAcquireNextImageKHR(gpu.device, s->swapchain, 2000000000ull, acquire, VK_NULL_HANDLE, &index);
+        gpu.sync.acquire_ns += now_ns() - acquire_start;
         /* A lost surface is rebuilt with a new VkSurfaceKHR on the next frame (T04 a/b). */
         if (result == VK_ERROR_SURFACE_LOST_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
             if (first_time("acquire_lost")) log("RDVK_SURFACE_REBUILD acquire returned %s", vk_result(result));
@@ -450,6 +452,17 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
         gpu.staging.log_chunks();
     }
     if (frames % 600 == 0) {
+        /* Render-thread synchronisation per presented frame (the 600 frames since the last line). */
+        Gpu::SyncStats& y = gpu.sync;
+        const double ms = 600.0 * 1e6;
+        log("RDVK_SYNC marker=%d per_frame: status_calls=%.2f status_ms=%.3f fence_waits=%.2f fence_ms=%.3f slot_waits=%.2f "
+            "slot_ms=%.3f submits=%.2f submit_ms=%.3f present_ms=%.3f acquire_ms=%.3f map_staging=%.2f map_waits=%.2f map_ms=%.3f "
+            "map_flags=%llu polls=%.2f",
+            gpu.has_marker() ? 1 : 0, double(y.status_calls) / 600.0, double(y.status_ns) / ms, double(y.fence_waits) / 600.0,
+            double(y.fence_wait_ns) / ms, double(y.slot_waits) / 600.0, double(y.slot_wait_ns) / ms, double(y.submits) / 600.0,
+            double(y.submit_ns) / ms, double(y.present_ns) / ms, double(y.acquire_ns) / ms, double(y.map_staging) / 600.0,
+            double(y.map_waits) / 600.0, double(y.map_wait_ns) / ms, (unsigned long long)y.map_flags, double(y.poll_calls) / 600.0);
+        y = Gpu::SyncStats{};
         Ring::Stats ring = gpu.stream.stats();
         log("RDVK_FRAME frames=%llu draws=%llu passes=%llu pipelines=%llu stream_mb=%llu stream_chunks=%u idle=%u pinned=%u "
             "moved_home=%llu/%lluKB memory_mb=%llu/%llu",

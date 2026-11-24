@@ -24,6 +24,7 @@ whatever revision is latest:
 | meshoptimizer | [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) | `6daea4695c48338363b08022d2fb15deaef6ac09` | MIT |
 | ASTC encoder | [ARM-software/astc-encoder](https://github.com/ARM-software/astc-encoder) | `baff485b0ff36d2f95d28961605106502c653966` | Apache-2.0 |
 | bcdec | [iOrange/bcdec](https://github.com/iOrange/bcdec) | `0.96` | Retained notice in `bcdec.h` |
+| etcpak (ETC2 encoder: `ProcessRGB`, `Tables`, `Dither`; `Decode` for the self-check) | [wolfpld/etcpak](https://github.com/wolfpld/etcpak) | `3d716e1550023dc5ff8b602636af8b76584e0b66` | BSD-3-Clause |
 | XZ Embedded | [tukaani-project/xz-embedded](https://github.com/tukaani-project/xz-embedded) | `ae63ae3a36ed01724674e8f3d750dc47bf125410` | 0BSD / retained COPYING |
 | libvorbis-derived native helpers | [Xiph.Org Vorbis](https://xiph.org/vorbis/) | `1.3.7` | BSD-3-Clause notice in `android/host/vorbis_native.c` |
 

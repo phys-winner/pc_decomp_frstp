@@ -49,7 +49,7 @@ def main():
     dataset=out/'native-oracle.bin';result=json.loads(run([host,'--oracle',dataset]).stdout)
     assert result['success']and result['full_CPU_calls']==4608 and result['opcode_mutations']==1292
     replay=json.loads(run([host,'--dataset',dataset]).stdout);assert replay==result
-    negative=['width0','height0','rowoverflow','sizeoverflow','badstack','stackoverflow','nullsize','nullrow','readonly','srgb2','mapstack']
+    negative=['width0','height0','rowoverflow','sizeoverflow','badstack','stackoverflow','nullsize','nullrow','readonly','srgb2','mapstack','etc2dxvk']
     for name in negative:
         p=run([host,'--negative',name],False)
         assert p.returncode==73 and 'STOP 'in p.stderr,(name,p.returncode,p.stdout,p.stderr)

@@ -13,6 +13,9 @@
 #include <time.h>
 #include <unistd.h>
 
+/* The spinlock of cpu64.h's locked read-modify-write helpers for a misaligned guest address. */
+__attribute__((visibility("hidden"))) int guest_lock_unaligned;
+
 typedef struct shared_owner {pid_t tid;unsigned count;struct shared_owner *next;} shared_owner;
 typedef struct srw_state {
     uint64_t address;unsigned readers,waiting_writers;pid_t writer;

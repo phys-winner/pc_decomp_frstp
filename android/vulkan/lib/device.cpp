@@ -270,7 +270,15 @@ bool Gpu::init() {
     caps.timestamp_period = limits.timestampPeriod;
     caps.max_anisotropy = limits.maxSamplerAnisotropy;
     snprintf(caps.name, sizeof(caps.name), "%s", props.properties.deviceName);
-    if (props.properties.apiVersion < VK_API_VERSION_1_3) { log("RDVK_GPU needs Vulkan 1.3 (%s)", caps.name); return false; }
+    /* Why 1.3, on the driver this provider loaded (never the system ICD when Turnip/PanVK is chosen):
+     * the packaged shader library is SPIR-V 1.6 (all 1,281 variants), which only a Vulkan 1.3 device
+     * may consume; the command stream uses dynamic rendering, synchronization2 and the dynamic state
+     * of VK_EXT_extended_dynamic_state/2 as 1.3 core entry points. */
+    if (props.properties.apiVersion < VK_API_VERSION_1_3) {
+        log("RDVK_GPU needs Vulkan 1.3 for SPIR-V 1.6 shaders and dynamic rendering: %s reports %u.%u.%u", caps.name,
+            VK_API_VERSION_MAJOR(caps.api), VK_API_VERSION_MINOR(caps.api), VK_API_VERSION_PATCH(caps.api));
+        return false;
+    }
 
     std::vector<VkExtensionProperties> extensions;
     vk.vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr);
@@ -285,7 +293,18 @@ bool Gpu::init() {
     VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &f12};
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11};
     vk.vkGetPhysicalDeviceFeatures2(physical, &features);
-    if (!f13.dynamicRendering || !f13.synchronization2) { log("RDVK_GPU missing dynamic rendering/synchronization2"); return false; }
+    {   /* Hard requirements beyond the version; everything else has a fallback or drops single passes.
+         * shaderDrawParameters is optional in Vulkan 1.3 and every packaged vertex shader (462) declares
+         * DrawParameters; vulkanMemoryModel is declared by all shaders (mandatory in 1.3, checked anyway). */
+        std::string lacking;
+        auto need = [&](VkBool32 ok, const char* name) { if (!ok) { if (!lacking.empty()) lacking += ","; lacking += name; } };
+        need(f13.dynamicRendering, "dynamicRendering");
+        need(f13.synchronization2, "synchronization2");
+        need(f12.vulkanMemoryModel, "vulkanMemoryModel");
+        need(f11.shaderDrawParameters, "shaderDrawParameters");
+        need(has_extension(extensions, "VK_KHR_swapchain"), "VK_KHR_swapchain");
+        if (!lacking.empty()) { log("RDVK_GPU missing required features: %s (%s)", lacking.c_str(), caps.name); return false; }
+    }
 
     /* Enable exactly what the port uses. */
     VkPhysicalDeviceFeatures& core = features.features;
@@ -425,15 +444,31 @@ bool Gpu::init() {
          * scout portraits vanished and a masked arc showed in the temperature dial.  Re-set the
          * state at every pass on Mali; debug.fp.rdvk_dynamic_reset=0|1 overrides. */
         std::string reset = property("debug.fp.rdvk_dynamic_reset");
-        caps.reset_dynamic_per_pass = reset == "1" || (reset != "0" && caps.vendor == 0x13b5);
+        /* The launcher's renderer card: PORT_OPTION_FIX_MALI_DYNAMIC_STATE=0 switches the automatic
+         * workaround off (unset or 1 = automatic by vendor); the debug property keeps priority. */
+        const char* player = getenv("PORT_OPTION_FIX_MALI_DYNAMIC_STATE");
+        bool player_off = player && !strcmp(player, "0");
+        caps.reset_dynamic_per_pass = reset == "1" || (reset != "0" && caps.vendor == 0x13b5 && !player_off);
+        if (caps.reset_dynamic_per_pass || caps.vendor == 0x13b5)
+            log("RDVK_WORKAROUND name=mali_dynamic_state state=%s reason=%s", caps.reset_dynamic_per_pass ? "on" : "off",
+                reset == "1" ? "debug.fp.rdvk_dynamic_reset=1" : reset == "0" ? "debug.fp.rdvk_dynamic_reset=0" :
+                player_off ? "player (PORT_OPTION_FIX_MALI_DYNAMIC_STATE=0)" : "ARM Mali driver");
     }
     if (!caps.push_descriptor) vk.vkCmdPushDescriptorSetKHR = nullptr;
     {
         /* PowerVR: the compiler is not thread safe (external-theories T05 e); everywhere after a
          * crashed native session (safe mode level 1). debug.fp.rdvk_serialize=0|1 overrides. */
         std::string serial = property("debug.fp.rdvk_serialize");
-        if (serial != "0" && (serial == "1" || caps.vendor == 0x1010 || guard_level() >= 1))
-            serialize_driver(serial == "1" ? "debug.fp.rdvk_serialize=1" : caps.vendor == 0x1010 ? "PowerVR" : "safe mode level 1");
+        /* PORT_OPTION_FIX_POWERVR_COMPILER=0 (launcher) switches the PowerVR default off; safe mode
+         * level 1 and the debug property still serialize. */
+        const char* player = getenv("PORT_OPTION_FIX_POWERVR_COMPILER");
+        bool player_off = player && !strcmp(player, "0");
+        bool powervr = caps.vendor == 0x1010 && !player_off;
+        bool on = serial != "0" && (serial == "1" || powervr || guard_level() >= 1);
+        const char* reason = serial == "1" ? "debug.fp.rdvk_serialize=1" : serial == "0" ? "debug.fp.rdvk_serialize=0" :
+            powervr ? "PowerVR" : guard_level() >= 1 ? "safe mode level 1" : "player (PORT_OPTION_FIX_POWERVR_COMPILER=0)";
+        if (on) serialize_driver(reason);
+        if (on || caps.vendor == 0x1010) log("RDVK_WORKAROUND name=powervr_compiler state=%s reason=%s", on ? "on" : "off", reason);
     }
     vk.vkCmdSetDepthClampEnableEXT = reinterpret_cast<PFN_vkCmdSetDepthClampEnableEXT>(vk.vkGetDeviceProcAddr(device, "vkCmdSetDepthClampEnableEXT"));
     vk.vkCmdSetDepthClipEnableEXT = reinterpret_cast<PFN_vkCmdSetDepthClipEnableEXT>(vk.vkGetDeviceProcAddr(device, "vkCmdSetDepthClipEnableEXT"));
@@ -459,6 +494,7 @@ bool Gpu::init() {
         vk_check(vk.vkCreateFence(device, &fence, nullptr, &f.fence), "vkCreateFence");
     }
     formats_fallbacks();
+    marker_init();
     begin_frame();
     if (caps.vendor == 0x1010 && guard_level() == 0) {
         caps.defer_attachment_transitions = true;
@@ -481,10 +517,91 @@ bool Gpu::init() {
     return true;
 }
 
+namespace {
+uint64_t mono_ns() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return uint64_t(t.tv_sec) * 1000000000ull + uint64_t(t.tv_nsec); }
+}
+
+void Gpu::marker_init() {
+    if (property("debug.fp.rdvk_marker") == "0") { log("RDVK_MARKER off (fence status polling)"); return; }
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = 64; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vk.vkCreateBuffer(device, &bi, nullptr, &done_buf_) != VK_SUCCESS) { done_buf_ = VK_NULL_HANDLE; log("RDVK_MARKER unavailable"); return; }
+    VkMemoryRequirements req;
+    vk.vkGetBufferMemoryRequirements(device, done_buf_, &req);
+    const VkMemoryPropertyFlags vis = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, coh = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                cached = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    int type = -1;
+    const VkMemoryPropertyFlags wants[3] = {vis | coh | cached, vis | coh, vis};
+    for (VkMemoryPropertyFlags want : wants) {
+        for (uint32_t i = 0; i < memory_properties.memoryTypeCount && type < 0; ++i)
+            if ((req.memoryTypeBits & (1u << i)) && (memory_properties.memoryTypes[i].propertyFlags & want) == want) type = int(i);
+        if (type >= 0) break;
+    }
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = req.size; ai.memoryTypeIndex = uint32_t(type < 0 ? 0 : type);
+    void* map = nullptr;
+    if (type < 0 || vk.vkAllocateMemory(device, &ai, nullptr, &done_mem_) != VK_SUCCESS ||
+        vk.vkBindBufferMemory(device, done_buf_, done_mem_, 0) != VK_SUCCESS ||
+        vk.vkMapMemory(device, done_mem_, 0, VK_WHOLE_SIZE, 0, &map) != VK_SUCCESS) {
+        log("RDVK_MARKER unavailable (fence status polling)");
+        vk.vkDestroyBuffer(device, done_buf_, nullptr); done_buf_ = VK_NULL_HANDLE;
+        if (done_mem_) { vk.vkFreeMemory(device, done_mem_, nullptr); done_mem_ = VK_NULL_HANDLE; }
+        return;
+    }
+    done_coherent_ = (memory_properties.memoryTypes[type].propertyFlags & coh) != 0;
+    done_map_ = static_cast<volatile uint32_t*>(map);
+    *done_map_ = 0;
+    log("RDVK_MARKER memory_type=%d flags=0x%x %s", type, memory_properties.memoryTypes[type].propertyFlags,
+        done_coherent_ ? "coherent" : "invalidated");
+}
+
+/* After every command of the submission: its serial (low 32 bits). */
+void Gpu::marker_record(VkCommandBuffer cmd, uint64_t serial) {
+    if (!done_buf_) return;
+    VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT; before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+    vk.vkCmdFillBuffer(cmd, done_buf_, 0, 4, uint32_t(serial));
+    VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; after.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &after, 0, nullptr, 0, nullptr);
+}
+
+uint64_t Gpu::marker_done() {
+    if (!done_map_) return 0;
+    if (!done_coherent_) {
+        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = done_mem_; range.size = VK_WHOLE_SIZE;
+        vk.vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
+    uint32_t low = __atomic_load_n(done_map_, __ATOMIC_ACQUIRE);
+    /* Widen against the serial being recorded: every serial in flight is within 2^32 of it. */
+    const uint64_t wrap = uint64_t(1) << 32;
+    uint64_t done = (serial_ & ~uint64_t(0xFFFFFFFFu)) | low;
+    if (done >= serial_) done = done >= wrap ? done - wrap : 0;
+    return done;
+}
+
+bool Gpu::fence_done(VkFence fence) {
+    uint64_t t0 = mono_ns();
+    bool done = vk.vkGetFenceStatus(device, fence) == VK_SUCCESS;
+    ++sync.status_calls; sync.status_ns += mono_ns() - t0;
+    return done;
+}
+
 void Gpu::begin_frame() {
     Frame& f = frame();
     wait_submitted(f.serial);
-    if (vk.vkGetFenceStatus(device, f.fence) != VK_SUCCESS) wait_fence(f.fence, "vkWaitForFences(frame)");
+    /* The slot's previous submission must be complete before its fence and pool are reset.  With the
+     * marker the fence is asked only once the marker covers the slot (then it is already signalled);
+     * otherwise this is a real wait. */
+    bool ready = done_map_ ? (marker_done() >= f.serial && fence_done(f.fence)) : fence_done(f.fence);
+    if (!ready) {
+        uint64_t t0 = mono_ns();
+        wait_fence(f.fence, "vkWaitForFences(frame)");
+        uint64_t dt = mono_ns() - t0;
+        if (dt > 50000) { ++sync.slot_waits; sync.slot_wait_ns += dt; }
+    }
     if (f.serial > completed_.load()) completed_.store(f.serial, std::memory_order_release);
     std::vector<std::function<void()>> garbage;
     { std::lock_guard lock(garbage_mutex_); garbage.swap(f.garbage); }
@@ -551,6 +668,7 @@ void Gpu::submit(VkSemaphore wait, VkPipelineStageFlags wait_stage, VkSemaphore 
             vk_check(vk.vkEndCommandBuffer(f.upload), "vkEndCommandBuffer(upload)");
             job.buffers[job.count++] = f.upload;
         }
+        marker_record(f.cmd, serial_);
         vk_check(vk.vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer");
         job.buffers[job.count++] = f.cmd;
         stream.frame_end(serial_);
@@ -580,8 +698,11 @@ void Gpu::submit_now(Submission& job) {
     }
     if (job.signal) { info.signalSemaphoreCount = 1; info.pSignalSemaphores = &job.signal; }
     std::lock_guard lock(queue_mutex_);
+    uint64_t t0 = mono_ns();
     vk_check(vk.vkQueueSubmit(queue, 1, &info, job.fence), "vkQueueSubmit");
-    if (job.present) job.present();
+    uint64_t t1 = mono_ns();
+    ++sync.submits; sync.submit_ns += t1 - t0;
+    if (job.present) { job.present(); sync.present_ns += mono_ns() - t1; }
 }
 
 void Gpu::submit_loop() {
@@ -627,9 +748,16 @@ void Gpu::wait_serial(uint64_t serial) {
     if (serial >= serial_) submit();  /* the commands are still being recorded */
     assert(serial < serial_);
     wait_submitted(serial);
+    if (done_map_) {
+        uint64_t m = marker_done();
+        if (m >= serial) { if (m > completed()) completed_.store(m, std::memory_order_release); return; }
+    }
+    uint64_t t0 = mono_ns();
     for (Frame& f : frames_)
         if (f.serial == serial || (f.serial > completed() && f.serial <= serial))
             wait_fence(f.fence, "vkWaitForFences(serial)");
+    uint64_t dt = mono_ns() - t0;
+    if (dt > 50000) { ++sync.fence_waits; sync.fence_wait_ns += dt; }
     poll();
     completed_.store(std::max(completed(), serial), std::memory_order_release);
 }
@@ -640,10 +768,16 @@ void Gpu::defer(std::function<void()> destroy) {
 }
 
 void Gpu::poll() {
+    ++sync.poll_calls;
     uint64_t done = completed();
+    if (done_map_) {
+        uint64_t m = marker_done();
+        if (m > done) completed_.store(m, std::memory_order_release);
+        return;
+    }
     uint64_t submitted = submitted_.load(std::memory_order_acquire);
     for (Frame& f : frames_)
-        if (f.serial > done && f.serial <= submitted && vk.vkGetFenceStatus(device, f.fence) == VK_SUCCESS) done = f.serial;
+        if (f.serial > done && f.serial <= submitted && fence_done(f.fence)) done = std::max(done, f.serial);
     if (done > completed()) completed_.store(done, std::memory_order_release);
 }
 
@@ -660,6 +794,8 @@ void Gpu::destroy() {
     stream.destroy();
     staging.destroy();
     memory.destroy();
+    if (done_buf_) { vk.vkDestroyBuffer(device, done_buf_, nullptr); done_buf_ = VK_NULL_HANDLE; }
+    if (done_mem_) { vk.vkFreeMemory(device, done_mem_, nullptr); done_mem_ = VK_NULL_HANDLE; done_map_ = nullptr; }
     vk.vkDestroyDevice(device, nullptr);
     vk.vkDestroyInstance(instance, nullptr);
     device = VK_NULL_HANDLE;

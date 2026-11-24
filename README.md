@@ -1,4 +1,4 @@
-# Frostpunk for Android — 0.3.1-dev
+# Frostpunk for Android — 0.3.2-dev
 
 Experimental native ARM64 Android port of Frostpunk using static recompilation,
 with Vulkan rendering, touch controls, and on-device texture conversion.
@@ -9,8 +9,8 @@ This unofficial community project is unaffiliated with 11 bit studios.
 ## Status and requirements
 
 The port runs statically translated x86-64 game code as ARM64 code. A native host
-runtime provides the Windows interfaces the game uses; DXVK translates D3D11 to
-Vulkan. The Android execution path does not run Wine or Box64.
+runtime provides the Windows interfaces the game uses. Its native renderer draws D3D11 on
+Vulkan. Existing releases also include the transitional DXVK path. The Android execution path does not run Wine or Box64.
 
 The main menu and a new A New Home city have run on tested Adreno, Mali, and
 PowerVR configurations during development. This does not establish full scenario,
@@ -22,8 +22,8 @@ You need:
 - A compatible Vulkan 1.3 GPU and driver. Adreno uses Mesa Turnip; supported Mali
   and PowerVR devices use system Vulkan. The launcher reports the actual features; attempting launch despite a warning does not guarantee compatibility.
 - The launcher checks experimental PanVK on all Mali and Immortalis GPUs.
-  Both PanVK modes use the same ASTC texture pack and require the driver to pass
-  the compatibility check. The bundled driver requires 4 KiB kernel pages.
+  The launcher checks the selected driver for DXT1, DXT3 and DXT5 sampling. It can offer
+  the shared ASTC texture pack when these formats are unavailable. The bundled driver requires 4 KiB kernel pages.
   On other page sizes, import a compatible PanVK driver. The bundled driver
   uses Kraid for fragment shaders on Valhall and newer architectures.
 - Your own supported Steam PC installation of Frostpunk. The pinned
@@ -42,8 +42,8 @@ manifests in `android/` contain names, sizes, and hashes, not game payloads.
 
 ## Install and play
 
-1. Install `Frostpunk-0.3.1-dev-<commit>.apk` (eight commit hash characters): package `com.frostpunk.staticrecomp`, version
-   name `0.3.1-dev`, version code `6`.
+1. Install `Frostpunk-0.3.2-dev-<commit>.apk` (eight commit hash characters). The package is
+   `com.frostpunk.staticrecomp`, with version name `0.3.2-dev` and version code `7`.
 2. Open the launcher and grant storage access as needed. The Play card shows
    unsupported GPU features and insufficient Vulkan versions. The launcher stays
    usable when the device cannot run the game.
@@ -57,9 +57,10 @@ manifests in `android/` contain names, sizes, and hashes, not game payloads.
 Conversion preserves the source game files. The Textures card offers preparation
 and restoration; launch checks verify the cache covers the selected quality.
 
-The **Renderer** card lists DXVK and experimental Native Vulkan. The first DXVK
-start offers Native Vulkan on compatible devices. If a Native Vulkan session
-crashes, the launcher reports it and uses DXVK for the next start.
+The **Renderer** card defaults to native Vulkan. System Vulkan, Turnip on supported Adreno
+devices, and PanVK on supported Mali devices have independent compatibility results.
+A native startup failure opens the crash report. You can retry or select a different renderer.
+The existing DXVK modes are transitional while the native backends gain coverage.
 
 **Own driver…** under **PanVK driver** imports a ZIP driver package or an ARM64
 `.so` file. On supported Mali devices, the choice applies to Native Vulkan (PanVK)
@@ -147,7 +148,7 @@ interface patches in the game ZIP. The built-in driver is purple-turnip T30
 
 Turnip disables hardware tessellation to avoid GPU hangs observed in development.
 Upscaling, frame generation, and reduced graphics are experimental and depend on
-the GPU and driver. `0.3.1-dev` remains an early development build.
+the GPU and driver. `0.3.2-dev` remains an early development build.
 
 ## Sources and building
 
@@ -201,6 +202,7 @@ APKs: `build/fast/runtime-inputs.json`, matching generated sources,
 `build/fastlift/obj`, the bridge objects named in `tools/android_release.py`, the
 pinned `build/ui-20261114/v25` base APK, the pinned DXVK checkout and submodules,
 the `build/fastlift/fl18` base payload, the local port UI asset generator,
+the supported Czech and Hungarian localization inputs under `build/fan-localizations`,
 and pinned Turnip inputs in `build/gpu-runtime/runtime` and `reference/turnip-*`.
 These include generated game code and local build products and are not in Git.
 A fresh clone alone cannot reproduce the APK.
@@ -209,9 +211,9 @@ APK tooling and the existing signing key are read from the local
 `~/.agents/skills/adapt-arm32-game/machine_config.json` used by `tools/fastbuild.py`.
 Provide your own private machine configuration and signer; no key or keystore is
 distributed here. The recipe checks the base pin, source stability, APK signature,
-and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3.1-dev-<commit>.apk`, where
+and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3.2-dev-<commit>.apk`, where
 `<commit>` matches the eight-character commit embedded in the APK, with a SHA-256
-sidecar. Local aliases `pub/Frostpunk-0.3.1-dev.apk` and `pub/Frostpunk.apk` are also
+sidecar. Local aliases `pub/Frostpunk-0.3.2-dev.apk` and `pub/Frostpunk.apk` are also
 updated. The whole `pub/` directory is Git-ignored.
 
 A portable localization check needs no device or game files:
@@ -226,8 +228,10 @@ device. Development measurements are not a test of every new APK.
 ## License
 
 Original port code is **GPL-3.0-or-later**, a strong copyleft license. See
-[LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party code keeps its own licenses and
-notices; bundled notices also appear in the APK's `assets/licenses` directory.
+[LICENSE](LICENSE) and [NOTICE](NOTICE). When distributing the covered port in
+binary form, comply with the GPL's Corresponding Source requirements. Third-party
+code keeps its own licenses and notices. The APK carries these notices in
+`assets/licenses`.
 
 The grant does not cover Frostpunk's proprietary executable, data, artwork,
 audio, or generated translations of proprietary code. It does not grant rights

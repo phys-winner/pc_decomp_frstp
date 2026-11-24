@@ -10,6 +10,8 @@ extern "C" {
 void win64_window_configure(const FrostpunkAndroidHost *host);
 /* USER32 handler; the parent import dispatcher alone pops the return address. */
 int win64_window_call(CPU *cpu,const char *name);
+/* Direct handler of the message-loop imports for the import cache (win64.c), else NULL. */
+int (*win64_window_fast_import(const char *name))(CPU *);
 /* SHELL32's void DragAcceptFiles delegate; stores WS_EX_ACCEPTFILES only.
  * No Android file-drop delivery backend is provided. CPU/RSP are preserved. */
 void win64_window_drag_accept_files(CPU *cpu);

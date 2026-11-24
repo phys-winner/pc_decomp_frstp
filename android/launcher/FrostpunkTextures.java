@@ -11,7 +11,9 @@ import java.util.zip.GZIPInputStream;
 import java.security.MessageDigest;
 import org.json.JSONObject;
 
-/** LiquidEngine texture archives, with the same private ASTC6 ABI as the game loader. */
+/** LiquidEngine texture archives, with the same private ASTC6 and ETC2 ABI as the game loader
+ *  (android/host/texture_formats.h).  ASTC 6x6 is read by every renderer; ETC2 (RGB8, or RGBA8 with
+ *  EAC alpha where the texture or its texture array uses alpha) by the native Vulkan renderer. */
 public final class FrostpunkTextures implements TextureBackend {
     private static final String[] NAMES = {"textures-s3.dat", "textures-s3.idx"};
     private static final String WORK = ".frostpunk-astc-work", BACKUP = ".frostpunk-dxt";
@@ -21,12 +23,20 @@ public final class FrostpunkTextures implements TextureBackend {
     private volatile long done, total, bytesDone, bytesTotal;
     private volatile String message = "";
     private boolean switchMips;
-    private volatile long plannedBytes;
+    private volatile long plannedBytes, plannedEtc2Bytes;
+    private static final int DXT1 = 0x31545844, DXT3 = 0x33545844, DXT5 = 0x35545844, ASTC4 = 0x34545341, ASTC6 = 0x36545341,
+        ETC2_RGB = 0x32435445, ETC2_RGBA = 0x41435445, ARRAY = 0x61727241 /* bytes 8-11 of "<TextureArrayDescriptor>" */;
+    /** Targets of encodeTarget: ASTC 6x6; ETC2 by content; ETC2 RGBA8 always. */
+    private static final int TARGET_ASTC6 = 0, TARGET_ETC2 = 1, TARGET_ETC2_RGBA = 2;
     private static native byte[] encode(byte[] texture, int threads) throws IOException;
+    private static native byte[] encodeTarget(byte[] texture, int threads, int target) throws IOException;
     private static native int mipSkip(int key, int width, int height, int count);
 
     public void quality(boolean reduced) { switchMips = reduced; }
     public long outputBytes() { return plannedBytes; }
+    /** Size of the converted archive after the last scan: ASTC 6x6, or the upper bound of ETC2
+     *  (every texture RGBA8; opaque textures outside texture arrays take half of that). */
+    public long outputBytes(int format) { return format == ETC2 ? plannedEtc2Bytes : plannedBytes; }
     public static String convertedQuality(File game) throws IOException {
         File receipt = safe(safe(game, BACKUP), "conversion.json");
         need(receipt.exists(), "Texture conversion metadata is missing; select the original game data");
@@ -44,10 +54,27 @@ public final class FrostpunkTextures implements TextureBackend {
     public static boolean coversQuality(File game, boolean reduced) throws IOException {
         return convertedQuality(game).equals("pc") || reduced;
     }
+    /** TextureBackend.ETC2 or ASTC of the installed conversion; 0 when the folder holds originals. */
+    public static int convertedFormat(File game) throws IOException {
+        File receipt = safe(safe(game, BACKUP), "conversion.json");
+        if (!receipt.isFile()) return 0;
+        need(receipt.length() <= 8192, "Invalid texture conversion receipt");
+        try {
+            String format = new JSONObject(new String(Files.readAllBytes(receipt.toPath()), "UTF-8")).optString("format", "astc");
+            need(format.equals("astc") || format.equals("etc2"), "Unknown converted texture format");
+            return format.equals("etc2") ? ETC2 : ASTC;
+        } catch (org.json.JSONException failure) { throw new IOException("Invalid texture conversion receipt", failure); }
+    }
+    /** Whether a renderer mode of port.json reads a conversion of this format (0: originals).
+     *  The transitional DXVK modes know the ASTC formats only. */
+    public static boolean rendererReads(String renderer, int format) {
+        return format != ETC2 || renderer != null && renderer.startsWith("native_vulkan");
+    }
 
     static final class Row {
-        long stored, decoded, offset, target, source;
+        long stored, decoded, offset, target, targetOpaque, targetEtc2, source;
         int flag, format, key, skip;
+        boolean keepAlpha;
     }
 
     private static void need(boolean ok, String why) throws IOException { if (!ok) throw new IOException(why); }
@@ -113,9 +140,11 @@ public final class FrostpunkTextures implements TextureBackend {
         final long size;
         final String dataStamp, indexStamp;
         final boolean fromZip;
-        long dxt, astc, decodedBytes, outputBytes;
-        Archive(File game) throws IOException { this(game, false); }
-        Archive(File game, boolean reduced) throws IOException {
+        long dxt, astc, etc2, decodedBytes, outputBytes, etc2Bytes;
+        final Set<String> formats = new TreeSet<>();
+        Archive(File game) throws IOException { this(game, false, ASTC); }
+        Archive(File game, boolean reduced) throws IOException { this(game, reduced, ASTC); }
+        Archive(File game, boolean reduced, int target) throws IOException {
             if (reduced) System.loadLibrary("frostpunk_texconv");
             index = safe(game, NAMES[1]); data = safe(game, NAMES[0]);
             need(FrostpunkFiles.isFile(game, NAMES[1]) && FrostpunkFiles.isFile(game, NAMES[0]), "Missing textures-s3.idx or textures-s3.dat");
@@ -137,11 +166,13 @@ public final class FrostpunkTextures implements TextureBackend {
                         && (row.flag == 0 || row.flag == 1) && (row.flag != 0 || row.stored == row.decoded), "Invalid texture archive entry span");
                     byte[] header = new byte[(int)Math.min(HEADER, row.decoded)];
                     try (InputStream in = entry(row)) { readFully(in, header); }
-                    row.target = inspect(header, row, reduced);
-                    if (dxt(row.format)) ++dxt;
-                    if (row.format == 0x34545341 || row.format == 0x36545341) ++astc;
+                    row.target = inspect(header, row, reduced, target);
+                    if (dxt(row.format)) { ++dxt; formats.add(row.format == DXT1 ? "DXT1" : row.format == DXT3 ? "DXT3" : "DXT5"); }
+                    if (row.format == ASTC4 || row.format == ASTC6) ++astc;
+                    if (row.format == ETC2_RGB || row.format == ETC2_RGBA) ++etc2;
                     decodedBytes = Math.addExact(decodedBytes, row.source);
                     outputBytes = Math.addExact(outputBytes, row.target);
+                    etc2Bytes = Math.addExact(etc2Bytes, dxt(row.format) ? row.targetEtc2 : row.stored);
                     rows.add(row);
                 }
             } catch (IOException | RuntimeException error) { stream.close(); throw error; }
@@ -167,28 +198,74 @@ public final class FrostpunkTextures implements TextureBackend {
                 && !Files.isSymbolicLink(index.toPath()) && !Files.isSymbolicLink(data.toPath());
         }
         @Override public void close() throws IOException { stream.close(); }
+
+        /** Marks the DXT rows a TextureArrayDescriptor names: the engine stacks them into one
+         *  Texture2DArray, so they keep one format (ETC2 RGBA8) whatever their own alpha is. */
+        int markArrayElements() throws IOException {
+            Map<Integer, Row> byKey = new HashMap<>();
+            for (Row row : rows) byKey.put(row.key, row);
+            java.util.regex.Pattern name = java.util.regex.Pattern.compile("Name=\"Texture file name\" Value=\"([^\"]*)\"");
+            int marked = 0;
+            for (Row row : rows) {
+                if (row.format != ARRAY) continue;
+                need(row.decoded <= (1 << 20), "Texture array descriptor is too large");
+                byte[] xml = new byte[(int)row.decoded];
+                try (InputStream in = entry(row)) { readFully(in, xml); }
+                java.util.regex.Matcher match = name.matcher(new String(xml, "ISO-8859-1"));
+                while (match.find()) {
+                    Row element = byKey.get(key(match.group(1)));
+                    /* A name without an entry is the engine's to report; it cannot mix formats. */
+                    if (element != null && !element.keepAlpha) { element.keepAlpha = true; ++marked; }
+                }
+            }
+            return marked;
+        }
+    }
+
+    /** The archive key of a texture named by a descriptor: original 0x140E5A8E0, MurmurHash2 (seed 0)
+     *  of the lower-case path with forward slashes and the extension replaced by ".texture". */
+    static int key(String path) {
+        String name = path.toLowerCase(Locale.ROOT).replace('\\', '/');
+        int dot = name.lastIndexOf('.');
+        if (dot > name.lastIndexOf('/')) name = name.substring(0, dot);
+        byte[] data = (name + ".texture").getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        final int m = 0x5bd1e995;
+        int h = data.length, at = 0;
+        for (; at + 4 <= data.length; at += 4) {
+            int k = (data[at] & 255) | (data[at + 1] & 255) << 8 | (data[at + 2] & 255) << 16 | (data[at + 3] & 255) << 24;
+            k *= m; k ^= k >>> 24; k *= m;
+            h = h * m ^ k;
+        }
+        if (at < data.length) {
+            int tail = 0;
+            for (int i = data.length - 1; i >= at; --i) tail = tail << 8 | (data[i] & 255);
+            h = (h ^ tail) * m;
+        }
+        h ^= h >>> 13; h *= m;
+        return h ^ h >>> 15;
     }
 
     private static void readFully(InputStream in, byte[] bytes) throws IOException {
         int at = 0;
         while (at < bytes.length) { int n = in.read(bytes, at, bytes.length - at); if (n < 0) throw new EOFException("Truncated archive entry"); at += n; }
     }
-    private static boolean dxt(int format) { return format == 0x31545844 || format == 0x33545844 || format == 0x35545844; }
-    private static long inspect(byte[] header, Row row, boolean reduced) throws IOException {
+    private static boolean dxt(int format) { return format == DXT1 || format == DXT3 || format == DXT5; }
+    private static boolean converted(int format) { return format == ASTC4 || format == ASTC6 || format == ETC2_RGB || format == ETC2_RGBA; }
+    private static long inspect(byte[] header, Row row, boolean reduced, int output) throws IOException {
         row.source = row.stored;
         if (header.length < 16) return row.stored;
         ByteBuffer b = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
         long w = b.getInt() & 0xffffffffL, height = b.getInt() & 0xffffffffL;
         row.format = b.getInt(); long count = b.getInt() & 0xffffffffL;
-        if (!dxt(row.format) && row.format != 0x34545341 && row.format != 0x36545341) return row.stored;
+        if (!dxt(row.format) && !converted(row.format)) return row.stored;
         int faces = height == 0xffffffffL ? 6 : 1;
         long h = faces == 6 ? w : height;
         need(header.length == HEADER && w > 0 && h > 0 && w <= 16384 && h <= 16384 && count > 0 && count <= 16
             && (Math.max(w, h) >> (count - 1)) != 0, "Invalid texture header");
-        int block = dxt(row.format) ? 4 : row.format == 0x34545341 ? 4 : 6;
-        int blockBytes = row.format == 0x31545844 ? 8 : 16;
+        int block = row.format == ASTC6 ? 6 : 4;
+        int blockBytes = row.format == DXT1 || row.format == ETC2_RGB ? 8 : 16;
         row.skip = reduced && dxt(row.format) ? mipSkip(row.key, (int)w, (int)height, (int)count) : 0;
-        long source = HEADER, target = HEADER, kept = HEADER;
+        long source = HEADER, target = HEADER, kept = HEADER, opaque = HEADER;
         for (int n = 0; n < count; ++n) {
             long mw = b.getShort() & 65535, mh = b.getShort() & 65535, size = b.getInt() & 0xffffffffL;
             int shift = (int)count - 1 - n;
@@ -198,11 +275,13 @@ public final class FrostpunkTextures implements TextureBackend {
             if (n < count - row.skip) {
                 if (dxt(row.format)) need(mw * mh * 4 <= (512L << 20), "Texture exceeds the conversion memory limit");
                 kept += size * faces;
-                target += ((mw + 5) / 6) * ((mh + 5) / 6) * 16 * faces;
+                long blocks = ((mw + 3) / 4) * ((mh + 3) / 4) * faces;
+                target += output == ETC2 ? blocks * 16 : ((mw + 5) / 6) * ((mh + 5) / 6) * 16 * faces;
+                opaque += blocks * 8;
             }
         }
         need(source == row.decoded, "Texture entry length does not match its mip chain");
-        if (dxt(row.format)) row.source = kept;
+        if (dxt(row.format)) { row.source = kept; row.targetOpaque = output == ETC2 ? opaque : target; row.targetEtc2 = HEADER + (opaque - HEADER) * 2; }
         return dxt(row.format) ? target : row.stored;
     }
 
@@ -212,11 +291,12 @@ public final class FrostpunkTextures implements TextureBackend {
             recover(game);
             FrostpunkFiles.verifyOnce(game);
             try (Archive archive = new Archive(game, switchMips)) {
-                plannedBytes = archive.outputBytes;
+                plannedBytes = archive.outputBytes; plannedEtc2Bytes = archive.etc2Bytes;
                 result.textures = archive.dxt; result.bytes = archive.decodedBytes;
-                result.converted = archive.astc > 0 ? ASTC : 0;
-                result.convertedTextures = archive.astc;
-                result.convertedBytes = archive.astc > 0 ? archive.size : 0;
+                result.converted = archive.etc2 > 0 ? ETC2 : archive.astc > 0 ? ASTC : 0;
+                result.convertedTextures = archive.astc + archive.etc2;
+                result.convertedBytes = result.converted != 0 ? archive.size : 0;
+                if (archive.dxt > 0) result.formats = new ArrayList<>(archive.formats);
             }
         } catch (IOException | RuntimeException | LinkageError failure) { result.failure = failure.getMessage(); }
         return result;
@@ -224,8 +304,9 @@ public final class FrostpunkTextures implements TextureBackend {
     private void check() throws IOException { if (cancelled) throw new IOException("Conversion cancelled"); }
 
     @Override public int convert(File game, int format, int threads) {
-        cancelled = false; done = bytesDone = 0; message = "DXT → ASTC";
-        if (format != ASTC) { message = "This port requires ASTC textures"; return -1; }
+        final String label = format == ETC2 ? "DXT → ETC2" : "DXT → ASTC";
+        cancelled = false; done = bytesDone = 0; message = label;
+        if (format != ASTC && format != ETC2) { message = "Unknown texture conversion format"; return -1; }
         try (RandomAccessFile lock = new RandomAccessFile(safe(game, ".frostpunk-textures.lock"), "rw");
              FileLock held = lock.getChannel().lock()) {
             recoverLocked(game);
@@ -234,11 +315,12 @@ public final class FrostpunkTextures implements TextureBackend {
             need(!backup.exists(), "Original DXT backup already exists in " + BACKUP + "; use another game folder for another source archive");
             boolean fromZip; byte[] originalIndex;
             MessageDigest outputHash = MessageDigest.getInstance("SHA-256");
-            try (Archive archive = new Archive(game, switchMips)) {
+            try (Archive archive = new Archive(game, switchMips, format)) {
                 fromZip = archive.fromZip; originalIndex = archive.raw.clone();
+                if (format == ETC2) archive.markArrayElements();
                 total = archive.dxt; bytesTotal = archive.decodedBytes;
                 if (total == 0) return 0;
-                need(game.getUsableSpace() >= archive.outputBytes + archive.raw.length + (8 << 20), "Not enough free space for the ASTC archive");
+                need(game.getUsableSpace() >= archive.outputBytes + archive.raw.length + (8 << 20), "Not enough free space for the converted texture archive");
                 System.loadLibrary("frostpunk_texconv");
                 need(work.mkdir(), "Cannot create texture conversion workspace");
                 syncWrite(safe(work, "owner"), OWNER.getBytes("US-ASCII"));
@@ -258,7 +340,10 @@ public final class FrostpunkTextures implements TextureBackend {
                                     int count = header.getInt(12) - row.skip; header.putInt(12, count);
                                     Arrays.fill(source, 16 + 8 * count, HEADER, (byte)0);
                                 }
-                                byte[] astc = encode(source, Math.max(1, Math.min(4, threads))); need(astc != null && astc.length == row.target, "Invalid ASTC encoder output");
+                                byte[] astc = encodeTarget(source, Math.max(1, Math.min(4, threads)),
+                                    format != ETC2 ? TARGET_ASTC6 : row.keepAlpha ? TARGET_ETC2_RGBA : TARGET_ETC2);
+                                need(astc != null && (astc.length == row.target || !row.keepAlpha && astc.length == row.targetOpaque), "Invalid texture encoder output");
+                                row.target = astc.length;
                                 out.write(astc); outputHash.update(astc); ++done; bytesDone += row.source;
                             } else {
                                 long left = row.stored;
@@ -268,7 +353,7 @@ public final class FrostpunkTextures implements TextureBackend {
                         }
                         rows.position(11 + i * 29 + 4); rows.putLong(row.target).putLong(dxt(row.format) ? row.target : row.decoded)
                             .putLong(offset).put((byte)(dxt(row.format) ? 0 : row.flag));
-                        message = "DXT → ASTC: " + done + " / " + total;
+                        message = label + ": " + done + " / " + total;
                     }
                     out.getFD().sync();
                 }
@@ -278,7 +363,7 @@ public final class FrostpunkTextures implements TextureBackend {
             // The journal precedes every rename; recovery restores both originals after interruption.
             need(backup.mkdir(), "Cannot create the original texture backup");
             JSONObject receipt = new JSONObject().put("zip", fromZip).put("data", FrostpunkFiles.hex(outputHash.digest()))
-                .put("quality", switchMips ? "switch" : "pc")
+                .put("quality", switchMips ? "switch" : "pc").put("format", format == ETC2 ? "etc2" : "astc")
                 .put("index", FrostpunkFiles.hex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(safe(work, NAMES[1]).toPath()))))
                 .put("originalIndex", FrostpunkFiles.hex(MessageDigest.getInstance("SHA-256").digest(originalIndex)));
             syncWrite(safe(backup, "conversion.json"), receipt.toString().getBytes("UTF-8"));
@@ -286,7 +371,7 @@ public final class FrostpunkTextures implements TextureBackend {
             if (!fromZip) for (String name : NAMES) move(safe(game, name), safe(backup, name), false);
             for (String name : NAMES) move(safe(work, name), safe(game, name), false);
             Files.delete(safe(work, "commit").toPath()); cleanWork(game);
-            message = "DXT → ASTC: " + total + " / " + total; return 0;
+            message = label + ": " + total + " / " + total; return 0;
         } catch (Exception | LinkageError failure) {
             message = failure.getMessage();
             try { recover(game); } catch (IOException recovery) { message += "; " + recovery.getMessage(); }

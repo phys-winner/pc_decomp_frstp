@@ -179,7 +179,85 @@ static void set_status(void *opaque,const char *text) {
     if(method){jstring message=(*env)->NewStringUTF(env,text);(*env)->CallVoidMethod(env,c->app->activity->clazz,method,message);(*env)->DeleteLocalRef(env,message);}
     if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);(*env)->DeleteLocalRef(env,cls);if(attached)(*vm)->DetachCurrentThread(vm);
 }
+/* Intervals between presented unique game frames for the launcher's FPS overlay (FpsOverlay.Source).
+ * The runtime's present profile calls frostpunk_android_frame once per accepted frame id, for DXVK
+ * and the native Vulkan renderer alike. */
+#include "../launcher-base/native/frame_times.h"
+static PortFrameTimes overlay_frames = PORT_FRAME_TIMES_INIT;
+static atomic_int overlay_reads; /* nothing is recorded until the overlay asks: it is off by default */
+__attribute__((visibility("default"))) void frostpunk_android_frame(uint64_t monotonic_ns) {
+    if(atomic_load_explicit(&overlay_reads,memory_order_relaxed))port_frame_presented(&overlay_frames, monotonic_ns);
+}
+JNIEXPORT jlong JNICALL Java_com_frostpunk_staticrecomp_TouchControls_nativeFrameTimes(JNIEnv *env,jclass cls,jintArray intervals) {
+    (void)cls;
+    int32_t values[PORT_FRAME_TIMES];
+    jsize length=intervals?(*env)->GetArrayLength(env,intervals):0;
+    if(length<=0)return 0;
+    if(length>(jsize)PORT_FRAME_TIMES)length=(jsize)PORT_FRAME_TIMES;
+    atomic_store_explicit(&overlay_reads,1,memory_order_relaxed);
+    uint64_t count=port_frame_times(&overlay_frames,values,(size_t)length);
+    (*env)->SetIntArrayRegion(env,intervals,0,length,(const jint *)values);
+    return (jlong)count;
+}
+/* Crash journal of the game process.  Two records, both written with pwrite/ftruncate only:
+ * the shared launcher's binary marker (PORT_CRASH_JOURNAL: signal and PID at 0, first present at 5;
+ * the launcher reads it where Android has no exit reasons, API < 30) and a text line in
+ * frostpunk-crash.txt for GameWatchActivity.  The handler then gives the signal to the previous
+ * handler (debuggerd's tombstone, or a renderer handler installed earlier), never swallowing it. */
+#include "crash_marker.h"
+#include <signal.h>
+#include <sys/syscall.h>
+static int crash_journal_fd=-1,crash_text_fd=-1;
+static struct sigaction crash_previous[32];
+static atomic_int crash_handling;
+static const int crash_signals[]={SIGSEGV,SIGBUS,SIGILL,SIGFPE,SIGABRT,SIGTRAP,SIGSYS};
+static size_t crash_put(char *out,size_t at,size_t size,const char *text){while(*text&&at+1<size)out[at++]=*text++;return at;}
+static size_t crash_number(char *out,size_t at,size_t size,uint64_t value,unsigned base){
+    char digits[20];size_t count=0;
+    do{unsigned digit=(unsigned)(value%base);digits[count++]=(char)(digit<10?'0'+digit:'a'+digit-10);value/=base;}while(value&&count<sizeof(digits));
+    while(count&&at+1<size)out[at++]=digits[--count];
+    return at;
+}
+static void crash_signal(int sig,siginfo_t *info,void *context) {
+    int saved=errno;
+    if(!atomic_exchange(&crash_handling,1)){
+        port_crash_marker_signal(crash_journal_fd,sig);
+        if(crash_text_fd>=0){
+            const char *name=sig==SIGSEGV?"SIGSEGV":sig==SIGBUS?"SIGBUS":sig==SIGILL?"SIGILL":sig==SIGFPE?"SIGFPE":sig==SIGABRT?"SIGABRT":sig==SIGTRAP?"SIGTRAP":"SIGSYS";
+            char line[192];size_t at=crash_put(line,0,sizeof(line),"Native signal ");
+            at=crash_number(line,at,sizeof(line),(uint64_t)sig,10);at=crash_put(line,at,sizeof(line)," (");at=crash_put(line,at,sizeof(line),name);
+            int code=info?info->si_code:0;
+            at=crash_put(line,at,sizeof(line),code<0?") code=-":") code=");at=crash_number(line,at,sizeof(line),(uint64_t)(code<0?-(int64_t)code:code),10);
+            at=crash_put(line,at,sizeof(line)," addr=0x");at=crash_number(line,at,sizeof(line),(uint64_t)(uintptr_t)(info?info->si_addr:NULL),16);
+#if defined(__aarch64__)
+            if(context){at=crash_put(line,at,sizeof(line)," pc=0x");at=crash_number(line,at,sizeof(line),(uint64_t)((const ucontext_t *)context)->uc_mcontext.pc,16);}
+#else
+            (void)context;
+#endif
+            at=crash_put(line,at,sizeof(line)," tid=");at=crash_number(line,at,sizeof(line),(uint64_t)syscall(SYS_gettid),10);
+            at=crash_put(line,at,sizeof(line),"\n");
+            if(!ftruncate(crash_text_fd,0)){size_t done=0;while(done<at){ssize_t n=pwrite(crash_text_fd,line+done,at-done,(off_t)done);if(n>0)done+=(size_t)n;else if(n>=0||errno!=EINTR)break;}}
+        }
+    }
+    /* A hardware fault repeats under the previous handler when this one returns; a signal that was
+     * sent (abort, tgkill) has to be sent again. */
+    sigaction(sig,&crash_previous[sig],NULL);
+    errno=saved;
+    if(!info||info->si_code<=0)syscall(SYS_tgkill,getpid(),syscall(SYS_gettid),sig);
+}
+static void crash_journal_install(const char *private_path) {
+    char setting[PROP_VALUE_MAX]={0};__system_property_get("debug.fp.crash_journal",setting);
+    if(setting[0]=='0')return;
+    crash_journal_fd=port_crash_marker_open();
+    char path[PATH_MAX];
+    if(snprintf(path,sizeof(path),"%s/frostpunk-crash.txt",private_path)<(int)sizeof(path))
+        crash_text_fd=open(path,O_CREAT|O_WRONLY|O_CLOEXEC|O_NOFOLLOW,0600);
+    struct sigaction action;memset(&action,0,sizeof(action));
+    action.sa_sigaction=crash_signal;action.sa_flags=SA_SIGINFO|SA_ONSTACK;sigemptyset(&action.sa_mask);
+    for(size_t i=0;i<sizeof(crash_signals)/sizeof(*crash_signals);++i)sigaction(crash_signals[i],&action,&crash_previous[crash_signals[i]]);
+}
 __attribute__((visibility("default"))) void frostpunk_android_presented(void) {
+    port_crash_marker_present(crash_journal_fd);
     pthread_mutex_lock(&current_mutex);
     if(current && !current->stopping)set_status(current,"\1");
     pthread_mutex_unlock(&current_mutex);
@@ -675,7 +753,7 @@ static void stop_probe(app_context *c){(void)c;}
  * port-settings.txt (applied at start); debug.frostpunk.vulkan_driver overrides it. */
 static int turnip_requested(app_context *c) {
     const char *renderer=getenv("PORT_RENDERER");
-    if(renderer && *renderer)return !strcmp(renderer,"turnip");
+    if(renderer && *renderer)return !strcmp(renderer,"turnip") || !strcmp(renderer,"native_vulkan_turnip");
     char value[PROP_VALUE_MAX]={0};
     if(__system_property_get("debug.frostpunk.vulkan_driver",value)>0)return !strcmp(value,"turnip");
     char path[PATH_MAX],line[128];int turnip=0;snprintf(path,sizeof(path),"%s/port-settings.txt",c->profile);
@@ -715,26 +793,33 @@ static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t e
         char cache[PATH_MAX], product[PROP_VALUE_MAX]={0};
         if(snprintf(cache,sizeof(cache),"%s/mesa-panvk-cache",c->private_path)<(int)sizeof(cache)&&
            (!mkdir(cache,0700)||errno==EEXIST))setenv("MESA_SHADER_CACHE_DIR",cache,0);
-        /* The TB373FU display composer can corrupt scaled AFBC PanVK window buffers. */
+        setenv("PANVK_DEBUG","startup",0);
+        setenv("MESA_LOG","file,android",0);
+        setenv("MESA_LOG_LEVEL","info",0);
+        const char *linear=getenv("MESA_GRALLOC_LINEAR");
+        log_text(linear&&linear[0]&&linear[0]!='0'?"FROSTPUNK_PANVK_GRALLOC requested=linear":
+            "FROSTPUNK_PANVK_GRALLOC requested=default");
         __system_property_get("ro.product.device",product);
         if(!strcmp(product,"TB373FU")){
-            setenv("MESA_GRALLOC_LINEAR","1",0);
             // The KCPU fence path can cause a Mali shareability fault on window resume.
             setenv("PANVK_KBASE_CPU_FENCE_EXPORT","1",0);
         }
         char reason[256]={0};
         PFN_vkGetInstanceProcAddr panvk=frostpunk_gpu_open_panvk(c->libraries,reason,sizeof(reason));
-        setenv("FROSTPUNK_VULKAN_DRIVER",panvk?"panvk":"none",1);
-        if(panvk)log_text("FROSTPUNK_VULKAN_DRIVER active=panvk requested=panvk");
-        else snprintf(error,error_size,"PanVK: %s",reason);
-        return panvk;
+        if(panvk){
+            setenv("FROSTPUNK_VULKAN_DRIVER","panvk",1);
+            log_text("FROSTPUNK_VULKAN_DRIVER active=panvk requested=panvk");
+            return panvk;
+        }
+        snprintf(error,error_size,"PanVK: %s",reason);
+        setenv("FROSTPUNK_VULKAN_DRIVER","none",1);
+        return NULL;
     }
     char reason[256]={0},message[512],hardware[PROP_VALUE_MAX]={0};const char *active="system";PFN_vkGetInstanceProcAddr get=NULL;
     int requested=turnip_requested(c);__system_property_get("ro.hardware.vulkan",hardware);
     int adreno=!strcmp(hardware,"adreno")&&!access("/dev/kgsl-3d0",R_OK|W_OK);
-    /* The runtime accepts Mali's driver or Turnip: Qualcomm's own driver has no BC textures,
-     * so Adreno keeps Turnip even when System is selected (the menu shows the active driver). */
-    if(requested||adreno){
+    /* A launcher selection must use the same driver that passed the format probe. */
+    if(requested || (adreno && (!renderer || !*renderer))){
         if(!adreno)snprintf(reason,sizeof(reason),"not an Adreno/KGSL GPU (ro.hardware.vulkan=%s)",hardware);
         else if(!extract_driver(c))snprintf(reason,sizeof(reason),"driver asset extraction failed errno=%d",errno);
         else{
@@ -751,7 +836,8 @@ static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t e
         if(get&&!turnip_usable(get,reason,sizeof(reason)))get=NULL;
         if(get){active="turnip";if(!requested)snprintf(reason,sizeof(reason),"the Qualcomm system driver has no BC textures");}
     }
-    if(!get)get=frostpunk_gpu_open_system(error,error_size);
+    if(!get && requested)snprintf(error,error_size,"Turnip: %s",reason);
+    else if(!get)get=frostpunk_gpu_open_system(error,error_size);
     setenv("FROSTPUNK_VULKAN_DRIVER",get?active:"none",1);
     snprintf(message,sizeof(message),"FROSTPUNK_VULKAN_DRIVER active=%s requested=%s%s%s",get?active:"none",
         requested?"turnip":"system",reason[0]?" reason=":"",reason);log_text(message);
@@ -859,6 +945,22 @@ static int32_t input(struct android_app *app,AInputEvent *native) {
         return 1;}
     return 0;
 }
+static void log_build_fingerprint(void *unused,const char *name,const char *value,uint32_t serial) {
+    (void)unused;(void)name;(void)serial;
+    fprintf(stderr,"ANDROID_BUILD_FINGERPRINT=%s\n",value);
+}
+static int open_native_log(const char *path) {
+    int directory=open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0)return -1;
+    /* Keep one previous log when the append-only log exceeds 16 MiB. */
+    struct stat info;
+    if(!fstatat(directory,"native.log",&info,AT_SYMLINK_NOFOLLOW)&&S_ISREG(info.st_mode)&&info.st_size>16*1024*1024)
+        renameat(directory,"native.log",directory,"native.log.1");
+    int output=openat(directory,"native.log",O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK,0600);
+    close(directory);
+    if(output>=0&&(fstat(output,&info)||!S_ISREG(info.st_mode))){close(output);return -1;}
+    return output;
+}
 void android_main(struct android_app *app) {
     app_context *c=calloc(1,sizeof(*c));if(!c)return;c->app=app;c->x=c->y=0.2f;
     pthread_mutex_init(&c->mutex,NULL);pthread_condattr_t attr;pthread_condattr_init(&attr);pthread_condattr_setclock(&attr,CLOCK_MONOTONIC);pthread_cond_init(&c->changed,&attr);pthread_condattr_destroy(&attr);
@@ -869,19 +971,21 @@ void android_main(struct android_app *app) {
     if(game && game[0]=='/')snprintf(c->game,sizeof(c->game),"%s",game);
     else snprintf(c->game,sizeof(c->game),"%s/game",app->activity->externalDataPath?app->activity->externalDataPath:c->private_path);
     snprintf(c->driver,sizeof(c->driver),"%s/driver/",c->private_path);
-    char log[PATH_MAX];snprintf(log,sizeof(log),"%s/native.log",c->private_path);
-    {   /* The log is appended by every start (about 1.2 MB per hour of play): keep the previous
-         * one as native.log.1 once it passes 16 MB instead of growing without bound. */
-        struct stat info;char previous[PATH_MAX];
-        if(!stat(log,&info)&&info.st_size>16*1024*1024&&snprintf(previous,sizeof(previous),"%s.1",log)<(int)sizeof(previous))rename(log,previous);
-    }
-    int output=open(log,O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW|O_CLOEXEC,0600);
+    crash_journal_install(c->private_path);
+    int output=-1;
+#ifdef FP_GAME_RUNTIME
+    const char *log_directory=getenv("FROSTPUNK_NATIVE_LOG_DIR");
+    if(log_directory&&log_directory[0]=='/')output=open_native_log(log_directory);
+#endif
+    if(output<0)output=open_native_log(c->private_path);
     if(output>=0){dup2(output,STDOUT_FILENO);dup2(output,STDERR_FILENO);close(output);setvbuf(stderr,NULL,_IOLBF,0);}
     library_path(c);
     c->api=(FrostpunkAndroidHost){.abi_version=1,.struct_size=sizeof(FrostpunkAndroidHost),.context=c,.acquire_window=acquire_window,.release_window=release_window,
         .poll_event=poll_event,.wait=wait_event,.wake=wake,.is_stopping=stopping,.set_status=set_status,.game_path=c->game,.profile_path=c->profile,.private_path=c->private_path,
         .native_library_path=c->libraries,.gpu_driver_path=c->driver,.vulkan_provider=provider,.set_pointer_visible=set_pointer_visible,.event_sequence=event_sequence};
     app->userData=c;app->onAppCmd=command;app->onInputEvent=input;log_text("APK_NATIVE_MAIN host_api=1 original_game_loaded=0 internet_permission=0");
+    const prop_info *fingerprint=__system_property_find("ro.build.fingerprint");
+    if(fingerprint)__system_property_read_callback(fingerprint,log_build_fingerprint,NULL);
     while(!app->destroyRequested&&!stopping(c)) {
         struct android_poll_source *source=NULL;int events=0;
         int ident=ALooper_pollOnce(c->probe&&c->focused?0:-1,NULL,&events,(void **)&source);

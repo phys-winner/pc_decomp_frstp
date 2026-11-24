@@ -3,11 +3,13 @@
  * uploads and maps.  Called directly by the native engine functions (engine.cpp); one recording
  * thread (the engine's renderer), uploads also from loader threads. */
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
 #include "objects.h"
+#include "pipeline.h"
 
 namespace rdvk {
 
@@ -194,6 +196,18 @@ private:
     PendingClear clear_[MAX_RT + 1];
     std::vector<Texture*> attachment_layouts_;   /* textures left in attachment layout */
 
+    /* The sampled-image layout check of prepare_draw runs only after a change it depends on: a new
+     * shader or SRV binding or render target (srv_epoch_), or any texture layout (g_layout_epoch).
+     * A check that left a mismatch (a read-only depth target sampled inside its pass) is not clean
+     * and runs again on the next draw. */
+    uint64_t srv_epoch_ = 1, srv_checked_epoch_ = 0, layouts_checked_epoch_ = 0;
+    bool srv_clean_ = false;
+    /* The last pipeline key and its pipeline: a dirty pipeline flag with an unchanged key (new
+     * targets of the same formats, the same blend state set again) skips the locked map lookup. */
+    GraphicsKey last_key_{};
+    VkPipeline last_pipeline_ = VK_NULL_HANDLE;
+    bool last_key_valid_ = false;
+
     /* dynamic state already set in the current command buffer */
     VkPipeline bound_pipeline_ = VK_NULL_HANDLE;
     uint64_t dirty_ = ~0ull;
@@ -202,5 +216,8 @@ private:
 };
 
 extern Context g_ctx;
+/* Bumped whenever a texture's tracked layout changes or a texture goes away (see srv_epoch_). */
+extern std::atomic<uint64_t> g_layout_epoch;
+inline void layout_changed() { g_layout_epoch.fetch_add(1, std::memory_order_relaxed); }
 VkCompareOp compare_of(uint32_t func);
 }  // namespace rdvk

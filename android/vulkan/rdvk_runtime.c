@@ -59,7 +59,7 @@ static int wanted(void) {
     const char *env = getenv("FROSTPUNK_RENDERER");
     if (env && *env) return !strcmp(env, "vulkan");
     const char *renderer = getenv("PORT_RENDERER");
-    if (renderer && (!strcmp(renderer, "native_vulkan") || !strcmp(renderer, "native_vulkan_panvk"))) return 1;
+    if (renderer && (!strcmp(renderer, "native_vulkan") || !strcmp(renderer, "native_vulkan_turnip") || !strcmp(renderer, "native_vulkan_panvk"))) return 1;
     const char *option = getenv("PORT_OPTION_NATIVE_VULKAN");
     return option && !strcmp(option, "1");
 }

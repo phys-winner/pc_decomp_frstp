@@ -59,8 +59,9 @@ static unsigned init_image(void){
     assert(fp_android_texture_formats_init(image,image_bytes));assert(!fp_android_texture_formats_lookup(UINT64_C(0x140d95651)));
     return gates;
 }
+static int native_device=1;int frostpunk_rdvk_active(void){return native_device;}
 typedef struct {uint32_t format,width,height,srgb,mapping,row,bytes;} record;
-static int is_private(uint32_t format){return format==FP_ASTC4_D3DFMT||format==FP_ASTC6_D3DFMT;}
+static int is_private(uint32_t format){return format==FP_ASTC4_D3DFMT||format==FP_ASTC6_D3DFMT||format==FP_ETC2_RGB_D3DFMT||format==FP_ETC2_RGBA_D3DFMT;}
 static unsigned char stack[512];
 static uint32_t outputs[4];
 static void seed(CPU *c,record r,int layout){
@@ -103,6 +104,7 @@ static void negative(const char *name){
     else if(!strcmp(name,"readonly"))spans[1].write=0;
     else if(!strcmp(name,"srgb2")){seed(&c,r,0);c.rdx=2;}
     else if(!strcmp(name,"mapstack")){seed(&c,r,0);c.rsp=1;}
+    else if(!strcmp(name,"etc2dxvk")){record e={FP_ETC2_RGBA_D3DFMT,256,256,1,FP_ETC2_RGBA_DXGI_SRGB,1024,65536};seed(&c,e,0);native_device=0;}
     else abort();
     fp_android_texture_formats_lookup(c.rip)(&c);abort();
 }
@@ -132,6 +134,17 @@ int main(int argc,char **argv){
 #endif
     else abort();
     assert(old==1728&&private_cases==576&&count==2304&&gates==1292);
+    // ETC2 of the converted archive: 4x4 blocks of 8 (RGB8) or 16 bytes (RGBA8 with EAC alpha), outside the oracle dataset.
+    {
+        uint32_t edges[]={1,2,4,5,6,7,13,31,125,256,513,1024};unsigned etc2_old=0,etc2_cases=0;
+        for(unsigned k=0;k<2;k++)for(unsigned w=0;w<12;w++)for(unsigned h=0;h<12;h++)for(unsigned s=0;s<2;s++){
+            record e={k?FP_ETC2_RGBA_D3DFMT:FP_ETC2_RGB_D3DFMT,edges[w],edges[h],s,0,0,0};
+            e.mapping=k?(s?FP_ETC2_RGBA_DXGI_SRGB:FP_ETC2_RGBA_DXGI_UNORM):(s?FP_ETC2_RGB_DXGI_SRGB:FP_ETC2_RGB_DXGI_UNORM);
+            e.row=((e.width+3)/4)*(k?16:8);e.bytes=e.row*((e.height+3)/4);
+            test_record(e,&etc2_old,&etc2_cases);
+        }
+        assert(!etc2_old&&etc2_cases==576);
+    }
     // Partial output alias retains the original row-then-size order.
     record r={FP_ASTC6_D3DFMT,13,7,0,FP_ASTC6_DXGI_UNORM,48,96};CPU c;seed(&c,r,1);
     w64((void*)(uintptr_t)(c.rsp+40),(uintptr_t)&outputs[0]);fp_android_texture_formats_lookup(c.rip)(&c);assert(outputs[0]==96);

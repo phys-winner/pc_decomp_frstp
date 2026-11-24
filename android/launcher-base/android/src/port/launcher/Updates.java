@@ -47,114 +47,33 @@ final class Updates {
     static Info check(Context context) throws IOException {
         Spec spec = Spec.get(context);
         if (spec.github.isEmpty()) throw new IOException("no GitHub repository in port.json");
-        String text = null;
-        IOException direct = null;
+        String text;
         try {
             text = get(context, "https://github.com/" + spec.github + "/releases/latest/download/update.json");
-        } catch (IOException failure) {
-            direct = failure;
-            /* /releases/latest skips prereleases, so a dev tag is absent there. The asset URL is
-             * one more request and is limited to 60 an hour per address. */
+        } catch (IOException direct) {
+            /* The API names the asset too; it is limited to 60 requests an hour per address. */
             try {
                 JSONObject release = new JSONObject(get(context, "https://api.github.com/repos/" + spec.github + "/releases/latest"));
-                String url = assetUrl(release, "update.json");
-                if (url == null) throw failure;
+                String url = null;
+                JSONArray assets = release.optJSONArray("assets");
+                if (assets != null) for (int i = 0; i < assets.length(); ++i)
+                    if ("update.json".equals(assets.getJSONObject(i).optString("name"))) url = assets.getJSONObject(i).optString("browser_download_url");
+                if (url == null) throw direct;
                 text = get(context, url);
             } catch (JSONException | IOException fallback) {
-                text = null;
+                record(context, null, direct.getMessage());
+                throw direct;
             }
         }
-        if (text != null) {
-            try {
-                Info info = parse(context, text);
-                record(context, info, null);
-                return info;
-            } catch (JSONException e) {
-                record(context, null, e.getMessage());
-                throw new IOException("update.json: " + e.getMessage(), e);
-            }
-        }
+        Info info;
         try {
-            Info info = fromReleaseList(context, spec.github);
-            record(context, info, null);
-            return info;
-        } catch (JSONException | IOException fallback) {
-            String message = direct != null ? direct.getMessage() : fallback.getMessage();
-            record(context, null, message);
-            if (direct != null) throw direct;
-            if (fallback instanceof IOException) throw (IOException) fallback;
-            throw new IOException(fallback);
+            info = parse(context, text);
+        } catch (JSONException e) {
+            record(context, null, e.getMessage());
+            throw new IOException("update.json: " + e.getMessage(), e);
         }
-    }
-
-    /** Newest non-draft release. update.json wins; otherwise the tag is compared with this build. */
-    private static Info fromReleaseList(Context context, String github) throws IOException, JSONException {
-        JSONArray releases = new JSONArray(get(context, "https://api.github.com/repos/" + github + "/releases?per_page=10", 2 << 20));
-        for (int i = 0; i < releases.length(); ++i) {
-            JSONObject release = releases.optJSONObject(i);
-            if (release == null || release.optBoolean("draft")) continue;
-            String update = assetUrl(release, "update.json");
-            if (update != null) return parse(context, get(context, update));
-            return fromRelease(context, release);
-        }
-        throw new IOException("no GitHub release");
-    }
-
-    private static String assetUrl(JSONObject release, String name) {
-        JSONArray assets = release.optJSONArray("assets");
-        if (assets == null) return null;
-        for (int i = 0; i < assets.length(); ++i) {
-            JSONObject asset = assets.optJSONObject(i);
-            if (asset != null && name.equals(asset.optString("name"))) return asset.optString("browser_download_url", null);
-        }
-        return null;
-    }
-
-    private static Info fromRelease(Context context, JSONObject release) {
-        Info info = new Info();
-        info.tag = release.optString("tag_name", "");
-        info.page = release.optString("html_url", "");
-        info.notes = release.optString("body", "");
-        info.versionName = info.tag.startsWith("v") || info.tag.startsWith("V") ? info.tag.substring(1) : info.tag;
-        JSONArray assets = release.optJSONArray("assets");
-        if (assets != null) for (int i = 0; i < assets.length(); ++i) {
-            JSONObject asset = assets.optJSONObject(i);
-            if (asset == null || !asset.optString("name").endsWith(".apk")) continue;
-            info.apkName = asset.optString("name");
-            info.apkUrl = asset.optString("browser_download_url", "");
-            info.size = asset.optLong("size", 0);
-            break;
-        }
-        long installed = installedCode(context);
-        info.versionCode = compareVersions(info.versionName, installedName(context)) > 0 ? installed + 1 : installed;
+        record(context, info, null);
         return info;
-    }
-
-    /** Dotted numbers only, so 0.1.1-dev and 0.1.1 are the same release. */
-    private static int compareVersions(String left, String right) {
-        int[] a = versionTuple(left), b = versionTuple(right);
-        int n = Math.max(a.length, b.length);
-        for (int i = 0; i < n; ++i) {
-            int av = i < a.length ? a[i] : 0, bv = i < b.length ? b[i] : 0;
-            if (av != bv) return av > bv ? 1 : -1;
-        }
-        return 0;
-    }
-
-    private static int[] versionTuple(String text) {
-        if (text == null) return new int[0];
-        int[] values = new int[8];
-        int count = 0, value = -1;
-        for (int i = 0; i <= text.length() && count < values.length; ++i) {
-            char c = i < text.length() ? text.charAt(i) : '.';
-            if (c >= '0' && c <= '9' && value < 100000000) value = (value < 0 ? 0 : value) * 10 + (c - '0');
-            else if (value >= 0) {
-                values[count++] = value;
-                value = -1;
-                if (c != '.') break;
-            } else if (count > 0) break;
-        }
-        return java.util.Arrays.copyOf(values, count);
     }
 
     static Info parse(Context context, String text) throws JSONException {
@@ -269,9 +188,7 @@ final class Updates {
         return text.toString();
     }
 
-    private static String get(Context context, String address) throws IOException { return get(context, address, LIMIT); }
-
-    private static String get(Context context, String address, int limit) throws IOException {
+    private static String get(Context context, String address) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
         try {
             connection.setConnectTimeout(TIMEOUT_MS);
@@ -285,7 +202,7 @@ final class Updates {
                 byte[] buffer = new byte[8192];
                 for (int n; (n = in.read(buffer)) > 0;) {
                     out.write(buffer, 0, n);
-                    if (out.size() > limit) throw new IOException("response is too large");
+                    if (out.size() > LIMIT) throw new IOException("update.json is too large");
                 }
                 return new String(out.toByteArray(), StandardCharsets.UTF_8);
             }

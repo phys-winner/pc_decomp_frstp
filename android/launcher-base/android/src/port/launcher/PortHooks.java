@@ -3,15 +3,21 @@ package port.launcher;
 import android.content.Context;
 import android.content.Intent;
 import java.io.File;
+import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /** What only the game knows, for the launcher: a class of the game named by port.json's
  *  "app.hooks" implements it (all methods are optional). The launcher's process loads it: it must
  *  not touch the game's activity or native library. */
 public interface PortHooks {
+    /** Game-specific tools below the launch card, e.g. Crashday's Workshop. */
+    default void addLauncherActions(android.app.Activity activity, android.widget.LinearLayout parent) { }
     /** A reason an optional choice cannot be used yet; null when its files are available. */
     default String optionProblem(Context context, String key, String value) { return null; }
+    /** A warning to confirm before saving a choice; may carry styled text. Null accepts it. */
+    default CharSequence optionWarning(Context context, String key, String value) { return null; }
     /** Paths of a part, relative to its folder, which the game also needs and which are missing
      *  there now, beyond port.json's "required": what depends on the game's own settings (UT3: the
      *  language chosen in its settings). Empty when nothing is missing. */
@@ -31,13 +37,43 @@ public interface PortHooks {
     /** Stores the player's renderer where the game reads it. */
     default void setRenderer(Context context, String mode) { }
 
+    /** A known rendering issue on the currently detected device or driver. */
+    default String rendererWarning(Context context, String mode, String gpu, String driver) { return null; }
+
+    /** A known issue that prevents this renderer from starting; null permits the normal checks.
+     *  Uses the already detected device/driver. Must not load a driver or scan files on the UI thread. */
+    default String rendererProblem(Context context, String mode, String gpu, String driver) { return null; }
+
     /** Adds the game's own extras to the intent that starts a distribution. */
     default void prepare(Context context, String distribution, Intent intent) { }
+
+    /** Libraries this build carries packed (its assets) instead of in nativeLibraryDir, named as
+     *  port.json's renderer "libraries" name them: they count as present, and the game installs
+     *  them itself when a start needs them (Heroes V: the DXVK/Turnip runtime, about 19 MB that
+     *  players who never choose DXVK would otherwise have installed). */
+    default Set<String> packedLibraries(Context context) { return Collections.emptySet(); }
+
+    /** For the driver check of a Turnip mode, in the check's own process (Probe, not the UI
+     *  thread): a folder holding that mode's libraries (port.json "libraries"), unpacked here when
+     *  the build packs them; null: nativeLibraryDir. The check loads libadrenotools.so, the hooks
+     *  and the driver from it, so whatever they need besides the system must already be loaded or
+     *  be in that folder's linker reach (Heroes V loads its libc++_shared.so from it first). */
+    default File checkLibraries(Context context, String mode, List<String> libraries) throws IOException { return null; }
+
+    /** The driver check is done with the folder checkLibraries returned (a port may remove what it
+     *  unpacked only for the check). Not called when the check crashed: clean up on the next call. */
+    default void checkedLibraries(Context context, String mode, File folder) { }
 
     /** Once per process, before the launcher or Launch.attach reads the player's choices: a game
      *  that had a launcher of its own hands its settings over here with Launch.adopt (Heroes V: the
      *  game folders and options its old launcher kept), so that an update keeps the player's setup. */
     default void migrate(Context context) { }
+
+    /** The full path of the distribution's current game log, which the launcher shows the player
+     *  to copy into a bug report (the HyperOS tip, port.json "app.hyperosNotice"); null: the
+     *  launcher names no log. Only a path: nothing is opened, and it runs in the launcher's
+     *  process on its UI thread. */
+    default String logFile(Context context, String distribution) { return null; }
 
     /** Loads the hooks of port.json, or the defaults. */
     static PortHooks of(Context context) {

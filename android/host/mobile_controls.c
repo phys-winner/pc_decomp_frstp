@@ -14,6 +14,16 @@
 #include <sys/system_properties.h>
 #endif
 
+/* The UI walks compare node names with dozens of literals per node (thousands of nodes per pass):
+ * the first byte is compared inline (a constant for a literal) and strcmp runs only when it matches.
+ * Same result as strcmp: the sign of the first differing byte as unsigned char, 0 when equal. */
+static inline int mobile_strcmp(const char *a, const char *b) {
+    unsigned char x = (unsigned char)a[0], y = (unsigned char)b[0];
+    if (x != y) return (int)x - (int)y;
+    return x ? strcmp(a + 1, b + 1) : 0;
+}
+#define strcmp(a, b) mobile_strcmp((a), (b))
+
 enum { CAMERA=1, UI=2, BUILDING=4, TIME=8, ROAD=16 };
 typedef struct {float left,top,right,bottom;unsigned flags;} touch_rect;
 static pthread_mutex_t input_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -28,6 +38,16 @@ static unsigned reset_pending, camera_available, building_available;
 static unsigned painter_clear_pending;
 static unsigned street_tool_pending;
 static _Atomic unsigned touch_construction;
+/* Construction aim past the camera limits (2026-11-22).  The touch tools aim at the screen centre, and
+ * the city camera's target stops at FrostpunkCameraBoundsBase (camera_bounds_clamp), so the strip
+ * between those limits and the edge of the map, which a PC cursor reaches at the side of the screen,
+ * could not be aimed at.  The part of a construction pan that the limits cut off moves the aim instead:
+ * aim_offset is the aim's ground offset (X, Z) from the point under the screen centre, and a pan back
+ * brings it home first.  fp_mobile_camera_after keeps the aim on the visible screen; aim_point is the aim
+ * in the screen convention of 14181BDB0 (x to the right, y up), read by the building painter's aim.
+ * Game thread only. */
+static float aim_offset[2];
+static float aim_point[4]={.5f,.5f,0,1};
 static _Atomic unsigned construction_projected;
 static float construction_plane[8];
 static uint16_t street_detail[256];
@@ -178,12 +198,13 @@ void fp_mobile_painters_created(CPU *cpu,void (*original)(CPU*)) {
 }
 void fp_mobile_building_aim(CPU *cpu,void (*original)(CPU*)) {
     if(!atomic_load(&touch_construction)){original(cpu);return;}
-    /* Preview, rotation and placement read the same aim, independently of the HUD pointer. */
-    _Alignas(16) const float center[4]={.5f,.5f,0,1};
+    /* Preview, rotation and placement read the same aim, independently of the HUD pointer: the screen
+     * centre, or where a pan past the camera limits moved it (aim_point). */
+    _Alignas(16) float aim[4];memcpy(aim,aim_point,sizeof(aim));
     uint64_t input=cpu->rdx;
-    cpu->rdx=(uintptr_t)center;
+    cpu->rdx=(uintptr_t)aim;
     original(cpu);
-    if(cpu->rdx==(uintptr_t)center)cpu->rdx=input;
+    if(cpu->rdx==(uintptr_t)aim)cpu->rdx=input;
 }
 void fp_mobile_panels_created(CPU *cpu,void (*original)(CPU*)) {
     uint64_t object=cpu->rcx;original(cpu);panels=object;
@@ -1903,8 +1924,14 @@ static void prepare_canvas(CPU *cpu,uint64_t node,unsigned depth,unsigned parent
     }
     viewport_decoration(cpu,node,width,height);
     unsigned count=0;
-    for(uint64_t child=rd64(node+0x220);child&&count++<512;child=rd64(child+0x240))
+    for(uint64_t child=rd64(node+0x220);child&&count++<512;child=rd64(child+0x240)){
+        /* The next sibling's lines load while this child's subtree is walked (a hint only: the
+         * loop still reads the link after the call, which may change the tree). */
+        uint64_t next=rd64(child+0x240);
+        if(next){__builtin_prefetch((const void*)(uintptr_t)(next+0x100));__builtin_prefetch((const void*)(uintptr_t)(next+0x1c0));
+            __builtin_prefetch((const void*)(uintptr_t)(next+0x200));__builtin_prefetch((const void*)(uintptr_t)(next+0x240));}
         prepare_canvas(cpu,child,depth+1,canvas,budget);
+    }
 }
 
 /* Startup logos (launcher "skip intro videos"): the engine's own novideo bit (byte 0x142985AB8,
@@ -2171,8 +2198,26 @@ static void snapshot_ui(void) {
         if(profile&&snprintf(path,sizeof(path),"%s/mobile-ui.tsv",profile)<(int)sizeof(path))dump=fopen(path,"we");
     }
 #endif
+    /* One pass over the control list (it was two): the owner screens are collected here, in the
+     * order of their first control, which is the order the screen pass below used to find them in.
+     * Nothing in this pass writes a field ui_owner_screen reads (+0, +0x230, +0x248).  The list
+     * has thousands of controls spread over the heap: the three lines each control is read from
+     * are prefetched sixteen controls ahead (most controls take only a few instructions here), so
+     * their cache misses overlap. */
     for(unsigned i=0;i<count;++i){
+        if(i+16<count){
+            uint64_t ahead=rd64(list+(uint64_t)(i+16)*16);
+            if(ahead){__builtin_prefetch((const void*)(uintptr_t)ahead);__builtin_prefetch((const void*)(uintptr_t)(ahead+0x1c0));
+                __builtin_prefetch((const void*)(uintptr_t)(ahead+0x240));}
+        }
         uint64_t control=rd64(list+(uint64_t)i*16);if(!control)continue;
+        if(used<32){
+            uint64_t screen=ui_owner_screen(control);
+            if(screen&&rd64(screen)==GVA(0x141D7B0B0)){
+                unsigned j=0;while(j<used&&screens[j]!=screen)++j;
+                if(j==used)screens[used++]=screen;
+            }
+        }
         const char *control_name=(const char*)(uintptr_t)rd64(control+0x1d8);
         int radial=switch_mode&&atomic_load(&switch_menu)?switch_button_index(control_name):-1;
         if(radial>=0&&ui_visible_chain(control)&&(rd32(control+0x1e0)&0x10)){
@@ -2274,10 +2319,8 @@ static void snapshot_ui(void) {
             if(parent_name&&!strcmp(parent_name,"EXT_TIME_PANEL")){clock_ids[clock_count++]=rd32(control+0x1e4);break;}
         }
     }
-    for(unsigned i=0;i<count&&used<32;++i){
-        uint64_t control=rd64(list+(uint64_t)i*16),screen=control?ui_owner_screen(control):0;
-        if(!screen||rd64(screen)!=GVA(0x141D7B0B0))continue;
-        unsigned j=0;while(j<used&&screens[j]!=screen)++j;if(j<used)continue;screens[used++]=screen;
+    for(unsigned s=0;s<used;++s){
+        uint64_t screen=screens[s];
         if(switch_mode&&!modal){unsigned budget=1024;modal=switch_modal_scan(screen,0,&budget);}
         if(!loading_hint||rd64(loading_hint)!=GVA(0x141EE06E0)){
             unsigned seen=0;
@@ -2555,7 +2598,14 @@ void fp_mobile_camera_before(CPU *cpu) {
     int zoom_city;{int first=atomic_load(&gate_first_distant);uint64_t list=rd64(system+0xb8);
         zoom_city=first>0?first:list?(int)rd32(list+0x60):0;
         int level=(int32_t)rd32(system+0x1F4);
-        zoom_city_ok=available&&level>=0&&level<zoom_city&&(rd32(controller+0xa0)==0||rd32(controller+0xa0)==4);}
+        unsigned was_ok=zoom_city_ok;
+        zoom_city_ok=available&&level>=0&&level<zoom_city&&(rd32(controller+0xa0)==0||rd32(controller+0xa0)==4);
+        /* Why pinches take the wheel (which the game refuses over its UI, while following an entity
+         * or while the camera is locked): logged on the change, at most once a second. */
+        static uint64_t refused_logged;uint64_t now=monotonic_ns();
+        if(was_ok&&!zoom_city_ok&&now-refused_logged>1000000000u){refused_logged=now;
+            fprintf(stderr,"FP_ZOOM refused level=%d city=%d mode=%u locked=%u transition=%.2f follow=%u\n",level,zoom_city,
+                controller?rd32(controller+0xa0):~0u,rd32(system+0x1f0),rdss(system+0x228),rd64(system+0x230)!=0);}}
     uint64_t time_system=rd64(GVA(0x142B8D800)),clock=rd64(GVA(0x142B8B390));
     time_state_valid=time_system&&rd64(time_system)==GVA(0x141E049B0)&&clock;
     if(time_state_valid){current_speed=0;
@@ -2598,13 +2648,27 @@ void fp_mobile_camera_before(CPU *cpu) {
         memcpy((void*)(uintptr_t)(controller+0x30),initial_position,16);memcpy((void*)(uintptr_t)(controller+0x60),initial_position,16);
         memcpy((void*)(uintptr_t)(controller+0x160),initial_target,16);memcpy((void*)(uintptr_t)(controller+0x170),initial_target,16);
         memset((void*)(uintptr_t)(controller+0x70),0,16);memset((void*)(uintptr_t)(controller+0x180),0,16);
-        wr32(controller+0xa0,0);wrss(controller+0x1f8,initial_distance);zoom_active=zoom_settling=0;return;
+        wr32(controller+0xa0,0);wrss(controller+0x1f8,initial_distance);zoom_active=zoom_settling=0;
+        aim_offset[0]=aim_offset[1]=0;return;
     }
     float length=hypotf(values[0],values[1]);
+    unsigned aiming=atomic_load(&touch_construction)&&(construction_open||painter_kind);
+    if(!aiming)aim_offset[0]=aim_offset[1]=0;
     if(length>0){
         float vector[4]={-values[0],0,values[1],0};
+        /* A construction pan starts where the aim points: the part of earlier pans that the camera
+         * limits cut off comes back first (141C365D0 moves from the current position and target). */
+        if(aim_offset[0]!=0||aim_offset[1]!=0)
+            for(unsigned k=0;k<2;++k){uint64_t at=controller+(k?0x160:0x30);
+                wrss(at,rdss(at)+aim_offset[0]);wrss(at+8,rdss(at+8)+aim_offset[1]);}
         call(cpu,UINT64_C(0x141C365D0),controller,vector,0,distance*length*1.4f,1);
+        float wanted[4];memcpy(wanted,(void*)(uintptr_t)(controller+0x170),16);
         camera_bounds_clamp(cpu,system,controller);
+        if(aiming){
+            float kept[4];memcpy(kept,(void*)(uintptr_t)(controller+0x170),16);
+            aim_offset[0]=wanted[0]-kept[0];aim_offset[1]=wanted[2]-kept[2];
+            if(!isfinite(aim_offset[0])||!isfinite(aim_offset[1]))aim_offset[0]=aim_offset[1]=0;
+        }
         memcpy(position,(void*)(uintptr_t)(controller+0x60),16);
         memcpy(target,(void*)(uintptr_t)(controller+0x170),16);
         memcpy((void*)(uintptr_t)(controller+0x30),position,16);
@@ -2612,12 +2676,20 @@ void fp_mobile_camera_before(CPU *cpu) {
     }
     if(values[3]!=0){
         float angle=-values[3],x=position[0]-target[0],z=position[2]-target[2];
+        unsigned mode=rd32(controller+0xa0);
         call(cpu,UINT64_C(0x141C36360),controller,NULL,angle*(180.f/3.141592654f),1000,1);
         position[0]=target[0]+cosf(angle)*x+sinf(angle)*z;
         position[2]=target[2]-sinf(angle)*x+cosf(angle)*z;
         memcpy((void*)(uintptr_t)(controller+0x20),(void*)(uintptr_t)(controller+0x130),16);
         memcpy((void*)(uintptr_t)(controller+0x30),position,16);
         memcpy((void*)(uintptr_t)(controller+0x60),position,16);
+        /* The turn is applied here at once.  141C36360 also put the controller into its orbit mode 6,
+         * and zoom_apply below refuses any mode but 0 and 4, so a pinch lost its zoom in every frame
+         * that also carried a turn.  Real fingers turn a little in nearly every touch event; at a low
+         * frame rate every frame collects several events, so pinch zoom stopped working once the
+         * city grew and the phone heated up.  The orbit would only repeat the placement made here
+         * (and snap to the distance it stored before a zoom), so the free or idle mode stays. */
+        if(mode==0||mode==4)wr32(controller+0xa0,mode);
     }
     if(zoom_delta!=0||zoom_active)zoom_apply(cpu,system,controller,zoom_delta,zoom_settle,zoom_city);
 }
@@ -2662,12 +2734,25 @@ static void publish_construction_plane(uint64_t camera,unsigned alternate,const 
     pthread_mutex_unlock(&input_mutex);
 }
 
+/* Ground intersection of a screen aim (14181BDB0 convention), the projection of the original painters. */
+static int aim_ground(CPU *cpu,const float aim[4],float ground[4]){
+    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);
+    win64_pointer(c.rsp-8,256,1);
+    uint64_t point=c.rsp+0x80,screen=c.rsp+0x90;
+    memcpy((void*)(uintptr_t)screen,aim,16);
+    c.rcx=point;c.rdx=screen;c.xmm[2].f32[0]=0;
+    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x14181BDB0));
+    memcpy(ground,(const void*)(uintptr_t)point,16);
+    return isfinite(ground[0])&&isfinite(ground[1])&&isfinite(ground[2]);
+}
+
 void fp_mobile_camera_after(CPU *cpu) {
     static uint64_t last_painter;
     static float last_ground[4];
     if(!atomic_load(&touch_construction)||!camera_available||(!construction_open&&!painter_kind)
        ||pause_menu_visible||atomic_load(&switch_menu)||rd8(GVA(0x142982F8D))){
-        last_painter=0;atomic_store(&construction_projected,0);return;
+        last_painter=0;atomic_store(&construction_projected,0);
+        aim_point[0]=aim_point[1]=.5f;return;
     }
     unsigned alternate=rd32(GVA(0x142985AA4))==1;
     uint64_t renderer=rd64(GVA(alternate?0x143FC0998:0x142B3B598));
@@ -2676,16 +2761,36 @@ void fp_mobile_camera_after(CPU *cpu) {
     uint64_t painter=painters?rd64(painters+0x80):0;
     float y=painter?.5f:construction_menu_aim;
     /* Ground intersection of the aim ray, using the same projection as the original painters. */
-    const float aim[4]={.5f,1.f-y,0,1};
-    CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);
-    win64_pointer(c.rsp-8,256,1);
-    uint64_t point=c.rsp+0x80,screen=c.rsp+0x90;
-    memcpy((void*)(uintptr_t)screen,aim,16);
-    c.rcx=point;c.rdx=screen;c.xmm[2].f32[0]=0;
-    push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x14181BDB0));
-    float ground[4];memcpy(ground,(const void*)(uintptr_t)point,16);
-    if(!isfinite(ground[0])||!isfinite(ground[1])||!isfinite(ground[2])){
+    float aim[4]={.5f,1.f-y,0,1};
+    float ground[4];
+    if(!aim_ground(cpu,aim,ground)){
         last_painter=0;atomic_store(&construction_projected,0);return;
+    }
+    if(aim_offset[0]!=0||aim_offset[1]!=0){
+        /* The aim moved past the camera limits: its point on the build plane (Y=0), kept on the visible
+         * screen; when the screen edge holds it back, the offset shrinks to the point actually aimed at. */
+        float point[4]={ground[0]+aim_offset[0],0,ground[2]+aim_offset[1],1},clip[4],view[4];
+        if(alternate){project_vector(camera+0x50,point,view);project_vector(camera+0x110,view,clip);}
+        else project_vector(camera+0x1f0,point,clip);
+        float x=clip[3]>0?.5f+.5f*(clip[0]/clip[3]):.5f,down=clip[3]>0?.5f-.5f*(clip[1]/clip[3]):.5f;
+        if(!isfinite(x)||!isfinite(down))x=down=.5f;
+        /* Left of the touch construction buttons (TouchControls.constructionX), between the top and
+         * bottom HUD bars. */
+        float kept_x=fminf(.90f,fmaxf(.04f,x)),kept_down=fminf(.86f,fmaxf(.10f,down));
+        float moved[4]={kept_x,1.f-kept_down,0,1},hit[4];
+        if(aim_ground(cpu,moved,hit)){
+            if(kept_x!=x||kept_down!=down||clip[3]<=0){aim_offset[0]=hit[0]-ground[0];aim_offset[1]=hit[2]-ground[2];}
+            memcpy(aim,moved,sizeof(aim));memcpy(ground,hit,sizeof(ground));
+        } else aim_offset[0]=aim_offset[1]=0;
+    }
+    memcpy(aim_point,aim,sizeof(aim_point));
+    {   /* The aim as it moves: screen position (x right, y down) and its ground offset from the centre. */
+        static uint64_t logged_ns;static float logged[2]={-1,-1};uint64_t now=monotonic_ns();
+        if((fabsf(aim[0]-logged[0])>.04f||fabsf(aim[1]-logged[1])>.04f)&&now-logged_ns>250000000u){
+            logged_ns=now;logged[0]=aim[0];logged[1]=aim[1];
+            fprintf(stderr,"FP_AIM x=%.3f y=%.3f offset=%.1f,%.1f ground=%.1f,%.1f painter=%u\n",aim[0],1.f-aim[1],
+                aim_offset[0],aim_offset[1],ground[0],ground[2],painter_kind);
+        }
     }
     publish_construction_plane(camera,alternate,ground);
     if(painter&&(painter!=last_painter||fabsf(ground[0]-last_ground[0])>.001f||fabsf(ground[2]-last_ground[2])>.001f))
@@ -2701,6 +2806,7 @@ void fp_mobile_camera_destroy(void) {
     atomic_store(&switch_modal_visible,0);
     construction_close_target=0;construction_open=painter_kind=0;street_tool_pending=painter_clear_pending=0;
     construction_menu_aim=.5f;atomic_store(&construction_projected,0);
+    aim_offset[0]=aim_offset[1]=0;aim_point[0]=aim_point[1]=.5f;
     street_detail_units=0;
     painters=panels=0;building_gesture=0;pause_menu_visible=0;debug_ready_since=0;atomic_store(&debug_requested,0);
     memset(pending,0,sizeof(pending));

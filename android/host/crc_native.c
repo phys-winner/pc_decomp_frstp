@@ -7,6 +7,12 @@
 #endif
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
 #include <arm_acle.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_CRC32
+#define HWCAP_CRC32 (1 << 7)
+#endif
+#endif
 #endif
 
 /* zlib crc32 (ISO-HDLC / gzip), guest L_000141C04BB0.
@@ -51,9 +57,36 @@ static void crc_table_init(void) {
     crc_table_ready = 1;
 }
 
+/* The unit is compiled with +crc, but the CRC32 extension is optional in ARMv8.0:
+ * the instructions run only when the kernel reports HWCAP_CRC32, otherwise the table path. */
+static int crc_hardware(void) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32) && defined(__linux__)
+    static int known = -1;
+    int value = __atomic_load_n(&known, __ATOMIC_RELAXED);
+    if (value < 0) {
+        value = (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
+        __atomic_store_n(&known, value, __ATOMIC_RELAXED);
+    }
+    return value;
+#elif defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+static uint32_t crc_table_bytes(uint32_t crc, const uint8_t *buf, uint32_t len) {
+    crc_table_init();
+    while (len--)
+        crc = crc_table[(crc ^ *buf++) & 0xffu] ^ (crc >> 8);
+    return crc;
+}
+
 static uint32_t crc_bytes(uint32_t crc, const uint8_t *buf, uint32_t len) {
     crc = ~crc;
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+    if (!crc_hardware())
+        return ~crc_table_bytes(crc, buf, len);
     while (len && ((uintptr_t)buf & 7u)) {
         crc = __crc32b(crc, *buf++);
         --len;
@@ -70,9 +103,7 @@ static uint32_t crc_bytes(uint32_t crc, const uint8_t *buf, uint32_t len) {
         --len;
     }
 #else
-    crc_table_init();
-    while (len--)
-        crc = crc_table[(crc ^ *buf++) & 0xffu] ^ (crc >> 8);
+    crc = crc_table_bytes(crc, buf, len);
 #endif
     return ~crc;
 }

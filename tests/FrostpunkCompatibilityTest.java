@@ -6,20 +6,22 @@ import java.io.File;
 import java.util.*;
 import org.json.JSONObject;
 
+/** Renderer rows of the launcher on a real device: every mode of port.json stays listed, an unusable one
+ *  carries one reason, an old system Vulkan does not block Turnip, and the port's own driver rules hold.
+ *  Runs with app_process against the installed APK (build/port-sync-20261124/launcher/run_test.py). */
 public final class FrostpunkCompatibilityTest {
     static void need(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
-    static String launchProblem(Context context, Spec spec, Gpu gpu) throws Exception {
-        LauncherActivity activity = new LauncherActivity();
-        java.lang.reflect.Method attach = ContextWrapper.class.getDeclaredMethod("attachBaseContext", Context.class);
-        attach.setAccessible(true); attach.invoke(activity, context);
-        for (String name : new String[]{"spec", "gpu"}) {
-            java.lang.reflect.Field field = LauncherActivity.class.getDeclaredField(name); field.setAccessible(true);
-            field.set(activity, name.equals("spec") ? spec : gpu);
-        }
-        java.lang.reflect.Method problem = LauncherActivity.class.getDeclaredMethod("fpDeviceProblem", Spec.Distribution.class);
-        problem.setAccessible(true);
-        return (String) problem.invoke(activity, spec.distributions.get(0));
+
+    /** A driver report that satisfies the native Vulkan renderer. */
+    static String nativeReport(String driver, String vendor, String driverId, String api) {
+        StringBuilder text = new StringBuilder();
+        for (String line : new String[]{"status=ok", "api=" + api, "vendor=" + vendor, "driverId=" + driverId, "bgra=1", "astc=1",
+                "etc2=1", "bcFeature=1", "bc=111", "gpuType=1", "robustBufferAccess2=1", "missing="})
+            text.append(driver).append('.').append(line).append('\n');
+        for (String token : FrostpunkDevice.NATIVE_REQUIRES) text.append(driver).append('.').append(token).append("=1\n");
+        return text.toString();
     }
+
     public static void main(String[] args) throws Exception {
         need(args.length == 1 && args[0].startsWith("/data/local/tmp/frostpunk-compatibility-"), "isolated test folder");
         final File root = new File(args[0]); need(root.mkdir(), "fresh test folder");
@@ -29,46 +31,100 @@ public final class FrostpunkCompatibilityTest {
         Context system = (Context) thread.getMethod("getSystemContext").invoke(runtime);
         Context app = system.createPackageContext("com.frostpunk.staticrecomp", Context.CONTEXT_IGNORE_SECURITY);
         Context context = new ContextWrapper(app) { @Override public File getFilesDir() { return root; } };
+        need(FrostpunkDevice.mesaGrallocLinear(context, "KINGKONG_X_PRO"), "CUBOT uses linear gralloc by default");
+        need(!FrostpunkDevice.mesaGrallocLinear(context, "TB373FU"), "Lenovo uses the driver default");
+        need(!FrostpunkDevice.mesaGrallocLinear(context, ""), "unknown devices use the driver default");
+        String gralloc = FrostpunkDevice.MESA_GRALLOC_LINEAR_OPTION;
+        need(State.put(context, State.CHOICES, gralloc, "0"), "save the explicit off setting");
+        need(!FrostpunkDevice.mesaGrallocLinear(context, "KINGKONG_X_PRO"), "explicit off overrides CUBOT's default");
+        need(State.put(context, State.CHOICES, gralloc, "1"), "save the explicit on setting");
+        need(FrostpunkDevice.mesaGrallocLinear(context, "TB373FU"), "explicit on overrides Lenovo's default");
+        need(State.update(context, State.CHOICES, values -> values.remove(gralloc)), "restore the default gralloc setting");
         JSONObject translations = new JSONObject(Spec.asset(context, "launcher/compatibility.json"));
         Spec spec = Spec.get(context); Spec.Mode turnip = spec.mode("turnip"), stock = spec.mode("dxvk");
+        Spec.Distribution game = spec.distributions.get(0);
         Spec.Mode nativeVulkan = spec.mode(FrostpunkHooks.NATIVE_RENDERER);
+        Spec.Mode nativeTurnip = spec.mode(FrostpunkHooks.NATIVE_TURNIP_RENDERER);
         Spec.Mode panvk = spec.mode(FrostpunkHooks.NATIVE_PANVK_RENDERER);
         Spec.Mode dxvkPanvk = spec.mode(FrostpunkHooks.DXVK_PANVK_RENDERER);
         need(panvk.minSdk == 30 && dxvkPanvk.minSdk == 30, "PanVK can be checked starting at Frostpunk's minimum Android version");
-        need(FrostpunkDevice.applies(true, "turnip") && !FrostpunkDevice.applies(true, "vulkan"), "Adreno uses only Turnip");
-        need(!FrostpunkDevice.applies(false, "turnip") && FrostpunkDevice.applies(false, "vulkan"), "other GPUs use only system Vulkan");
+        need(spec.performanceHud && "0".equals(spec.option("fps_counter").value), "the FPS overlay is off on a fresh install");
+        need(HudField.read(context, "0") == 0, "the first enable shows the FPS number only");
+        for (Spec.Mode mode : Arrays.asList(nativeVulkan, nativeTurnip, panvk))
+            need(FrostpunkDevice.nativeMode(mode) && mode.readsCache() && !mode.needsBC, mode.id + " is a native mode that reads the cache");
+        for (Spec.Mode mode : Arrays.asList(stock, turnip, dxvkPanvk))
+            need(!FrostpunkDevice.nativeMode(mode) && mode.readsCache(), mode.id + " is a DXVK mode that reads the cache");
+        need(Probe.turnipMode(spec) == nativeTurnip && Probe.panvkMode(spec) == panvk, "the driver check does not depend on DXVK libraries");
+
+        /* Every row stays listed; a row that cannot run here says why in one reason. */
         Gpu gpu = Gpu.get(context);
-        for (String name : Arrays.asList("Mali-G52", "mali-g76", "Mali-G615", "Mali-G715", "Immortalis-G925"))
-            need(Gpu.maliRenderer(name), "PanVK can be checked on " + name);
-        need(!Gpu.maliRenderer("Adreno 750") && !Gpu.maliRenderer(null), "other GPUs do not match Mali renderer names");
-        need(FrostpunkDevice.applies(gpu, panvk, Probe.parse("stock.vendor=13b5\n")), "ARM Vulkan devices can check PanVK");
-        List<Renderers.Status> visible = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false);
-        boolean supportsPanvk = gpu.mali();
-        need(visible.size() == (supportsPanvk ? 4 : 2) && visible.get(0).mode.id.equals(gpu.qualcomm() ? "turnip" : "dxvk")
-            && visible.get(1).mode == nativeVulkan, "native Vulkan is listed alongside the device's DXVK mode");
-        if (supportsPanvk) need(visible.get(2).mode == panvk && visible.get(3).mode == dxvkPanvk, "both PanVK renderers are listed");
-        Map<String, String> panvkReport = Probe.parse("panvk.status=ok\npanvk.vendor=13b5\npanvk.driverId=9\n"
-            + "panvk.astc=1\npanvk.bgra=1\npanvk.robustBufferAccess2=1\npanvk.bcFeature=1\npanvk.bc=111\n");
+        File probe = new File(State.folder(context), Probe.REPORT);
+        List<Renderers.Status> visible = Renderers.evaluate(context, spec, game, gpu, false);
+        need(visible.size() == game.renderers.size(), "no renderer row is filtered out");
+        need(visible.get(0).mode == nativeVulkan && spec.defaultMode.equals(nativeVulkan.id), "native system Vulkan is the default");
+        for (Renderers.Status status : visible)
+            need(status.available || (status.reason != null && !status.reason.trim().isEmpty() && !status.reason.contains("\n")),
+                status.mode.id + " names one reason");
+        if (gpu.qualcomm()) {
+            need(!Renderers.status(visible, panvk.id).available && !Renderers.status(visible, dxvkPanvk.id).available, "PanVK rows are disabled on Adreno");
+        } else if (gpu.probed) {
+            need(!Renderers.status(visible, nativeTurnip.id).available && !Renderers.status(visible, turnip.id).available, "Turnip rows are disabled off Adreno");
+        }
+
+        /* The driver family of each mode. */
+        Map<String, String> panvkReport = Probe.parse(nativeReport("panvk", "13b5", "9", "1.3.300"));
         need(!Renderers.judge(context, panvk, panvkReport).available, "a system driver cannot impersonate PanVK");
         need(!Renderers.judge(context, dxvkPanvk, panvkReport).available, "DXVK PanVK also verifies the driver");
         panvkReport.put("panvk.driverId", "20");
-        need(Renderers.judge(context, panvk, panvkReport).verified, "Mesa PanVK with ASTC is accepted");
-        need(Renderers.judge(context, dxvkPanvk, panvkReport).verified && !FrostpunkDevice.dxt(panvkReport, dxvkPanvk.id),
-            "DXVK PanVK uses the verified driver and existing ASTC data");
-        need(!FrostpunkDevice.dxt(panvkReport, panvk.id), "PanVK keeps the Mali ASTC texture data");
-        List<Renderers.Status> converted = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, true);
-        need(converted.get(0).available == visible.get(0).available && converted.get(0).verified == visible.get(0).verified,
-            "native ASTC data does not invalidate the port renderer");
-        need(launchProblem(context, spec, gpu) != null, "Play card reports a pending driver check before any report exists");
-        String driver = gpu.qualcomm() ? "turnip" : "stock";
-        File probe = new File(State.folder(context), Probe.REPORT);
-        Probe.write(probe, Probe.key(context) + "\n" + driver + ".status=missing\n" + driver + ".api=1.0.335\n"
-            + driver + ".missing=vulkan13,multiViewport\n");
-        String oldApi = !gpu.qualcomm() && gpu.vulkan != 0 && Integer.compareUnsigned(gpu.vulkan, stock.vulkan) < 0
-            ? Gpu.version(gpu.vulkan) : "1.0.335";
-        need(launchProblem(context, spec, gpu).contains(oldApi), "Play card explains insufficient Vulkan without launching the game");
-        need(probe.delete(), "remove synthetic driver report");
+        need(Renderers.judge(context, panvk, panvkReport).verified, "Mesa PanVK is accepted");
+        need(Renderers.judge(context, dxvkPanvk, panvkReport).verified && FrostpunkDevice.dxt(panvkReport, dxvkPanvk),
+            "DXVK PanVK can use sampled BC originals");
+        need(FrostpunkDevice.dxt(panvkReport, panvk), "native PanVK can read reported BC originals");
+        panvkReport.put("panvk.formats", "4");
+        need(!FrostpunkDevice.dxt(panvkReport, panvk), "the per-format mask overrides the aggregate BC flag");
+        need(Renderers.judge(context, panvk, panvkReport).verified, "ASTC or ETC2 covers a driver without DXT");
+        panvkReport.put("panvk.astc", "0"); panvkReport.put("panvk.etc2", "0");
+        Renderers.Status noFormat = Renderers.judge(context, panvk, panvkReport);
+        need(!noFormat.available && noFormat.reason.equals(FrostpunkDevice.text(context, "no_texture_format")), "no readable texture format disables the row");
+        panvkReport.remove("panvk.formats"); panvkReport.put("panvk.astc", "1"); panvkReport.put("panvk.etc2", "1");
+        panvkReport.put("panvk.bc", "101");
+        need(!FrostpunkDevice.dxt(panvkReport, panvk), "incomplete PanVK BC formats need a conversion");
+        panvkReport.put("panvk.dynamicRendering", "0");
+        Renderers.Status noFeature = Renderers.judge(context, panvk, panvkReport);
+        need(!noFeature.available && noFeature.reason.contains("dynamicRendering"), "a missing native requirement is named");
+        need(Renderers.judge(context, dxvkPanvk, panvkReport).available, "the native requirements do not apply to DXVK");
 
+        /* An old system Vulkan never blocks Turnip: the selected driver's own version decides. */
+        java.lang.reflect.Constructor<Gpu> gpuConstructor = Gpu.class.getDeclaredConstructor();
+        gpuConstructor.setAccessible(true);
+        Gpu legacyAdreno = gpuConstructor.newInstance();
+        legacyAdreno.adreno = 650; legacyAdreno.renderer = "Adreno (TM) 650"; legacyAdreno.vendor = "Qualcomm"; legacyAdreno.probed = true;
+        legacyAdreno.vulkan = (1 << 22) | (1 << 12);
+        String legacyStock = Probe.key(context) + "\nstock.status=missing\nstock.vendor=5143\nstock.device=Adreno (TM) 650\n"
+            + "stock.api=1.1.128\nstock.missing=vulkan13\n";
+        Probe.write(probe, legacyStock + nativeReport("turnip", "5143", "18", "1.3.335"));
+        List<Renderers.Status> legacy = Renderers.evaluate(context, spec, game, legacyAdreno, false);
+        for (Spec.Mode mode : Arrays.asList(turnip, nativeTurnip)) {
+            Renderers.Status status = Renderers.status(legacy, mode.id);
+            need(status != null && status.available && status.verified, mode.id + " accepts Turnip over system Vulkan 1.1");
+        }
+        for (Spec.Mode mode : Arrays.asList(stock, nativeVulkan)) {
+            Renderers.Status status = Renderers.status(legacy, mode.id);
+            need(status != null && !status.available && status.reason.contains("1.1.128"), mode.id + " names the system driver's version");
+        }
+        need(nativeTurnip.id.equals(Renderers.effective(spec.defaultMode, legacy, spec.defaultMode, false)), "the start uses native Turnip on Adreno");
+        need("Vulkan 1.3.335 (Turnip)".equals(RendererInfo.title(nativeTurnip.kind, nativeTurnip.title, "Vulkan (system driver)", 0, legacyAdreno.vulkan, Probe.report(context))),
+            "the row title carries the selected driver's measured version");
+        Probe.write(probe, legacyStock + nativeReport("turnip", "5143", "18", "1.1.128").replace("turnip.status=ok", "turnip.status=missing")
+            .replace("turnip.missing=", "turnip.missing=vulkan13"));
+        legacy = Renderers.evaluate(context, spec, game, legacyAdreno, false);
+        for (Spec.Mode mode : Arrays.asList(turnip, nativeTurnip)) {
+            Renderers.Status status = Renderers.status(legacy, mode.id);
+            need(status != null && !status.available && status.reason.contains("1.1.128"), mode.id + " checks the Turnip API");
+        }
+        need(probe.delete(), "remove the synthetic driver report");
+
+        /* The real drivers of this device. */
         String libraries = app.getApplicationInfo().nativeLibraryDir;
         System.load(new File(libraries, "libc++_shared.so").getAbsolutePath());
         System.load(new File(libraries, Probe.FILE).getAbsolutePath());
@@ -77,16 +133,22 @@ public final class FrostpunkCompatibilityTest {
         String live = (String) nativeProbe.invoke(null, libraries, null, false);
         if (gpu.qualcomm()) live += (String) nativeProbe.invoke(null, libraries, turnip.driver, false);
         File bundledPanvk = new File(libraries, panvk.driver);
-        if (FrostpunkDevice.applies(gpu, panvk, Probe.parse(live)) && bundledPanvk.isFile()) {
+        long pageSize = android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE);
+        if (Probe.mali(context, Probe.parse(live)) && bundledPanvk.isFile()) {
             String result = (String) nativeProbe.invoke(null, libraries, panvk.driver, true);
             live += result;
             Map<String, String> checked = Probe.parse(result);
             String status = checked.get("panvk.status");
             need(Arrays.asList("ok", "missing", "error").contains(status), "the probe reports the PanVK result");
-            if (Gpu.pageSize() != 4096)
+            if (pageSize != 4096)
                 need("error".equals(status) && checked.get("panvk.error").contains("4 KiB"), "bundled PanVK requires 4 KiB pages");
             if ("ok".equals(status)) need("20".equals(checked.get("panvk.driverId")), "a passing probe uses Mesa PanVK");
         }
+        Map<String, String> real = Probe.parse(live);
+        for (String token : FrostpunkDevice.NATIVE_REQUIRES)
+            need(real.containsKey("stock." + token), "the driver check reports " + token);
+        for (String token : new String[]{"astc", "etc2", "bgra", "formats", "nullDescriptor", "api", "device"})
+            need(real.containsKey("stock." + token), "the driver check reports " + token);
         Probe.write(probe, Probe.key(context) + "\n" + live);
         if (bundledPanvk.isFile()) {
             String bundledKey = Probe.key(context);
@@ -105,21 +167,33 @@ public final class FrostpunkCompatibilityTest {
             need(Probe.key(context).equals(bundledKey) && Probe.report(context) != null,
                 "reset returns to the bundled PanVK and its probe identity");
         }
-        List<Renderers.Status> actualStatuses = Renderers.evaluate(context, spec, spec.distributions.get(0), gpu, false);
-        Renderers.Status actual = actualStatuses.get(0);
-        String problem = launchProblem(context, spec, gpu);
-        need((problem == null) == actualStatuses.stream().anyMatch(s -> s.available && s.verified), "Play card agrees with the real driver check");
-        if (problem != null) need(problem.contains(actual.reason), "Play card retains the actual rejection details");
-        System.out.println("DEVICE: " + gpu.renderer + "; system Vulkan " + Gpu.version(gpu.vulkan)
-            + "; selected " + actual.mode.id + "; available=" + actual.available + "; verified=" + actual.verified);
+        List<Renderers.Status> actualStatuses = Renderers.evaluate(context, spec, game, gpu, false);
+        need(actualStatuses.size() == game.renderers.size(), "the real report keeps every row");
+        String effective = Renderers.effective(spec.defaultMode, actualStatuses, spec.defaultMode, false);
+        System.out.println("DEVICE: " + gpu.renderer + "; system Vulkan " + Gpu.version(gpu.vulkan) + "; start uses " + effective);
+        for (Renderers.Status status : actualStatuses) {
+            need(status.available || (status.reason != null && !status.reason.trim().isEmpty()), status.mode.id + " has a reason on the real report");
+            List<String> formats = new ArrayList<>(spec.textureFormats);
+            formats.addAll(spec.etc2Formats); formats.addAll(spec.astcFormats);
+            System.out.println("ROW: " + RendererInfo.title(status.mode.kind, status.mode.title, "Vulkan (system driver)", gpu.gles, gpu.vulkan, Probe.report(context))
+                + " | " + (status.available ? status.verified ? "available" : "available, not confirmed" : "disabled: " + status.reason)
+                + (status.available ? " | " + RendererInfo.textures(context, TextureFormats.vulkan(Probe.report(context), status.mode.driverKey()), formats).replace('\n', ' ') : ""));
+            for (FrostpunkDevice.Workaround item : FrostpunkDevice.workarounds(context, status.mode, Probe.report(context)))
+                if (status.available) System.out.println("  WORKAROUND: " + item.key + (item.toggle ? " (switch, " + (item.on ? "on" : "off") + ")" : " (always)"));
+        }
         System.out.println(live);
-        if (problem != null) System.out.println("PLAY: " + problem);
+
+        /* Fifteen languages of the port's own reasons and of the shared rows. */
         Map<String, String> report = new HashMap<>();
         report.put("turnip.status", "missing"); report.put("turnip.vendor", "5143");
         report.put("turnip.api", "1.0.335"); report.put("turnip.bcFeature", "1"); report.put("turnip.bc", "111");
         report.put("turnip.missing", "vulkan13,robustBufferAccess2,nullDescriptor,multiViewport");
+        JSONObject words15 = new JSONObject(Spec.asset(context, "launcher/translations.json"));
+        Set<String> rowTexts = new HashSet<>();
         for (Iterator<String> languages = translations.keys(); languages.hasNext();) {
             String language = languages.next(); Locale.setDefault(Locale.forLanguageTag(language));
+            State.put(context, State.CHOICES, "language", language); Texts.reset();
+            need(Texts.language(context).equals(language), "the launcher speaks " + language);
             JSONObject words = translations.getJSONObject(language);
             for (Iterator<String> keys = words.keys(); keys.hasNext();) {
                 String key = keys.next(), value = words.getString(key);
@@ -130,24 +204,44 @@ public final class FrostpunkCompatibilityTest {
             Renderers.Status rejected = Renderers.judge(context, turnip, report);
             need(!rejected.available && !rejected.verified, "old Turnip rejected");
             need(rejected.reason.contains("1.0.335") && rejected.reason.contains("multiViewport"), "API and feature details");
-            need(!rejected.reason.contains("Mali") && !rejected.reason.contains("PowerVR"), "no unrelated driver message");
-            need(!rejected.reason.contains(words.getString("driver_turnip")), "missing driverId does not hide API failure");
+            need(!rejected.reason.contains(words.getString("driver_turnip")), "a missing driverId does not hide the API failure");
+            for (int id = 0; id <= Texts.LAST; ++id) need(!Texts.t(context, id).isEmpty() || Texts.english(id).isEmpty(), language + ": text " + id);
+            for (HudField field : HudField.values()) need(!Texts.pick(context, field.title).isEmpty(), language + ": " + field);
+            String sample = Texts.t(context, Texts.TEX_COMPARE) + Texts.pick(context, HudField.GRAPH.title) + Texts.t(context, Texts.HYPEROS_NEVER)
+                + Texts.translated(context, HyperOs.advice(HyperOs.XIAOMI, Texts.column(context)));
+            need(rowTexts.add(sample), language + " has its own texts for the texture note, the FPS dialog and the game-mode tip");
+            if (!Arrays.asList("en", "ru", "de", "pl").contains(language))
+                need(words15.getJSONObject(language).has(Texts.english(Texts.TEX_COMPARE)), language + ": translations.json covers the shared base");
         }
+        State.update(context, State.CHOICES, values -> values.remove("language")); Texts.reset();
         Locale.setDefault(Locale.ENGLISH);
         report.put("turnip.status", "ok"); report.put("turnip.missing", ""); report.put("turnip.api", "1.3.335");
-        need(!Renderers.judge(context, turnip, report).available, "unverified driver still rejected");
+        report.put("turnip.bgra", "1"); report.put("turnip.astc", "1");
+        report.put("turnip.driverId", "9");
+        need(!Renderers.judge(context, turnip, report).available, "a driver that is not Turnip is rejected");
         report.put("turnip.driverId", "18");
         Renderers.Status accepted = Renderers.judge(context, turnip, report);
         need(accepted.available && accepted.verified, "verified Turnip accepted");
-        report.put("stock.vendor", "5143");
-        need(Renderers.judge(context, nativeVulkan, report).verified, "native Vulkan shares the Adreno Turnip driver");
-        need(Renderers.effective("dxvk", Arrays.asList(accepted), "dxvk", false).equals("turnip"), "default from wrong GPU family replaced");
-        report.put("turnip.bcFeature", "0"); need(!Renderers.judge(context, turnip, report).available, "BC feature remains mandatory");
+        report.putAll(Probe.parse(nativeReport("turnip", "5143", "18", "1.3.335")));
+        report.putAll(Probe.parse(nativeReport("stock", "5143", "8", "1.3.300")));
+        Renderers.Status qualcomm = Renderers.judge(context, nativeVulkan, report);
+        need(Renderers.judge(context, nativeTurnip, report).verified && !qualcomm.available
+            && qualcomm.reason.equals(FrostpunkDevice.text(context, "driver_qualcomm")), "the Qualcomm system driver is a disabled row with its reason");
+        report.put("turnip.bcFeature", "0"); report.put("turnip.bc", "000"); report.put("turnip.formats", "0");
+        need(Renderers.judge(context, turnip, report).available, "Turnip without BC reads the converted cache");
         report.put("stock.status", "missing"); report.put("stock.vendor", "13b5"); report.put("stock.driverId", "9");
-        report.put("stock.astc", "1"); report.put("stock.bgra", "1"); report.put("stock.partiallyBound", "1");
+        report.put("stock.partiallyBound", "1"); report.put("stock.robustBufferAccess2", "0");
         report.put("stock.missing", "bcTextures,fillModeNonSolid,shaderClipDistance,shaderCullDistance,multiViewport,robustness2,robustBufferAccess2,nullDescriptor");
         need(Renderers.judge(context, stock, report).verified, "Mali port fallbacks retained");
         need(Renderers.judge(context, nativeVulkan, report).verified, "native Vulkan shares the system driver on Mali");
+        boolean maliFix = false, standIn = false;
+        report.put("stock.nullDescriptor", "0");
+        for (FrostpunkDevice.Workaround item : FrostpunkDevice.workarounds(context, nativeVulkan, report)) {
+            maliFix |= item.key.equals("fix_mali_dynamic_state") && item.toggle && item.on;
+            standIn |= item.key.equals("null_descriptor") && !item.toggle;
+        }
+        need(maliFix && standIn, "the Mali workarounds are listed for the native renderer");
+        need(spec.option("fix_mali_dynamic_state") != null && spec.option("fix_powervr_compiler") != null, "the switches reach the game as PORT_OPTION_*");
         report.put("stock.missing", report.get("stock.missing") + ",geometryShader");
         need(!Renderers.judge(context, stock, report).available, "unhandled missing feature still blocks Mali");
         report.put("stock.status", "crash"); need(!Renderers.judge(context, stock, report).available, "probe crash blocks startup");
@@ -156,14 +250,12 @@ public final class FrostpunkCompatibilityTest {
         State.put(context, State.CHOICES, "option.native_vulkan", "1");
         FrostpunkHooks hooks = new FrostpunkHooks();
         hooks.migrate(context);
-        need(FrostpunkHooks.NATIVE_RENDERER.equals(Renderers.chosen(context, spec, spec.distributions.get(0), hooks)), "existing toggle migrates to the renderer list");
-        need(FrostpunkHooks.fallbackToDxvk(context, "frostpunk") && !FrostpunkHooks.NATIVE_RENDERER.equals(
-            Renderers.chosen(context, spec, spec.distributions.get(0), hooks)), "crash fallback stores DXVK");
-        for (Spec.Mode panvkMode : Arrays.asList(panvk, dxvkPanvk)) {
-            State.put(context, State.CHOICES, "renderer.frostpunk", panvkMode.id);
-            need(FrostpunkHooks.fallbackToDxvk(context, "frostpunk") && "dxvk".equals(
-                Renderers.chosen(context, spec, spec.distributions.get(0), hooks)), "PanVK crash switches to system DXVK");
-        }
-        System.out.println("PASS: GPU filtering, driver policy, fallback selection, failure details and all " + translations.length() + " languages");
+        need(FrostpunkHooks.NATIVE_RENDERER.equals(Renderers.chosen(context, spec, game, hooks)), "existing toggle migrates to the renderer list");
+        for (Spec.Mode mode : Arrays.asList(nativeVulkan, nativeTurnip, panvk, dxvkPanvk))
+            need(FrostpunkHooks.watchedRenderer(mode.id), "startup failure reporting covers " + mode.id);
+        need(FrostpunkHooks.nativeTwin("turnip").equals(nativeTurnip.id) && FrostpunkHooks.nativeTwin("dxvk").equals(nativeVulkan.id)
+            && FrostpunkHooks.nativeTwin(dxvkPanvk.id).equals(panvk.id), "each DXVK mode has its native twin");
+        System.out.println("PASS: renderer rows with reasons, driver policy, Turnip over old system Vulkan, workarounds and all "
+            + translations.length() + " languages");
     }
 }

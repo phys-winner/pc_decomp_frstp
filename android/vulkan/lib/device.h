@@ -152,6 +152,24 @@ public:
     uint64_t completed() const { return completed_.load(std::memory_order_acquire); }
     void defer(std::function<void()> destroy);              /* runs after the current serial completed */
     void poll();
+    /* Completion marker (wiki note 24): every submission ends with a write of its serial into a small
+     * host-visible buffer, so "is it done" is a memory read.  vkGetFenceStatus of Turnip on KGSL can
+     * wait for the GPU; fences stay for the waits that must block and are still asked before a slot's
+     * fence and pool are reset, once the marker shows that the slot completed (then the fence is
+     * signalled).  debug.fp.rdvk_marker=0 restores fence-status polling.  0 = no marker. */
+    uint64_t marker_done();
+    bool has_marker() const { return done_map_ != nullptr; }
+    /* Render-thread sync statistics, logged as RDVK_SYNC every 600 frames (present.cpp). */
+    struct SyncStats {
+        uint64_t status_calls = 0, status_ns = 0;        /* vkGetFenceStatus */
+        uint64_t fence_waits = 0, fence_wait_ns = 0;     /* vkWaitForFences in wait_serial (> 50 us) */
+        uint64_t slot_waits = 0, slot_wait_ns = 0;       /* begin_frame: waits for a free frame slot (> 50 us) */
+        uint64_t submits = 0, submit_ns = 0;             /* vkQueueSubmit */
+        uint64_t present_ns = 0, acquire_ns = 0;         /* vkQueuePresentKHR, vkAcquireNextImageKHR */
+        uint64_t map_waits = 0, map_wait_ns = 0;         /* Map of a staging resource the GPU still used */
+        uint64_t map_staging = 0, map_flags = 0;         /* staging Maps that may wait, those with nonzero MapFlags */
+        uint64_t poll_calls = 0;                         /* Gpu::poll (GetData, query_samples, wait_serial) */
+    } sync;
 
 private:
     struct Frame {
@@ -191,6 +209,13 @@ private:
     uint64_t serial_ = 1;
     std::atomic<uint64_t> submitted_{0};
     std::atomic<uint64_t> completed_{0};
+    void marker_init();
+    void marker_record(VkCommandBuffer cmd, uint64_t serial);
+    bool fence_done(VkFence fence);   /* vkGetFenceStatus, counted */
+    VkBuffer done_buf_ = VK_NULL_HANDLE;
+    VkDeviceMemory done_mem_ = VK_NULL_HANDLE;
+    volatile uint32_t* done_map_ = nullptr;
+    bool done_coherent_ = true;
     std::mutex upload_mutex_, queue_mutex_, garbage_mutex_;
 };
 

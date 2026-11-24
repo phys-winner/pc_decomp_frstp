@@ -50,6 +50,62 @@ static uint64_t duplicate(uint64_t source,unsigned width) {
     memcpy(win64_pointer(result,bytes,1),win64_pointer(source,bytes,0),bytes);return result;
 }
 
+/* Direct handlers for win64.c's import cache.  Each computes what the matching branch of
+ * win64_string_call computes, reading the bytes straight instead of through element() (one call
+ * of win64_pointer per byte and side).  Without checked guest pointers win64_pointer only rejects a
+ * NULL address, and only when it reads one: a NULL string that would be read, or an address near
+ * the end of the address space, takes the original branch, so its stop stays the same. */
+static int unchecked(uint64_t pointer){return pointer&&pointer<UINT64_MAX-(UINT64_C(1)<<32);}
+static int ordered_compare(CPU *c,size_t count,int fold){
+    if(!count){c->rax=0;return 1;}
+    const unsigned char *a=(const unsigned char*)(uintptr_t)c->rcx,*b=(const unsigned char*)(uintptr_t)c->rdx;
+    for(size_t i=0;i<count;++i){
+        unsigned x=a[i],y=b[i];
+        if(fold){if(x>='A'&&x<='Z')x+='a'-'A';if(y>='A'&&y<='Z')y+='a'-'A';}
+        if(x!=y){c->rax=(uint32_t)(fold?(int)x-(int)y:x<y?-1:1);return 1;}
+        if(!x)break;
+    }
+    c->rax=0;return 1;
+}
+static int fast_strncmp(CPU *c){
+    if(c->r8&&(!unchecked(c->rcx)||!unchecked(c->rdx)))return win64_string_call(c,"strncmp");
+    return ordered_compare(c,(size_t)c->r8,0);
+}
+static int fast_stricmp(CPU *c){
+    if(!unchecked(c->rcx)||!unchecked(c->rdx))return win64_string_call(c,"_stricmp");
+    return ordered_compare(c,SIZE_MAX,1);
+}
+static int fast_strnicmp(CPU *c){
+    if(c->r8&&(!unchecked(c->rcx)||!unchecked(c->rdx)))return win64_string_call(c,"_strnicmp");
+    return ordered_compare(c,(size_t)c->r8,1);
+}
+static int fast_strchr(CPU *c){
+    if(!unchecked(c->rcx))return win64_string_call(c,"strchr");
+    const unsigned char *s=(const unsigned char*)(uintptr_t)c->rcx;unsigned wanted=(unsigned)c->rdx&255;
+    for(size_t i=0;;++i){unsigned value=s[i];if(value==wanted){c->rax=c->rcx+i;return 1;}if(!value){c->rax=0;return 1;}}
+}
+static int fast_strcspn(CPU *c){
+    if(!unchecked(c->rcx)||!unchecked(c->rdx))return win64_string_call(c,"strcspn");
+    unsigned char set[256];memset(set,0,256);
+    for(const unsigned char *s=(const unsigned char*)(uintptr_t)c->rdx;*s;++s)set[*s]=1;
+    const unsigned char *s=(const unsigned char*)(uintptr_t)c->rcx;size_t n=0;
+    while(s[n]&&!set[s[n]])++n;
+    c->rax=n;return 1;
+}
+static int fast_strcpy_s(CPU *c){return win64_string_call(c,"strcpy_s");}
+int (*win64_string_fast_import(const char *name))(CPU *){
+#ifdef FP_CHECKED_GUEST_POINTERS
+    (void)name;return NULL;   /* checked builds validate every byte in element() */
+#endif
+    if(!strcmp(name,"strncmp"))return fast_strncmp;
+    if(!strcmp(name,"_stricmp"))return fast_stricmp;
+    if(!strcmp(name,"_strnicmp"))return fast_strnicmp;
+    if(!strcmp(name,"strchr"))return fast_strchr;
+    if(!strcmp(name,"strcspn"))return fast_strcspn;
+    if(!strcmp(name,"strcpy_s"))return fast_strcpy_s;
+    return NULL;
+}
+
 int win64_string_call(CPU *c,const char *name) {
     if(!strcmp(name,"_stricmp")||!strcmp(name,"_strnicmp")||!strcmp(name,"strncmp")||!strcmp(name,"wcscmp")) {
         int counted=!strcmp(name,"_strnicmp")||!strcmp(name,"strncmp");

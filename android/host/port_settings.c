@@ -185,7 +185,7 @@ static void apply_memory_mode(void) {
     setenv("PORT_OPTION_EFFECTS", "switch", 1);
     atomic_store(&upscaler, 0);
     if (!getenv("DXVK_CONFIG"))
-        setenv("DXVK_CONFIG", "dxgi.maxFrameLatency = 1\ndxvk.numCompilerThreads = 1", 0);
+        setenv("DXVK_CONFIG", "dxgi.maxFrameLatency = 1;dxvk.numCompilerThreads = 1", 0);
     {
         /* Under 6 GiB a developed city still filled the DXVK heap after one extra mip.
          * 256 is the longest edge of world textures; 6–7 GiB keeps the 512 edge. */

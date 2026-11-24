@@ -98,7 +98,9 @@ uint32_t fp_switch_texture_skip(const char *path,const uint32_t header[4],uint32
     // shortcut: Resident mip chains change on texture reload; use the engine refresh transaction for instant switching.
     uint32_t result;
     if(!header)return original;
-    if(header[2]!=0x36545341u&&header[2]!=0x34545341u&&header[2]!=0x31545844u&&header[2]!=0x33545844u&&header[2]!=0x35545844u){
+    /* DXT1/3/5 originals and the converted ASTC ("AST4", "AST6") or ETC2 ("ETC2", "ETCA") archive. */
+    int converted=header[2]==0x36545341u||header[2]==0x34545341u||header[2]==0x32435445u||header[2]==0x41435445u;
+    if(!converted&&header[2]!=0x31545844u&&header[2]!=0x33545844u&&header[2]!=0x35545844u){
         texture_budget_note(header,original,original,0);
         return original;
     }
@@ -115,7 +117,7 @@ uint32_t fp_switch_texture_skip(const char *path,const uint32_t header[4],uint32
     }
     unsigned mips=header[3]&255u,skip=caps[lo].skip;
     const char *quality=getenv("FROSTPUNK_TEXTURE_QUALITY");
-    int astc=header[2]==0x36545341u||header[2]==0x34545341u;
+    int astc=converted;
     // The cached chain already omits these levels; engine Low must not discard them twice.
     if(astc&&quality&&!strcmp(quality,"switch")&&mips&&mips<=16&&
        header[0]==(caps[lo].width>>skip)&&header[1]==(caps[lo].height>>skip)){

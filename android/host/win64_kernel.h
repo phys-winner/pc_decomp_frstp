@@ -2,6 +2,8 @@
 #include "win64.h"
 #include <stdio.h>
 int win64_kernel_call(CPU *c, const char *name);
+/* Direct handler of SetEvent, ResetEvent, ReleaseSemaphore or WaitForSingleObject for the import cache (win64.c), else NULL. */
+int (*win64_kernel_fast_import(const char *name))(CPU *);
 void win64_kernel_self_test(void);
 /* Host paths must be existing, disjoint directories, set before the first API. */
 int win64_kernel_configure_roots(const char *game,const char *profile);

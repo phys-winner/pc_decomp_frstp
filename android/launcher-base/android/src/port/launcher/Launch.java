@@ -42,7 +42,8 @@ public final class Launch {
     private final Spec spec;
     private final Spec.Distribution distribution;
     private boolean reached;
-    private static boolean migrated;
+    private static volatile boolean migrated;
+    private static volatile String monitoredEdition;
 
     private Launch(Activity activity, Spec spec, Spec.Distribution distribution) {
         this.activity = activity;
@@ -65,21 +66,74 @@ public final class Launch {
         }
         if (d == null) d = spec.distributions.get(0);
         Launch launch = new Launch(activity, spec, d);
+        monitor(activity.getApplicationContext(), d, launch.renderer());
         launch.environment();
         return launch;
     }
 
+    private static synchronized void monitor(Context context, Spec.Distribution distribution, String renderer) {
+        String edition = distribution.id;
+        File dir = State.folder(context);
+        String pid = Integer.toString(android.os.Process.myPid());
+        String build = build(context);
+        Properties record = State.read(context, State.launch(edition));
+        if (!build.equals(record.getProperty("build")) || !pid.equals(record.getProperty("pid", pid)))
+            recordStart(dir, edition, build, renderer);
+        boolean first = monitoredEdition == null;
+        monitoredEdition = edition;
+        if (first) {
+            Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+            Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+                try {
+                    StackTraceElement[] trace = error.getStackTrace();
+                    String site = trace.length == 0 ? "" : " at " + trace[0];
+                    State.put(context, State.launch(monitoredEdition), "javaCrash", error.getClass().getName() + site);
+                } finally {
+                    if (previous != null) previous.uncaughtException(thread, error);
+                }
+            });
+        }
+        String process = process(context, distribution);
+        State.update(dir, State.launch(edition), values -> {
+            values.setProperty("pid", pid);
+            if (process != null) values.setProperty("process", process);
+        });
+    }
+
+    public void recordRenderer(String renderer) {
+        State.put(activity, State.launch(distribution.id), "renderer", renderer);
+        set("PORT_RENDERER", renderer);
+    }
+
     public String distribution() { return distribution.id; }
 
-    /** The launcher's language for the game's own messages. */
+    /** The launcher's language for the game's own messages: "en", "ru", "de" or "pl". */
     public String language() { return language(activity); }
 
     public static String language(Context context) { return Texts.language(context); }
 
-    public static String translated(Context context, String english) { return Texts.translated(context, english); }
+    /** The language the player picked in the launcher ("en", "ru", "de", "pl"), or null when the launcher follows
+     *  the system. A port whose game text has one fixed language can show its in-game words in that language
+     *  unless the player picked another one. */
+    public String chosenLanguage() {
+        String chosen = State.read(activity, State.CHOICES).getProperty("language", "");
+        return chosen.isEmpty() ? null : chosen;
+    }
 
     /** The renderer the launcher chose for this start; null when started without the launcher. */
     public String renderer() { return activity.getIntent().getStringExtra(EXTRA_RENDERER); }
+
+    public boolean mightNeedTextureConversion() {
+        Spec.Mode mode = spec.mode(renderer() != null ? renderer() : spec.defaultMode);
+        return mode != null && distribution.readsCache(mode) && Boolean.FALSE.equals(
+              TextureFormats.supports(textureCaps(activity, mode, Gpu.get(activity)), spec.formats(distribution)));
+    }
+
+    static Long textureCaps(Context context, Spec.Mode mode, Gpu gpu) {
+        if (mode == null) return null;
+        if (mode.vulkanKind()) return TextureFormats.vulkan(Probe.report(context), mode.driverKey());
+        return gpu == null ? null : gpu.formats;
+    }
 
     /** A part's folder (the game reads it by path). */
     public File folder(String part) {
@@ -127,6 +181,7 @@ public final class Launch {
 
     /** PORT_* variables for the game's native code (native/port_env.h): no JNI names involved. */
     private void environment() {
+        set("PORT_CRASH_JOURNAL", crashFile(State.folder(activity), distribution.id).getAbsolutePath());
         set("PORT_DISTRIBUTION", distribution.id);
         set("PORT_VERSION_NAME", Updates.installedName(activity));
         set("PORT_VERSION_CODE", Long.toString(Updates.installedCode(activity)));
@@ -155,10 +210,14 @@ public final class Launch {
         }
         for (Spec.Option o : spec.options(distribution.id))
             set("PORT_OPTION_" + o.key.toUpperCase(Locale.ROOT), option(o.key));
-        /* Clear earlier selections when switching back to bundled drivers. */
+        if (spec.separateTextureCache) {
+            File game = folder(distribution.parts.get(0).id);
+            set("PORT_TEXTURE_CACHE_ROOT", Install.textureCacheRoot(activity, spec, distribution, game).getAbsolutePath());
+        }
+        /* Empty for the port's own Turnip driver: an earlier start's choice must not linger. */
         File turnip = VulkanDriver.TURNIP.chosen(activity);
-        File panvk = VulkanDriver.PANVK.chosen(activity);
         set("PORT_TURNIP_DRIVER", turnip != null ? turnip.getAbsolutePath() : "");
+        File panvk = VulkanDriver.PANVK.chosen(activity);
         set("PORT_PANVK_DRIVER", panvk != null ? panvk.getAbsolutePath() : "");
         Updates.Info update = Updates.available(activity);
         if (update != null) {
@@ -297,15 +356,15 @@ public final class Launch {
         keepCurrentTask(context);
         if (migrated) return;
         if (Spec.get(context).allFilesAccess && !Storage.allFiles(context)) return;
-        migrated = true;
         try {
             hooks.migrate(context);
         } catch (RuntimeException e) {
             android.util.Log.w("Launcher", "hooks migrate: " + e, e);
         }
+        migrated = true;
     }
 
-    static synchronized boolean migrationPending() { return !migrated; }
+    static boolean migrationPending() { return !migrated; }
 
     /** Earlier builds left separate game tasks in Recents; keep the task being opened. */
     private static void keepCurrentTask(Context context) {
@@ -359,6 +418,7 @@ public final class Launch {
 
     /** The record a start leaves before the game's activity runs (Launch.start). */
     static void recordStart(File dir, String distribution, String build, String renderer) {
+        crashFile(dir, distribution).delete();
         State.update(dir, State.launch(distribution), values -> {
             values.clear();
             values.setProperty("build", build);
@@ -366,6 +426,27 @@ public final class Launch {
             values.setProperty("time", Long.toString(System.currentTimeMillis()));
             if (renderer != null) values.setProperty("renderer", renderer);
         });
+    }
+
+    private static File crashFile(File dir, String edition) { return new File(dir, "fatal-" + edition + ".bin"); }
+
+    static int fatalSignal(File dir, String edition, long pid, long started) {
+        return crashMarker(dir, edition, pid, started, 0);
+    }
+
+    private static int crashMarker(File dir, String edition, long pid, long started, int offset) {
+        File marker = crashFile(dir, edition);
+        if (pid <= 0 || marker.length() < offset + 5 || marker.lastModified() < started) return 0;
+        try (java.io.RandomAccessFile in = new java.io.RandomAccessFile(marker, "r")) {
+            in.seek(offset);
+            int signal = in.readUnsignedByte();
+            return Integer.reverseBytes(in.readInt()) == pid ? signal : 0;
+        } catch (java.io.IOException e) { return 0; }
+    }
+
+    static boolean reachedFrame(Context context, Spec.Distribution d, Properties launch) {
+        return "1".equals(launch.getProperty("reached")) ||
+            crashMarker(State.folder(context), d.id, State.getLong(launch, "pid", 0), State.getLong(launch, "time", 0), 5) == 1;
     }
 
     /** Records and starts a distribution. */
@@ -429,20 +510,40 @@ public final class Launch {
 
     /** How Android saw the game's last process end (Android 11+), for the launcher's note. */
     static String lastExit(Context context, Spec.Distribution d) {
-        if (Build.VERSION.SDK_INT < 30) return null;
         Properties launch = State.read(context, State.launch(d.id));
+        if (!build(context).equals(launch.getProperty("build"))) return null;
+        String code = launch.getProperty("exit");
+        if (code != null) return "0".equals(code) ? null : "exit " + code;
+        String javaCrash = launch.getProperty("javaCrash");
         long started = State.getLong(launch, "time", 0);
+        long pid = State.getLong(launch, "pid", 0);
+        String gameProcess = launch.getProperty("process", process(context, d));
+        if (Build.VERSION.SDK_INT >= 30 && started > 0 && pid > 0 && gameProcess != null) {
+            String systemExit = systemExit(context, started, (int)pid, gameProcess, javaCrash);
+            if (systemExit != null) return systemExit;
+        }
+        if (javaCrash != null) return javaCrash;
+        int signal = fatalSignal(State.folder(context), d.id, pid, started);
+        return signal == 0 ? null : "native signal " + signal;
+    }
+
+    private static String systemExit(Context context, long started, int pid, String gameProcess, String javaCrash) {
         ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         try {
-            List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 8);
+            List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(context.getPackageName(), pid, 16);
             for (ApplicationExitInfo exit : exits) {
                 if (exit.getTimestamp() < started) break;
-                if (exit.getProcessName() != null && exit.getProcessName().endsWith(":launcher")) continue;
+                if (!gameProcess.equals(exit.getProcessName())) continue;
                 String reason;
                 switch (exit.getReason()) {
-                case ApplicationExitInfo.REASON_CRASH: case ApplicationExitInfo.REASON_CRASH_NATIVE: reason = "crash"; break;
+                case ApplicationExitInfo.REASON_CRASH:
+                    if (javaCrash != null) return javaCrash;
+                    reason = "Java crash"; break;
+                case ApplicationExitInfo.REASON_CRASH_NATIVE: reason = "native crash"; break;
                 case ApplicationExitInfo.REASON_ANR: reason = "ANR"; break;
                 case ApplicationExitInfo.REASON_LOW_MEMORY: reason = "low memory"; break;
+                case ApplicationExitInfo.REASON_EXIT_SELF:
+                    return exit.getStatus() == 0 ? null : "exit " + exit.getStatus();
                 default: continue;
                 }
                 return reason + (exit.getDescription() != null ? ": " + exit.getDescription() : "");

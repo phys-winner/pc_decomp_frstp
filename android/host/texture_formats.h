@@ -11,6 +11,16 @@
 #define FP_ASTC6_DXGI_TYPELESS UINT32_C(0x7f006600)
 #define FP_ASTC6_DXGI_UNORM UINT32_C(0x7f006601)
 #define FP_ASTC6_DXGI_SRGB UINT32_C(0x7f006602)
+/* ETC2 of the converted archive: "ETC2" = RGB8 (8 bytes per 4x4 block), "ETCA" = RGBA8 with EAC
+ * alpha (16 bytes).  Read by the native Vulkan device (android/vulkan/lib/formats.cpp) only. */
+#define FP_ETC2_RGB_D3DFMT UINT32_C(0x32435445)
+#define FP_ETC2_RGBA_D3DFMT UINT32_C(0x41435445)
+#define FP_ETC2_RGB_DXGI_TYPELESS UINT32_C(0x7f00e200)
+#define FP_ETC2_RGB_DXGI_UNORM UINT32_C(0x7f00e201)
+#define FP_ETC2_RGB_DXGI_SRGB UINT32_C(0x7f00e202)
+#define FP_ETC2_RGBA_DXGI_TYPELESS UINT32_C(0x7f00ea00)
+#define FP_ETC2_RGBA_DXGI_UNORM UINT32_C(0x7f00ea01)
+#define FP_ETC2_RGBA_DXGI_SRGB UINT32_C(0x7f00ea02)
 
 /* Initialize from the checked mapped PE before starting guest threads.
  * Overrides only the two exact entry targets; old formats call the unchanged

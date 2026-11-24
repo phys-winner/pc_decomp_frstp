@@ -4,8 +4,6 @@ import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
 import android.app.ApplicationExitInfo;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -18,6 +16,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 
 /** Separate process that outlives a native crash and shows why the game stopped. */
 public final class GameWatchActivity extends Activity {
@@ -100,7 +100,10 @@ public final class GameWatchActivity extends Activity {
         }, 650);
     }
 
+    /** Android records exit reasons from API 30. Below it the native journal of app.c
+     *  ("Native signal …" in frostpunk-crash.txt) and the Java handler's text are the only sources. */
     private ApplicationExitInfo exitInfo() {
+        if (Build.VERSION.SDK_INT < 30) return null;
         ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
         if (manager == null) return null;
         for (ApplicationExitInfo info : manager.getHistoricalProcessExitReasons(getPackageName(), 0, 16))
@@ -123,20 +126,23 @@ public final class GameWatchActivity extends Activity {
         if (shown) return true;
         try {
             File marker = crashFile();
-            String nativeReason = marker.lastModified() >= started ? CrashReport.tail(marker, 8192).trim() : "";
+            String markerText = "";
+            if (marker.lastModified() >= started && Files.isRegularFile(marker.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                try (InputStream input = Files.newInputStream(marker.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                    markerText = new String(readTracePrefix(input, 8192), StandardCharsets.UTF_8).trim();
+                } catch (IOException error) { android.util.Log.w("Frostpunk", "Cannot read crash marker", error); }
+            }
             ApplicationExitInfo info = exitInfo();
-            if (quiet(info, nativeReason)) return false;
-            if (nativeReason.isEmpty() && info == null && exitCode == 0) return false;
-            boolean rendererFallback = FrostpunkHooks.fallbackRenderer(renderer);
+            if (quiet(info, markerText)) return false;
+            if (markerText.isEmpty() && info == null && exitCode == 0) return false;
+            boolean rendererWatched = FrostpunkHooks.watchedRenderer(renderer);
             String title = say("The game crashed", "Игра завершилась с ошибкой");
             String fallback = "";
-            if (rendererFallback) {
+            if (rendererWatched) {
                 title = FrostpunkHooks.panvkRenderer(renderer)
                     ? say("PanVK stopped", "Сбой PanVK") : say("Native Vulkan stopped", "Сбой нативного Vulkan");
-                fallback = FrostpunkHooks.fallbackToDxvk(this, getIntent().getStringExtra(Launch.EXTRA_DISTRIBUTION))
-                    ? say("The next game start will use DXVK.", "При следующем запуске игра будет использовать DXVK.")
-                    : say("Choose DXVK in the launcher's Renderer section before restarting.",
-                        "Перед запуском выберите DXVK в разделе рендерера лаунчера.");
+                fallback = say("Open Renderer in the launcher to select a driver or retry this one.",
+                    "В разделе рендеринга лаунчера можно выбрать драйвер или повторить попытку с текущим.");
                 if (rendererOnly) {
                     shown = true;
                     new AlertDialog.Builder(this).setTitle(title)
@@ -146,67 +152,105 @@ public final class GameWatchActivity extends Activity {
                 }
             }
             boolean ru = russian();
-            String reason = startupError != null ? startupError : !nativeReason.isEmpty() ? nativeReason
+            // The signal line of the native journal is the last resort: Android's own reason says more when it exists.
+            boolean signalMarker = markerText.startsWith("Native signal ");
+            String reason = startupError != null ? startupError : !markerText.isEmpty() && !signalMarker ? markerText
                 : exitCode != 0 ? (ru ? "Игра завершилась с кодом " : "Game exited with code ") + exitCode
                 : info != null ? CrashReport.exitReason(info.getReason(), info.getStatus(), info.getDescription(), ru)
+                : signalMarker ? CrashReport.signalReason(markerText, ru)
                 : say("Game process stopped unexpectedly", "Процесс игры неожиданно завершился");
-            StringBuilder summary = new StringBuilder(reason);
-            if (info != null) summary.append("\n").append(say("Android exit reason: ", "Причина выхода Android: "))
-                .append(info.getReason()).append(", status: ").append(info.getStatus());
+            String stackTrace = markerText.startsWith("Java ") ? CrashReport.shorten(markerText, 4000) : "";
+            String reasonSummary = reason;
+            if (reason.startsWith("Java ")) {
+                int header = reason.indexOf('\n');
+                int exception = header < 0 ? -1 : reason.indexOf('\n', header + 1);
+                if (exception >= 0) reasonSummary = reason.substring(0, exception);
+            }
+            String exitDetails = info == null ? "" : "\n" + say("Android exit reason: ", "Причина выхода Android: ")
+                + info.getReason() + ", status: " + info.getStatus();
             StringBuilder text = new StringBuilder("Frostpunk crash report\nTime: ").append(java.time.Instant.now());
             try {
                 text.append("\nVersion: ").append(getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
             } catch (Exception ignored) { }
             text.append("\nDevice: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
                 .append("\nAndroid: ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")")
-                .append("\nRenderer: ").append(String.valueOf(renderer))
-                .append("\n\n").append(summary);
-            if (info != null) text.append("\nLast PSS (KiB): ").append(info.getPss()).append("\nLast RSS (KiB): ").append(info.getRss());
-            File saved = new File(getFilesDir(), "crashes/frostpunk-" + System.currentTimeMillis() + ".txt");
+                .append("\nBuild fingerprint: ").append(Build.FINGERPRINT)
+                .append("\nRenderer: ").append(String.valueOf(renderer)).append("\n\n");
+            String visibleSummary = CrashReport.shorten(reasonSummary, 1200) + exitDetails;
+            StringBuilder clipboard = new StringBuilder(text.toString()).append(visibleSummary);
+            text.append(reason).append(exitDetails);
+            if (signalMarker && info != null) text.append("\nNative journal: ").append(markerText);
+            if (info != null) {
+                String memory = "\nLast PSS (KiB): " + info.getPss() + "\nLast RSS (KiB): " + info.getRss();
+                text.append(memory);
+                clipboard.append(memory);
+            }
+            String reportName = "crashes/frostpunk-" + System.currentTimeMillis() + ".txt";
+            File privateReport = new File(getFilesDir(), reportName);
+            File saved = new File(CrashReport.logDirectory(getFilesDir()), reportName);
             if (info != null) try (InputStream trace = info.getTraceInputStream()) {
                 if (trace != null) {
                     boolean nativeCrash = info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE
                         && Build.VERSION.SDK_INT >= 31;
                     if (nativeCrash) {
-                        File tombstone = new File(saved.getPath() + ".pb");
-                        java.nio.file.Files.createDirectories(tombstone.getParentFile().toPath());
-                        java.nio.file.Files.copy(trace, tombstone.toPath());
-                        text.append("\nAndroid tombstone: ").append(tombstone.getAbsolutePath());
+                        File tombstone = CrashReport.saveTombstone(saved, privateReport, trace);
+                        String location = "\nAndroid tombstone: " + tombstone.getAbsolutePath();
+                        text.append(location);
+                        clipboard.append(location);
+                        stackTrace = CrashReport.nativeStackTrace(tombstone);
                         String abort;
-                        try (InputStream prefix = new java.io.FileInputStream(tombstone)) {
-                            abort = CrashReport.nativeAbortMessage(readTracePrefix(prefix));
+                        try (InputStream prefix = Files.newInputStream(tombstone.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                            abort = CrashReport.nativeAbortMessage(readTracePrefix(prefix, 65536));
                         }
-                        if (!abort.isEmpty()) text.append("\nAbort message: ").append(abort);
+                        if (!abort.isEmpty()) {
+                            text.append("\nAbort message: ").append(abort);
+                            clipboard.append("\nAbort message: ").append(CrashReport.shorten(abort, 800));
+                        }
                     } else {
-                        text.append("\n\n--- Android trace ---\n")
-                            .append(new String(readTracePrefix(trace), StandardCharsets.UTF_8));
+                        String traceText = new String(readTracePrefix(trace, 65536), StandardCharsets.UTF_8);
+                        text.append("\n\n--- Android trace ---\n").append(traceText);
+                        if (stackTrace.isEmpty()) stackTrace = CrashReport.shorten(traceText.trim(), 4000);
                     }
                 }
-            } catch (IOException error) { text.append("\nAndroid trace: ").append(error); }
+            } catch (IOException error) {
+                String traceError = "\nAndroid trace: " + error;
+                text.append(traceError);
+                clipboard.append(CrashReport.shorten(traceError, 320));
+            }
             for (String name : new String[] {"render.log", "native.log"}) {
                 text.append("\n\n--- ").append(name).append(" ---\n");
-                try { text.append(CrashReport.tail(name.equals("render.log") ? CrashReport.renderLog() : new File(getFilesDir(), name), 32768)); }
-                catch (IOException error) { text.append(error.toString()); }
+                try {
+                    String log = CrashReport.logTail(getFilesDir(), name, 32768);
+                    text.append(log);
+                    CrashReport.appendClipboardLog(clipboard, name, log);
+                } catch (IOException error) { text.append(error.toString()); }
             }
             String full = text.toString();
-            CrashReport.write(saved, full);
+            try { CrashReport.write(saved, full); }
+            catch (IOException unavailable) {
+                if (saved.equals(privateReport)) throw unavailable;
+                CrashReport.write(privateReport, full);
+                saved = privateReport;
+            }
             if (session().exists() && !session().delete()) android.util.Log.w("Frostpunk", "Cannot retire crash session");
             shown = true;
-            String visible = summary.length() > 1200 ? summary.substring(0, 1200) : summary.toString();
-            visible += "\n\n" + say("Report saved: ", "Отчёт сохранён: ") + saved.getAbsolutePath();
+            String savedLocation = say("Report saved: ", "Отчёт сохранён: ") + saved.getAbsolutePath();
+            String visible = visibleSummary + "\n\n" + savedLocation;
+            clipboard.append("\n\n").append(savedLocation);
+            if (!stackTrace.isEmpty()) clipboard.append("\n\n--- Stack trace ---\n").append(stackTrace);
+            String copied = clipboard.toString();
             AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(title)
-                .setMessage(rendererFallback ? fallback + "\n\n" + visible : visible)
+                .setMessage(rendererWatched ? fallback + "\n\n" + visible : visible)
                 .setPositiveButton(say("Copy to clipboard", "Скопировать в буфер обмена"), null)
-                .setNegativeButton(rendererFallback ? say("Launcher", "В лаунчер") : say("Exit", "Выйти"), (d, which) -> {
-                    if (rendererFallback) close(); else finishAndRemoveTask();
+                .setNegativeButton(rendererWatched ? say("Launcher", "В лаунчер") : say("Exit", "Выйти"), (d, which) -> {
+                    if (rendererWatched) close(); else finishAndRemoveTask();
                 })
                 .setCancelable(false).create();
-            final String copied = full;
             dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("Frostpunk crash report", copied));
-                Toast.makeText(this, say("Report copied", "Отчёт скопирован"), Toast.LENGTH_SHORT).show();
+                String message = CrashReport.copy(this, copied) ? say("Report copied", "Отчёт скопирован")
+                    : say("Could not copy the report", "Не удалось скопировать отчёт");
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
             }));
             dialog.show();
             return true;
@@ -216,11 +260,11 @@ public final class GameWatchActivity extends Activity {
         }
     }
 
-    private static byte[] readTracePrefix(InputStream trace) throws IOException {
+    private static byte[] readTracePrefix(InputStream trace, int limit) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         byte[] buffer = new byte[4096];
-        while (bytes.size() < 65536) {
-            int count = trace.read(buffer, 0, Math.min(buffer.length, 65536 - bytes.size()));
+        while (bytes.size() < limit) {
+            int count = trace.read(buffer, 0, Math.min(buffer.length, limit - bytes.size()));
             if (count < 0) break;
             bytes.write(buffer, 0, count);
         }

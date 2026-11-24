@@ -1005,6 +1005,18 @@ int win64_window_input_snapshot(uint64_t hwnd,uint8_t keys[256]) {
 int win64_window_call(CPU *cpu,const char *name) {
     window_enter();int result=window_call(cpu,name);window_leave();return result;
 }
+/* Direct handlers for win64.c's import cache (cached step 32): window_call's branches without the
+ * name comparisons in front of them.  The render thread's message loop (140E27CF0) calls
+ * MsgWaitForMultipleObjects and PeekMessageA every time it wakes up. */
+static int fast_message_wait(CPU *cpu){window_enter();cpu->rax=message_wait(cpu);window_leave();return 1;}
+static int fast_peek_message(CPU *cpu){window_enter();cpu->rax=retrieve(cpu,0);window_leave();return 1;}
+static int fast_get_message(CPU *cpu){window_enter();cpu->rax=retrieve(cpu,1);window_leave();return 1;}
+int (*win64_window_fast_import(const char *name))(CPU *){
+    if(!strcmp(name,"MsgWaitForMultipleObjects"))return fast_message_wait;
+    if(!strcmp(name,"PeekMessageA")||!strcmp(name,"PeekMessageW"))return fast_peek_message;
+    if(!strcmp(name,"GetMessageA")||!strcmp(name,"GetMessageW"))return fast_get_message;
+    return NULL;
+}
 void win64_window_self_test(void) {
     uint32_t saved_error=win64_get_error();int saved_errno=errno;
     CPU cpu={0};cpu.rsp=0x12345678;cpu.rcx=0x12345678;

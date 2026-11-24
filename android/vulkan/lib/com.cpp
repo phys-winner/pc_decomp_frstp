@@ -2,17 +2,51 @@
  * the window/swap chain, rare backend functions that keep their lifted body) on the native
  * device's objects.  The hot path never comes here: engine.cpp replaces those functions. */
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include "context.h"
 #include "present.h"
 #include "rdvk.h"
+#include "../ui_texture_shrink.h"
 
 namespace rdvk {
 namespace {
 using namespace d3d;
 
 uint32_t frame_latency = 1;
+
+/* Interface art at a phone's resolution: the DXVK bridge's rules and filter
+ * (android/vulkan/ui_texture_shrink.h), so both renderers make the same textures of the same game
+ * files.  The engine reads the smaller size back through GetDesc, as it does under DXVK. */
+bool create_ui_texture(const TEXTURE2D_DESC* d, const SUBRESOURCE_DATA* data, Texture** out, uint32_t* hr) {
+    unsigned limit = fp_ui_texture::limit();
+    if (!limit || !d || !data || !data->pSysMem) return false;
+    if (!fp_ui_texture::candidate(d->Format, d->Width, d->Height, d->MipLevels, d->ArraySize, d->SampleDesc.Count, d->Usage,
+                                  d->BindFlags, d->CPUAccessFlags, d->MiscFlags, limit))
+        return false;
+    size_t pitch = data->SysMemPitch;
+    if (pitch < size_t(d->Width) * 4) return false;
+    unsigned w = d->Width, h = d->Height;
+    std::vector<uint8_t> pixels;
+    unsigned times = fp_ui_texture::shrink(reinterpret_cast<const uint8_t*>(data->pSysMem), pitch, w, h, limit, 0, pixels);
+    if (!times) return false;
+    TEXTURE2D_DESC small = *d;
+    small.Width = w;
+    small.Height = h;
+    SUBRESOURCE_DATA init{reinterpret_cast<uint64_t>(pixels.data()), w * 4, 0};
+    *hr = create_texture(2, &small, &init, out);
+    if (*out) (*out)->shrink = uint8_t(times);
+    static std::atomic<unsigned> shrunk{0};
+    static std::atomic<uint64_t> saved_kb{0};
+    uint64_t saved = (uint64_t(d->Width) * d->Height - uint64_t(w) * h) * 4 / 1024;
+    unsigned n = ++shrunk;
+    saved_kb += saved;
+    if (n <= 8 || !(n & (n - 1)))
+        log("RDVK_UI_TEXTURE_SHRINK n=%u %ux%u->%ux%u format=%u saved_mb_total=%.1f", n, d->Width, d->Height, w, h, d->Format,
+            saved_kb.load() / 1024.0);
+    return true;
+}
 
 void out_ptr(uint64_t address, Object* o) { if (address) wr64(address, guest_of(o)); }
 template <class T> T* obj(CPU* c, unsigned i) { uint64_t g = arg(c, i); return g ? static_cast<T*>(object_of(g)) : nullptr; }
@@ -74,7 +108,10 @@ bool device_call(CPU* c, unsigned slot) {
     }
     case 4: case 5: case 6: {  /* CreateTexture1D/2D/3D(desc, data, out) */
         Texture* t = nullptr;
-        uint32_t hr = create_texture(slot - 3, reinterpret_cast<const void*>(arg(c, 1)), reinterpret_cast<const SUBRESOURCE_DATA*>(arg(c, 2)), &t);
+        uint32_t hr = HR_S_OK;
+        auto* data = reinterpret_cast<const SUBRESOURCE_DATA*>(arg(c, 2));
+        if (slot != 5 || !create_ui_texture(reinterpret_cast<const TEXTURE2D_DESC*>(arg(c, 1)), data, &t, &hr))
+            hr = create_texture(slot - 3, reinterpret_cast<const void*>(arg(c, 1)), data, &t);
         out_ptr(arg(c, 3), t); c->rax = hr; return true;
     }
     case 7: case 8: case 9: case 10: {  /* Create{SRV,UAV,RTV,DSV}(resource, desc, out) */

@@ -16,20 +16,17 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-/** A user-selected Android Vulkan driver, stored and probed separately for each GPU family. */
+/** The player's app-local Vulkan driver, stored and checked separately for each GPU family. */
 enum VulkanDriver {
-    TURNIP("turnip", "Turnip"), PANVK("panvk", "PanVK");
+    TURNIP("turnip"), PANVK("panvk");
 
-    final String label;
-    private final String kind;
-    private final String key, titleKey;
+    private final String kind, key, titleKey;
     private static final long MAX_SIZE = 256L << 20;
     private static final Pattern LIBRARY = Pattern.compile("\"libraryName\"\\s*:\\s*\"([^\"\\\\]+)\"");
     private static final Pattern NAME = Pattern.compile("\"name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
 
-    VulkanDriver(String kind, String label) {
+    VulkanDriver(String kind) {
         this.kind = kind;
-        this.label = label;
         key = kind + ".driver";
         titleKey = kind + ".title";
     }
@@ -39,7 +36,8 @@ enum VulkanDriver {
     /** The player's driver; null for the port's own (or when its file has gone). */
     File chosen(Context context) {
         String name = State.get(context, State.CHOICES, key, "");
-        File file = name.isEmpty() || name.contains("/") ? null : new File(folder(context), name);
+        File file = name.isEmpty() || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0
+            ? null : new File(folder(context), name);
         return file != null && file.isFile() ? file : null;
     }
 
@@ -66,7 +64,7 @@ enum VulkanDriver {
                 if (in == null) throw new IOException("the file cannot be read");
                 copy(in, out, MAX_SIZE);
             }
-            String name = path != null ? path.getName() : displayName(context, uri);
+            String name = path != null ? path.getName() : Storage.displayName(context, uri, null);
             String[] driver = unpack(picked, name, dir);
             return select(context, new File(dir, driver[0]), driver[1]);
         } finally {
@@ -74,27 +72,17 @@ enum VulkanDriver {
         }
     }
 
-    private static String displayName(Context context, Uri uri) {
-        try (android.database.Cursor c = context.getContentResolver().query(uri,
-                new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
-        } catch (RuntimeException e) {
-            android.util.Log.w("Launcher", "driver name: " + e);
-        }
-        return uri.getLastPathSegment();
-    }
-
     /** Back to the port's own driver; external libraries stay cached until cleanup. */
     void reset(Context context) throws IOException {
         if (!State.update(context, State.CHOICES, values -> {
             values.remove(key);
             values.remove(titleKey);
-        })) throw new IOException("cannot reset the selected driver");
+        })) throw new IOException("cannot save the selected driver");
     }
 
     /** The driver of a picked file into dir: {library file name, title}. A ZIP is a driver package
      *  (meta.json's libraryName, else its only .so); anything else must be the library itself. */
-    private String[] unpack(File picked, String pickedName, File dir) throws IOException {
+    String[] unpack(File picked, String pickedName, File dir) throws IOException {
         byte[] magic = new byte[4];
         try (RandomAccessFile in = new RandomAccessFile(picked, "r")) {
             if (in.read(magic) != 4) throw new IOException("the file is empty");
@@ -120,14 +108,22 @@ enum VulkanDriver {
             }
         }
         String file = safe(pickedName != null ? pickedName : "");
-        return settle(picked, dir, file);
+        File part = File.createTempFile("library-", ".part", dir);
+        try {
+            try (InputStream in = new FileInputStream(picked); OutputStream out = new FileOutputStream(part)) {
+                copy(in, out, MAX_SIZE);
+            }
+            return settle(part, dir, file);
+        } finally {
+            part.delete();
+        }
     }
 
     /** A checked library takes its final name. */
     private String[] settle(File part, File dir, String title) throws IOException {
         check(part);
         File target = new File(dir, "lib" + kind + "-" + sha(part) + ".so");
-        if (!part.renameTo(target)) throw new IOException("cannot store " + target.getName());
+        java.nio.file.Files.move(part.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         return new String[] {target.getName(), title.trim().isEmpty() ? target.getName() : title.trim()};
     }
 
@@ -157,12 +153,12 @@ enum VulkanDriver {
 
     /** A file name the driver folder can hold: the last path component, other characters than ASCII
      *  letters, digits and ._- as '_'. */
-    private String safe(String name) {
+    String safe(String name) {
         String base = name.substring(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
         StringBuilder out = new StringBuilder();
         for (char c : base.toCharArray()) out.append(c < 128 && (Character.isLetterOrDigit(c) || c == '.' || c == '_' || c == '-') ? c : '_');
         String result = out.toString().replaceAll("^\\.+", "");
-        if (result.isEmpty()) result = "libvulkan_" + kind + ".so";
+        if (result.isEmpty() || result.equals("picked.part")) result = "libvulkan_" + kind + ".so";
         return result.endsWith(".so") ? result : result + ".so";
     }
 
@@ -180,12 +176,18 @@ enum VulkanDriver {
         return out.toString();
     }
 
+    static String hex(byte[] bytes) {
+        StringBuilder out = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) out.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
+        return out.toString();
+    }
+
     static String sha(File file) throws IOException {
         try (InputStream in = new FileInputStream(file)) {
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
             byte[] buffer = new byte[65536];
             for (int n; (n = in.read(buffer)) > 0;) digest.update(buffer, 0, n);
-            return FrostpunkFiles.hex(digest.digest());
+            return hex(digest.digest());
         } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
     }
 

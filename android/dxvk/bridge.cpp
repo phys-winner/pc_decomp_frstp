@@ -13,6 +13,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <malloc.h>
 #include <map>
 #include <pthread.h>
 #include <sys/resource.h>
@@ -31,6 +32,7 @@
 #include <vector>
 extern "C" void frostpunk_render_log(const char *line);
 #include "win64.h"
+#include "../vulkan/ui_texture_shrink.h"
 #include "../host/texture_formats.h"
 #include "bridge.h"
 #include "bridge_metadata.h"
@@ -319,6 +321,212 @@ void gfx_observe_backbuffer(IUnknown* object,UINT index) {
     gfx_log_texture("GetBuffer",n+1,index,d);
     if(n+1==gfx_backbuffers.size())fprintf(stderr,"BRIDGE_GFX_LIMIT source=GetBuffer cap=16\n");
 }
+/* Measurement only (debug.fp.memstats=1): live bytes of the game's D3D11 resources by kind.
+ * Every created resource gets a private-data interface; DXVK releases it when the resource is
+ * destroyed, which subtracts the bytes again.  Sizes are the D3D11 layout (mips, layers, block
+ * formats), not the driver's padded allocation.  FP_MEMSTATS every 600 presents. */
+namespace memstats {
+enum Cat : unsigned { TexAstc, TexBc, TexRaw, TexRt, TexDs, TexUav, TexDynamic, TexStaging,
+                      BufVb, BufIb, BufCb, BufSrv, BufDynamic, BufStaging, BufOther, CmdList, Count };
+const char* const names[Count]={"tex_astc","tex_bc","tex_raw","tex_rt","tex_ds","tex_uav","tex_dynamic","tex_staging",
+                                "buf_vb","buf_ib","buf_cb","buf_srv","buf_dynamic","buf_staging","buf_other","cmdlist"};
+std::atomic<int64_t> bytes[Count], objects[Count], created_bytes[Count];
+bool enabled() {
+    static const bool on=[]{char value[PROP_VALUE_MAX]={0};
+        return __system_property_get("debug.fp.memstats",value)>0&&value[0]=='1';}();
+    return on;
+}
+void log(const char* why);
+std::atomic<int64_t> live_total{0}, logged_total{0};
+/* vkAllocateMemory/vkFreeMemory of DXVK and the bridge (device memory, all types). */
+std::atomic<int64_t> discard_imm{0}, discard_def{0}, discard_imm_mb{0}, discard_def_mb{0}, update_big{0}, update_big_mb{0};
+std::atomic<int64_t> vk_bytes{0}, vk_count{0}, vk_logged{0}, vk_peak{0}, vk_big{0};
+void vk_moved(int64_t delta) {
+    int64_t now=vk_bytes+=delta, last=vk_logged.load(), peak=vk_peak.load();
+    while(now>peak&&!vk_peak.compare_exchange_weak(peak,now)){}
+    if(enabled()&&(now>last?now-last:last-now)>=(int64_t(128)<<20)&&vk_logged.compare_exchange_strong(last,now))log("vk");
+}
+/* Device memory the GPU has not given back yet.  DXVK destroys a released image or buffer only
+ * when the CS thread has executed and the GPU has finished every command that uses it.  On a first
+ * start (no pipeline cache) the title scene recreates a 512x512 RGBA16F cube render target (16 MiB)
+ * and smaller targets every frame while the CS thread and GPU fall behind: on the Pixel 10a device
+ * memory grew 1.0 -> 2.8 GiB in 150 frames with ~0.9 GiB of live game resources, and lmkd killed
+ * the game.  When device memory has grown by debug.fp.memdrain MiB since the
+ * last drain, Present first waits for an event query, so the deferred destructions run.
+ * Diagnostic only (default 0 = off): the Pixel growth turned out to be a lost device, whose command
+ * lists are never retired, and draining freed nothing there. */
+int64_t drain_step() {
+    static const int64_t step=[]{char value[PROP_VALUE_MAX]={0};
+        long mb=__system_property_get("debug.fp.memdrain",value)>0?strtol(value,nullptr,10):0;
+        return int64_t(mb>0?mb:0)<<20;}();
+    return step;
+}
+bool vk_hooks() { return enabled()||drain_step()>0; }
+void drain(IUnknown* swapchain_unknown) {
+    static int64_t mark=-1;
+    static ID3D11Query* query=nullptr;
+    static uint64_t drains=0;
+    int64_t step=drain_step(), now=vk_bytes.load();
+    if(!step)return;
+    if(mark<0||now<mark){mark=now;return;}
+    if(now<mark+step)return;
+    int saved=errno;
+    IDXGISwapChain* swapchain=nullptr;
+    ID3D11Device* device=nullptr;
+    ID3D11DeviceContext* context=nullptr;
+    if(SUCCEEDED(swapchain_unknown->QueryInterface(__uuidof(IDXGISwapChain),reinterpret_cast<void**>(&swapchain)))&&
+       SUCCEEDED(swapchain->GetDevice(__uuidof(ID3D11Device),reinterpret_cast<void**>(&device)))) {
+        device->GetImmediateContext(&context);
+        D3D11_QUERY_DESC desc={D3D11_QUERY_EVENT,0};
+        if(!query&&FAILED(device->CreateQuery(&desc,&query)))query=nullptr;
+        if(context&&query){
+            timespec t0{},t1{};clock_gettime(CLOCK_MONOTONIC,&t0);
+            context->End(query);context->Flush();
+            for(int i=0;i<10000&&context->GetData(query,nullptr,0,0)==S_FALSE;++i)usleep(500);
+            usleep(2000);  // the finish thread resets the command lists right after the fence
+            clock_gettime(CLOCK_MONOTONIC,&t1);
+            int64_t after=vk_bytes.load();
+            fprintf(stderr,"FP_MEM_DRAIN n=%llu before_mb=%.0f after_mb=%.0f mark_mb=%.0f wait_ms=%.1f\n",(unsigned long long)++drains,
+                now/1048576.0,after/1048576.0,mark/1048576.0,(t1.tv_sec-t0.tv_sec)*1e3+(t1.tv_nsec-t0.tv_nsec)/1e6);
+            mark=after;
+        }
+    }
+    if(context)context->Release();
+    if(device)device->Release();
+    if(swapchain)swapchain->Release();
+    errno=saved;
+}
+/* During a load there are few presents: also log whenever the live total moved by 128 MiB. */
+void moved(int64_t delta) {
+    int64_t now=live_total+=delta, last=logged_total.load();
+    if((now>last?now-last:last-now)>=(int64_t(128)<<20)&&logged_total.compare_exchange_strong(last,now))log("moved");
+}
+struct Tracker final : IUnknown {
+    std::atomic<ULONG> refs{1}; Cat cat; int64_t size;
+    Tracker(Cat c,int64_t s):cat(c),size(s){}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,void** out) override {
+        if(!out)return E_POINTER;
+        if(riid==__uuidof(IUnknown)){*out=this;AddRef();return S_OK;}
+        *out=nullptr;return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG n=--refs;
+        if(!n){bytes[cat]-=size;objects[cat]-=1;moved(-size);
+            if(cat==TexRt&&size>=(int64_t(4)<<20)){int saved=errno;fprintf(stderr,"FP_MEMSTATS_CUBE_FREE mb=%.1f\n",size/1048576.0);errno=saved;}
+            delete this;}
+        return n;
+    }
+};
+// {5f1d9c3e-6b0a-4c55-9a51-2f4d6e8b7a10}
+const GUID guid={0x5f1d9c3e,0x6b0a,0x4c55,{0x9a,0x51,0x2f,0x4d,0x6e,0x8b,0x7a,0x10}};
+uint64_t texel_bytes(DXGI_FORMAT format,unsigned w,unsigned h,unsigned d) {
+    unsigned f=unsigned(format),bytes=4,block=1;
+    if(f-FP_ASTC4_DXGI_TYPELESS<3){block=4;bytes=16;}
+    else if(f-FP_ASTC6_DXGI_TYPELESS<3){block=6;bytes=16;}
+    else if(f>=1&&f<=4)bytes=16;
+    else if(f>=5&&f<=8)bytes=12;
+    else if(f>=9&&f<=22)bytes=8;
+    else if(f>=48&&f<=59)bytes=2;
+    else if(f>=60&&f<=65)bytes=1;
+    else if(f==85||f==86)bytes=2;
+    else if(f>=70&&f<=84){block=4;bytes=(f<=72||(f>=79&&f<=81))?8:16;}
+    else if(f>=94&&f<=99){block=4;bytes=16;}
+    return uint64_t((w+block-1)/block)*((h+block-1)/block)*bytes*d;
+}
+bool block_bc(DXGI_FORMAT f) { unsigned v=unsigned(f); return (v>=70&&v<=84)||(v>=94&&v<=99); }
+bool block_astc(DXGI_FORMAT f) { unsigned v=unsigned(f); return v-FP_ASTC4_DXGI_TYPELESS<3||v-FP_ASTC6_DXGI_TYPELESS<3; }
+void track(ID3D11DeviceChild* object,Cat cat,uint64_t size) {
+    if(!object)return;
+    auto* t=new Tracker(cat,int64_t(size));
+    if(SUCCEEDED(object->SetPrivateDataInterface(guid,t))){bytes[cat]+=int64_t(size);objects[cat]+=1;created_bytes[cat]+=int64_t(size);moved(int64_t(size));}
+    t->Release();
+}
+Cat texture_cat(D3D11_USAGE usage,UINT bind,DXGI_FORMAT format) {
+    if(usage==D3D11_USAGE_STAGING)return TexStaging;
+    if(usage==D3D11_USAGE_DYNAMIC)return TexDynamic;
+    if(bind&D3D11_BIND_DEPTH_STENCIL)return TexDs;
+    if(bind&D3D11_BIND_RENDER_TARGET)return TexRt;
+    if(bind&D3D11_BIND_UNORDERED_ACCESS)return TexUav;
+    return block_astc(format)?TexAstc:block_bc(format)?TexBc:TexRaw;
+}
+uint64_t mip_bytes(DXGI_FORMAT format,unsigned w,unsigned h,unsigned d,unsigned mips) {
+    if(!mips){unsigned m=std::max(w,std::max(h,d));mips=1;while(m>1){m>>=1;++mips;}}
+    uint64_t total=0;
+    for(unsigned i=0;i<mips;++i)total+=texel_bytes(format,std::max(1u,w>>i),std::max(1u,h>>i),std::max(1u,d>>i));
+    return total;
+}
+extern std::atomic<uint64_t> frames;
+void texture2d(ID3D11Texture2D* t) {
+    if(!t)return;
+    D3D11_TEXTURE2D_DESC d={};t->GetDesc(&d);
+    Cat cat=texture_cat(d.Usage,d.BindFlags,d.Format);
+    uint64_t size=mip_bytes(d.Format,d.Width,d.Height,1,d.MipLevels)*d.ArraySize*std::max(1u,d.SampleDesc.Count);
+    track(t,cat,size);
+    static std::atomic<unsigned> logged{0}, cubes{0};
+    if((d.MiscFlags&D3D11_RESOURCE_MISC_TEXTURECUBE)&&size>=(4u<<20)&&cubes++<200){
+        int saved=errno;
+        fprintf(stderr,"FP_MEMSTATS_CUBE n=%u mb=%.1f width=%u mips=%u format=%u bind=0x%x misc=0x%x frame=%llu live_rt=%lld\n",cubes.load(),size/1048576.0,
+            d.Width,d.MipLevels,unsigned(d.Format),d.BindFlags,d.MiscFlags,(unsigned long long)frames.load(),(long long)objects[TexRt].load());
+        errno=saved;
+    }
+    if(cat==TexRaw&&size>=(2u<<20)&&logged++<400){
+        int saved=errno;
+        fprintf(stderr,"FP_MEMSTATS_RAW mb=%.1f width=%u height=%u mips=%u layers=%u format=%u bind=0x%x usage=%u misc=0x%x\n",
+            size/1048576.0,d.Width,d.Height,d.MipLevels,d.ArraySize,unsigned(d.Format),d.BindFlags,unsigned(d.Usage),d.MiscFlags);
+        errno=saved;
+    }
+}
+void texture3d(ID3D11Texture3D* t) {
+    if(!t)return;
+    D3D11_TEXTURE3D_DESC d={};t->GetDesc(&d);
+    track(t,texture_cat(d.Usage,d.BindFlags,d.Format),mip_bytes(d.Format,d.Width,d.Height,d.Depth,d.MipLevels));
+}
+void texture1d(ID3D11Texture1D* t) {
+    if(!t)return;
+    D3D11_TEXTURE1D_DESC d={};t->GetDesc(&d);
+    track(t,texture_cat(d.Usage,d.BindFlags,d.Format),mip_bytes(d.Format,d.Width,1,1,d.MipLevels)*d.ArraySize);
+}
+void buffer(ID3D11Buffer* b) {
+    if(!b)return;
+    D3D11_BUFFER_DESC d={};b->GetDesc(&d);
+    Cat cat=d.Usage==D3D11_USAGE_STAGING?BufStaging:d.Usage==D3D11_USAGE_DYNAMIC?BufDynamic:
+        (d.BindFlags&D3D11_BIND_VERTEX_BUFFER)?BufVb:(d.BindFlags&D3D11_BIND_INDEX_BUFFER)?BufIb:
+        (d.BindFlags&D3D11_BIND_CONSTANT_BUFFER)?BufCb:(d.BindFlags&(D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS))?BufSrv:BufOther;
+    track(b,cat,d.ByteWidth);
+}
+std::atomic<uint64_t> frames{0};
+void present() {
+    if(!enabled()||++frames%600)return;
+    log("present");
+}
+void log(const char* why) {
+    int saved=errno;
+    timespec ts{};clock_gettime(CLOCK_MONOTONIC,&ts);
+    char line[1024];int n=snprintf(line,sizeof(line),"FP_MEMSTATS t=%.1f why=%s frame=%llu",ts.tv_sec+ts.tv_nsec/1e9,why,(unsigned long long)frames.load());
+    int64_t total=0;
+    for(unsigned i=0;i<Count;++i){
+        int64_t b=bytes[i].load();total+=b;
+        if(n<(int)sizeof(line))n+=snprintf(line+n,sizeof(line)-n," %s=%.1f/%lld",names[i],b/1048576.0,(long long)objects[i].load());
+    }
+    struct mallinfo mi=mallinfo();
+    long rss_file=-1,rss_anon=-1,swap=-1;
+    if(FILE* f=fopen("/proc/self/status","re")){
+        char s[128];
+        while(fgets(s,sizeof(s),f)){sscanf(s,"RssFile: %ld",&rss_file);sscanf(s,"RssAnon: %ld",&rss_anon);sscanf(s,"VmSwap: %ld",&swap);}
+        fclose(f);
+    }
+    if(n<(int)sizeof(line))n+=snprintf(line+n,sizeof(line)-n," discard_imm=%lld/%lldmb discard_def=%lld/%lldmb update_big=%lld/%lldmb",
+        (long long)discard_imm.load(),(long long)discard_imm_mb.load(),(long long)discard_def.load(),(long long)discard_def_mb.load(),
+        (long long)update_big.load(),(long long)update_big_mb.load());
+    if(n<(int)sizeof(line))n+=snprintf(line+n,sizeof(line)-n," vk_mb=%.1f/%lld vk_peak_mb=%.1f vk_big=%lld",
+        vk_bytes.load()/1048576.0,(long long)vk_count.load(),vk_peak.load()/1048576.0,(long long)vk_big.load());
+    if(n<(int)sizeof(line))snprintf(line+n,sizeof(line)-n," total_mb=%.1f heap_used_mb=%.1f heap_free_mb=%.1f rss_file_mb=%ld rss_anon_mb=%ld swap_mb=%ld\n",
+        total/1048576.0,double(size_t(mi.uordblks))/1048576.0,double(size_t(mi.fordblks))/1048576.0,rss_file/1024,rss_anon/1024,swap/1024);
+    fputs(line,stderr);
+    errno=saved;
+}
+}
 
 template<class T, class R, class... A, size_t... I>
 void invoke_impl(CPU* cpu, T* object, R (T::*method)(A...), const Counts& n, std::index_sequence<I...>) {
@@ -333,6 +541,19 @@ void invoke_impl(CPU* cpu, T* object, R (T::*method)(A...), const Counts& n, std
             if(method==&ID3D11Device::CreateTexture2D && SUCCEEDED(result)) {
                 auto output=std::get<2>(arguments).get();
                 if(output)gfx_observe_created_texture(*output);
+            }
+        }
+        if (__builtin_expect(memstats::enabled(),0) && SUCCEEDED(result)) {
+            if constexpr (std::is_same_v<decltype(method),decltype(&ID3D11Device::CreateTexture2D)>) {
+                if(method==&ID3D11Device::CreateTexture2D){auto o=std::get<2>(arguments).get();if(o)memstats::texture2d(*o);}
+            } else if constexpr (std::is_same_v<decltype(method),decltype(&ID3D11Device::CreateTexture3D)>) {
+                if(method==&ID3D11Device::CreateTexture3D){auto o=std::get<2>(arguments).get();if(o)memstats::texture3d(*o);}
+            } else if constexpr (std::is_same_v<decltype(method),decltype(&ID3D11Device::CreateTexture1D)>) {
+                if(method==&ID3D11Device::CreateTexture1D){auto o=std::get<2>(arguments).get();if(o)memstats::texture1d(*o);}
+            } else if constexpr (std::is_same_v<decltype(method),decltype(&ID3D11DeviceContext::FinishCommandList)>) {
+                if(method==&ID3D11DeviceContext::FinishCommandList){auto o=std::get<1>(arguments).get();if(o&&*o)memstats::track(*o,memstats::CmdList,0);}
+            } else if constexpr (std::is_same_v<decltype(method),decltype(&ID3D11Device::CreateBuffer)>) {
+                if(method==&ID3D11Device::CreateBuffer){auto o=std::get<2>(arguments).get();if(o)memstats::buffer(*o);}
             }
         }
     }
@@ -588,6 +809,18 @@ void map_resource(CPU* c) {
     if (readback_map(c)) return;
     Native<ID3D11Resource> resource(arg(c,1));
     if (!resource.p) trap("Map null resource");
+    if (__builtin_expect(memstats::enabled(),0) && uint32_t(arg(c,3))==D3D11_MAP_WRITE_DISCARD) {
+        D3D11_RESOURCE_DIMENSION dimension; resource->GetType(&dimension);
+        if (dimension==D3D11_RESOURCE_DIMENSION_BUFFER) {
+            Native<ID3D11Buffer> b(arg(c,1)); D3D11_BUFFER_DESC d={}; b->GetDesc(&d);
+            if (d.ByteWidth>=(1u<<20)) {
+                Native<ID3D11DeviceContext> context(arg(c,0));
+                bool deferred=context->GetType()==D3D11_DEVICE_CONTEXT_DEFERRED;
+                (deferred?memstats::discard_def:memstats::discard_imm)+=1;
+                (deferred?memstats::discard_def_mb:memstats::discard_imm_mb)+=d.ByteWidth>>20;
+            }
+        }
+    }
     invoke(c,&ID3D11DeviceContext::Map);
     if (SUCCEEDED(HRESULT(c->rax))) {
         auto& result = ref<D3D11_MAPPED_SUBRESOURCE>(arg(c,5));
@@ -641,6 +874,7 @@ void update_resource(CPU* c) {
     // Win64 UINT stack arguments leave their upper slot bytes unspecified.
     size_t row = e.rows==1 ? e.row_bytes : uint32_t(arg(c,5));
     size_t bytes = pitched_bytes(e,row,uint32_t(arg(c,6)));
+    if (__builtin_expect(memstats::enabled(),0) && bytes>=(size_t(1)<<20)) { memstats::update_big+=1; memstats::update_big_mb+=int64_t(bytes>>20); }
     invoke(c,&ID3D11DeviceContext::UpdateSubresource,counts({{4,bytes}}));
 }
 unsigned context_slot(const char* name) {
@@ -669,6 +903,40 @@ bool buffer_experiment(CPU* c,const D3D11_BUFFER_DESC* desc,const D3D11_SUBRESOU
     memcpy(indices,saved.data(),saved.size()*2);
     return true;
 }
+/* Interface art at a phone's resolution: the rules and the filter are shared with the native Vulkan
+ * device (android/vulkan/ui_texture_shrink.h), so both renderers make the same textures of the same
+ * game files. */
+bool shrink_texture(CPU* c) {
+    unsigned limit=fp_ui_texture::limit();
+    if(!limit||!arg(c,1)||!arg(c,2)||!arg(c,3))return false;
+    const auto& d=ref<const D3D11_TEXTURE2D_DESC>(arg(c,1));
+    unsigned f=unsigned(d.Format);
+    if(!fp_ui_texture::candidate(f,d.Width,d.Height,d.MipLevels,d.ArraySize,d.SampleDesc.Count,unsigned(d.Usage),d.BindFlags,
+                                 d.CPUAccessFlags,d.MiscFlags,limit))return false;
+    const auto& data=ref<const D3D11_SUBRESOURCE_DATA>(arg(c,2));
+    size_t pitch=data.SysMemPitch;
+    if(pitch<size_t(d.Width)*4)return false;
+    const uint8_t* src=static_cast<const uint8_t*>(win64_pointer(reinterpret_cast<uintptr_t>(data.pSysMem),pitch*(d.Height-1)+size_t(d.Width)*4,0));
+    unsigned w=d.Width,h=d.Height;
+    std::vector<uint8_t> current;
+    fp_ui_texture::shrink(src,pitch,w,h,limit,0,current);
+    Native<ID3D11Device> device(arg(c,0));
+    D3D11_TEXTURE2D_DESC small=d;small.Width=w;small.Height=h;
+    D3D11_SUBRESOURCE_DATA init={current.data(),UINT(size_t(w)*4),0};
+    ID3D11Texture2D* texture=nullptr;
+    HRESULT hr=device->CreateTexture2D(&small,&init,&texture);
+    c->rax=uint32_t(hr);
+    if(FAILED(hr)||!texture){write64(arg(c,3),0);return true;}
+    gfx_observe_created_texture(texture);
+    if(__builtin_expect(memstats::enabled(),0))memstats::texture2d(texture);
+    static std::atomic<unsigned> shrunk{0};
+    static std::atomic<uint64_t> saved_kb{0};
+    uint64_t saved=(uint64_t(d.Width)*d.Height-uint64_t(w)*h)*4/1024;
+    unsigned n=++shrunk;saved_kb+=saved;
+    if(n<=8||!(n&(n-1))){int e=errno;fprintf(stderr,"FP_UI_TEXTURE_SHRINK n=%u %ux%u->%ux%u format=%u saved_mb_total=%.1f\n",n,d.Width,d.Height,w,h,f,saved_kb.load()/1024.0);errno=e;}
+    write64(arg(c,3),wrap(texture));
+    return true;
+}
 void create_resource(CPU* c, unsigned slot) {
     switch (slot) {
     case 3: {
@@ -684,7 +952,7 @@ void create_resource(CPU* c, unsigned slot) {
         creation.created(c,desc,data); break;
     }
     case 4: validate_texture_data(c,1); invoke(c,&ID3D11Device::CreateTexture1D); break;
-    case 5: validate_texture_data(c,2); invoke(c,&ID3D11Device::CreateTexture2D); break;
+    case 5: validate_texture_data(c,2); if (!shrink_texture(c)) invoke(c,&ID3D11Device::CreateTexture2D); break;
     case 6: validate_texture_data(c,3); invoke(c,&ID3D11Device::CreateTexture3D); break;
     case 11: {
         size_t count = uint32_t(arg(c,2));
@@ -1113,8 +1381,82 @@ static void VKAPI_CALL logged_destroy_swapchain(VkDevice device, VkSwapchainKHR 
     frostpunk_render_log("swapchain destroy");
     raw_destroy_swapchain(device, swapchain, callbacks);
 }
+static std::mutex vk_memory_mutex;
+static PFN_vkAllocateMemory raw_allocate_memory;
+static PFN_vkCreateBuffer raw_create_buffer;
+static PFN_vkCreateImage raw_create_image;
+static std::unordered_map<uint64_t,std::string> vk_object_notes;
+static VkResult VKAPI_CALL noted_create_buffer(VkDevice device, const VkBufferCreateInfo* info, const VkAllocationCallbacks* callbacks, VkBuffer* buffer) {
+    VkResult result = raw_create_buffer(device, info, callbacks, buffer);
+    if (result == VK_SUCCESS && info && buffer && info->size >= (VkDeviceSize(4) << 20)) {
+        char note[96]; snprintf(note, sizeof(note), "buffer size_mb=%.1f usage=0x%x", info->size/1048576.0, unsigned(info->usage));
+        std::lock_guard lock(vk_memory_mutex); vk_object_notes[uint64_t(*buffer)] = note;
+    }
+    return result;
+}
+static VkResult VKAPI_CALL noted_create_image(VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks* callbacks, VkImage* image) {
+    VkResult result = raw_create_image(device, info, callbacks, image);
+    if (result == VK_SUCCESS && info && image && uint64_t(info->extent.width) * info->extent.height >= 512u * 512u) {
+        char note[128]; snprintf(note, sizeof(note), "image %ux%ux%u mips=%u layers=%u format=%d usage=0x%x tiling=%d", info->extent.width, info->extent.height,
+            info->extent.depth, info->mipLevels, info->arrayLayers, int(info->format), unsigned(info->usage), int(info->tiling));
+        std::lock_guard lock(vk_memory_mutex); vk_object_notes[uint64_t(*image)] = note;
+    }
+    return result;
+}
+static PFN_vkDestroyImage raw_destroy_image;
+static std::atomic<int64_t> vk_noted_images_destroyed{0};
+static void VKAPI_CALL noted_destroy_image(VkDevice device, VkImage image, const VkAllocationCallbacks* callbacks) {
+    if (image) {
+        std::lock_guard lock(vk_memory_mutex);
+        auto it = vk_object_notes.find(uint64_t(image));
+        if (it != vk_object_notes.end()) {
+            if (it->second.find("512x512x1 mips=10 layers=6") != std::string::npos) {
+                int saved = errno; fprintf(stderr, "FP_MEMSTATS_VK destroy %s\n", it->second.c_str()); errno = saved;
+            }
+            vk_object_notes.erase(it); ++vk_noted_images_destroyed;
+        }
+    }
+    raw_destroy_image(device, image, callbacks);
+}
+static PFN_vkFreeMemory raw_free_memory;
+static std::unordered_map<uint64_t,int64_t> vk_memory_sizes;
+static VkResult VKAPI_CALL counted_allocate_memory(VkDevice device, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory) {
+    VkResult result = raw_allocate_memory(device, info, callbacks, memory);
+    if (result == VK_SUCCESS && memory && info) {
+        int64_t size = int64_t(info->allocationSize);
+        { std::lock_guard lock(vk_memory_mutex); vk_memory_sizes[uint64_t(*memory)] = size; }
+        memstats::vk_count += 1;
+        if (size >= (int64_t(16) << 20) && memstats::enabled()) {
+            memstats::vk_big += 1;
+            int saved = errno;
+            std::string note = "chunk";
+            for (auto* next = static_cast<const VkBaseInStructure*>(info->pNext); next; next = next->pNext)
+                if (next->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
+                    auto* d = reinterpret_cast<const VkMemoryDedicatedAllocateInfo*>(next);
+                    std::lock_guard lock(vk_memory_mutex);
+                    auto it = vk_object_notes.find(d->image ? uint64_t(d->image) : uint64_t(d->buffer));
+                    note = it != vk_object_notes.end() ? it->second : (d->image ? "image ?" : "buffer ?");
+                }
+            fprintf(stderr, "FP_MEMSTATS_VK alloc_mb=%.1f type=%u live_mb=%.1f %s\n", size/1048576.0, info->memoryTypeIndex, (memstats::vk_bytes.load()+size)/1048576.0, note.c_str());
+            errno = saved;
+        }
+        memstats::vk_moved(size);
+    }
+    return result;
+}
+static void VKAPI_CALL counted_free_memory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* callbacks) {
+    int64_t size = 0;
+    if (memory) { std::lock_guard lock(vk_memory_mutex); auto it = vk_memory_sizes.find(uint64_t(memory)); if (it != vk_memory_sizes.end()) { size = it->second; vk_memory_sizes.erase(it); } }
+    raw_free_memory(device, memory, callbacks);
+    if (size) { memstats::vk_count -= 1; memstats::vk_moved(-size); }
+}
 static PFN_vkVoidFunction wrap_device_fn(const char* name, PFN_vkVoidFunction fn) {
     if (!fn || !name) return fn;
+    if (memstats::vk_hooks() && !strcmp(name, "vkAllocateMemory")) { raw_allocate_memory = reinterpret_cast<PFN_vkAllocateMemory>(fn); return reinterpret_cast<PFN_vkVoidFunction>(counted_allocate_memory); }
+    if (memstats::enabled() && !strcmp(name, "vkCreateBuffer")) { raw_create_buffer = reinterpret_cast<PFN_vkCreateBuffer>(fn); return reinterpret_cast<PFN_vkVoidFunction>(noted_create_buffer); }
+    if (memstats::enabled() && !strcmp(name, "vkDestroyImage")) { raw_destroy_image = reinterpret_cast<PFN_vkDestroyImage>(fn); return reinterpret_cast<PFN_vkVoidFunction>(noted_destroy_image); }
+    if (memstats::enabled() && !strcmp(name, "vkCreateImage")) { raw_create_image = reinterpret_cast<PFN_vkCreateImage>(fn); return reinterpret_cast<PFN_vkVoidFunction>(noted_create_image); }
+    if (memstats::vk_hooks() && !strcmp(name, "vkFreeMemory")) { raw_free_memory = reinterpret_cast<PFN_vkFreeMemory>(fn); return reinterpret_cast<PFN_vkVoidFunction>(counted_free_memory); }
     if (!strcmp(name, "vkQueuePresentKHR")) { raw_present = reinterpret_cast<PFN_vkQueuePresentKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_present); }
     if (!strcmp(name, "vkAcquireNextImageKHR")) { raw_acquire = reinterpret_cast<PFN_vkAcquireNextImageKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_acquire); }
     if (!strcmp(name, "vkCreateSwapchainKHR")) { raw_swapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(fn); return reinterpret_cast<PFN_vkVoidFunction>(logged_swapchain); }
@@ -1432,8 +1774,10 @@ extern "C" int win64_d3d11_dispatch(CPU* c, uint64_t target) {
         else if (kind==Kind::ID3D11DeviceContext) geometry::context_call(c,slot);
     }
     /* Present always: model detail can turn simplification back on after a frame of full meshes. */
-    if ((kind==Kind::IDXGISwapChain||kind==Kind::IDXGISwapChain1)&&slot==8&&!(uint32_t(arg(c,2))&DXGI_PRESENT_TEST))
+    if ((kind==Kind::IDXGISwapChain||kind==Kind::IDXGISwapChain1)&&slot==8&&!(uint32_t(arg(c,2))&DXGI_PRESENT_TEST)) {
         geometry::present();
+        memstats::present();
+    }
     if (__builtin_expect(draw_stats_enabled(),0) && draw_stats(c,kind,slot)) return 1;
     if (slot<3) { unknown(c,slot); return 1; }
     static const unsigned copy_slot=[]{unsigned k=unsigned(Kind::ID3D11DeviceContext);
@@ -1444,6 +1788,7 @@ extern "C" int win64_d3d11_dispatch(CPU* c, uint64_t target) {
     if (presenting) {
         if (timed) frame_timer.enter();
         if (frostpunk_thread_placement_frame) frostpunk_thread_placement_frame();
+        if (__builtin_expect(memstats::drain_step()>0,0)) { Native<IUnknown> swapchain(arg(c,0)); if (swapchain.p) memstats::drain(swapchain.p); }
         uint64_t before=timed?FrameTimer::clock(CLOCK_MONOTONIC):0;
         if (frostpunk_android_frame_pace) frostpunk_android_frame_pace();
         if (timed) frame_timer.pace=FrameTimer::clock(CLOCK_MONOTONIC)-before;

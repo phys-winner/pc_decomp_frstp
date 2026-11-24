@@ -104,6 +104,48 @@ public final class FrostpunkLauncherTest {
         }
         return result;
     }
+    /** ETC2 beside ASTC: RGB8 for opaque textures, RGBA8 for alpha and for every texture array element. */
+    static void etc2(File root) throws Exception {
+        need(FrostpunkTextures.key("Environment/Terrain/Substances/Snow_Flat_NOR.dds") == 0xa453360f, "texture array element key");
+        for (int format : new int[]{0x31545844, 0x33545844, 0x35545844}) for (boolean zipped : new boolean[]{false, true}) {
+            File game = game(root, "etc2-" + Integer.toHexString(format) + (zipped ? "-gzip" : "-raw"), new byte[][]{texture(format, 8)}, zipped);
+            byte[][] original = pair(game); FrostpunkTextures backend = new FrostpunkTextures();
+            need(backend.scan(game).formats.equals(Arrays.asList(format == 0x31545844 ? "DXT1" : format == 0x33545844 ? "DXT3" : "DXT5")), "scan names the original format");
+            need(backend.outputBytes(TextureBackend.ETC2) == 144 + 4 * 16 && backend.outputBytes(TextureBackend.ASTC) == 144 + 4 * 16, "planned sizes");
+            need(FrostpunkTextures.convertedFormat(game) == 0, "originals have no conversion format");
+            need(backend.convert(game, TextureBackend.ETC2, 2) == 0, backend.message());
+            same(original, pair(new File(game, ".frostpunk-dxt")));
+            TextureBackend.Scan after = backend.scan(game);
+            need(after.failure == null && after.textures == 0 && after.converted == TextureBackend.ETC2 && after.convertedTextures == 1, "ETC2 output scan: " + after.failure);
+            need(FrostpunkTextures.convertedFormat(game) == TextureBackend.ETC2 && FrostpunkTextures.coversQuality(game, false), "ETC2 receipt");
+            /* The fixture's DXT1 and DXT5 are opaque (RGB8, 8 bytes a block), its DXT3 has alpha 255 as well. */
+            byte[] data = pair(game)[0];
+            need(ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).getInt(8) == 0x32435445 && data.length == 144 + 4 * 8, "opaque texture becomes ETC2 RGB8");
+            need(backend.undo(game) == 0, backend.message()); same(original, pair(game));
+            need(backend.convert(game, TextureBackend.ASTC, 1) == 0 && FrostpunkTextures.convertedFormat(game) == TextureBackend.ASTC, "ASTC after an ETC2 undo");
+        }
+        need(FrostpunkTextures.rendererReads("native_vulkan_panvk", TextureBackend.ETC2) && FrostpunkTextures.rendererReads("native_vulkan", TextureBackend.ETC2)
+            && !FrostpunkTextures.rendererReads("dxvk", TextureBackend.ETC2) && FrostpunkTextures.rendererReads("turnip", TextureBackend.ASTC)
+            && FrostpunkTextures.rendererReads("dxvk_panvk", 0), "renderers that read each cache");
+        byte[] alpha = texture(0x35545844, 16); alpha[144] = 0; alpha[145] = (byte)255;   /* alpha0 = 0: the image is transparent */
+        byte[] descriptor = ("<TextureArrayDescriptor>\n<Prop Name=\"Texture file name\" Value=\"Environment/Terrain/Substances/Snow_Flat_NOR.dds\" />\n"
+            + "<Prop Name=\"Texture file name\" Value=\"Environment\\Terrain\\Substances\\Ice2_NOR.dds\" />\n</TextureArrayDescriptor>").getBytes("UTF-8");
+        File arrays = game(root, "etc2-array", new byte[][]{texture(0x35545844, 16), texture(0x35545844, 16), texture(0x35545844, 16), alpha, descriptor}, true);
+        byte[] index = pair(arrays)[1]; ByteBuffer keys = ByteBuffer.wrap(index).order(ByteOrder.LITTLE_ENDIAN);
+        keys.putInt(11, 0xa453360f).putInt(11 + 29, FrostpunkTextures.key("environment/terrain/substances/ice2_nor.texture"));
+        Files.write(new File(arrays, PAIR[1]).toPath(), index);
+        FrostpunkTextures backend = new FrostpunkTextures(); need(backend.convert(arrays, TextureBackend.ETC2, 1) == 0, backend.message());
+        ByteBuffer converted = ByteBuffer.wrap(pair(arrays)[1]).order(ByteOrder.LITTLE_ENDIAN); byte[] data = pair(arrays)[0];
+        int[] expected = {0x41435445, 0x41435445, 0x32435445, 0x41435445};
+        for (int i = 0; i < 4; ++i) {
+            long stored = converted.getLong(11 + i * 29 + 4), offset = converted.getLong(11 + i * 29 + 20);
+            need(ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).getInt((int)offset + 8) == expected[i]
+                && stored == 144 + 16 * (expected[i] == 0x41435445 ? 16 : 8), "array elements and alpha keep RGBA8, entry " + i);
+        }
+        File broken = game(root, "etc2-array-missing", new byte[][]{texture(0x35545844, 16), descriptor}, false);
+        FrostpunkTextures lenient = new FrostpunkTextures();
+        need(lenient.convert(broken, TextureBackend.ETC2, 1) == 0 && lenient.scan(broken).converted == TextureBackend.ETC2, "an array naming an absent texture does not stop the conversion");
+    }
     static byte[] gzip(byte[] source) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(new byte[]{31, (byte)139, 8, 0, 0, 0, 0, 0, 0, (byte)255});
@@ -166,21 +208,33 @@ public final class FrostpunkLauncherTest {
     static void same(byte[][] a, byte[][] b) { need(Arrays.deepEquals(a, b), "original pair changed"); }
     static void profiles() {
         Map<String, String> r = new HashMap<>();
+        Spec.Mode stock = new Spec.Mode(), turnip = new Spec.Mode();
+        stock.kind = "vulkan";
+        turnip.kind = "turnip";
+        stock.probe = turnip.probe = "dxvk";
         r.put("stock.vendor", "1010"); r.put("stock.driverId", "7"); r.put("stock.gpuType", "1");
-        r.put("stock.astc", "1"); r.put("stock.bgra", "1"); r.put("stock.bc", "111"); r.put("stock.bcFeature", "0");
-        need(FrostpunkDevice.profileProblem(r, "stock") == null, "PowerVR ASTC accepted");
-        need(!FrostpunkDevice.dxt(r, "dxvk") && FrostpunkDevice.astc(r, "dxvk"), "format emulation is not the BC feature");
-        r.put("stock.gpuType", "4"); need("software".equals(FrostpunkDevice.profileProblem(r, "stock")), "CPU rejected");
-        r.put("stock.gpuType", "1"); r.put("stock.astc", "0"); need("astc".equals(FrostpunkDevice.profileProblem(r, "stock")), "ASTC required");
+        r.put("stock.status", "ok"); r.put("stock.formats", "0");
+        r.put("stock.astc", "1"); r.put("stock.bgra", "1"); r.put("stock.bcFeature", "0");
+        need(FrostpunkDevice.profileProblem(r, stock) == null, "PowerVR ASTC accepted");
+        need(!FrostpunkDevice.dxt(r, stock) && FrostpunkDevice.astc(r, stock), "format emulation is not the BC feature");
+        r.put("stock.gpuType", "4"); need("software".equals(FrostpunkDevice.profileProblem(r, stock)), "CPU rejected");
+        r.put("stock.gpuType", "1"); r.put("stock.astc", "0");
+        need("no_texture_format".equals(FrostpunkDevice.profileProblem(r, stock)), "a readable format is required");
         r.put("stock.astc", "1"); r.put("stock.vendor", "13b5"); r.put("stock.driverId", "9");
         r.put("stock.partiallyBound", "1"); r.put("stock.robustBufferAccess2", "0");
-        need(FrostpunkDevice.profileProblem(r, "stock") == null, "Mali guarded descriptors accepted");
-        r.put("stock.partiallyBound", "0"); need("descriptors".equals(FrostpunkDevice.profileProblem(r, "stock")), "unsafe descriptors rejected");
-        r.put("stock.robustBufferAccess2", "1"); need(FrostpunkDevice.profileProblem(r, "stock") == null, "native robustness accepted");
-        r.put("stock.vendor", "9999"); need("driver".equals(FrostpunkDevice.profileProblem(r, "stock")), "unknown driver rejected");
-        r.put("turnip.vendor", "5143"); r.put("turnip.driverId", "18"); r.put("turnip.bcFeature", "1"); r.put("turnip.bc", "111");
-        need(FrostpunkDevice.profileProblem(r, "turnip") == null && FrostpunkDevice.dxt(r, "turnip"), "Turnip BC accepted");
-        r.put("turnip.bcFeature", "0"); need("bc".equals(FrostpunkDevice.profileProblem(r, "turnip")), "Turnip without BC rejected");
+        need(FrostpunkDevice.profileProblem(r, stock) == null, "Mali guarded descriptors accepted");
+        r.put("stock.partiallyBound", "0"); need("descriptors".equals(FrostpunkDevice.profileProblem(r, stock)), "unsafe descriptors rejected");
+        r.put("stock.robustBufferAccess2", "1"); need(FrostpunkDevice.profileProblem(r, stock) == null, "native robustness accepted");
+        r.put("stock.vendor", "9999"); need("driver".equals(FrostpunkDevice.profileProblem(r, stock)), "unknown driver rejected");
+        r.put("turnip.vendor", "5143"); r.put("turnip.driverId", "18"); r.put("turnip.bgra", "1");
+        r.put("turnip.status", "ok"); r.put("turnip.formats", "54");
+        need(FrostpunkDevice.profileProblem(r, turnip) == null && FrostpunkDevice.dxt(r, turnip), "Turnip BC accepted");
+        r.put("turnip.formats", "0");
+        need("no_texture_format".equals(FrostpunkDevice.profileProblem(r, turnip)), "Turnip without a readable format rejected");
+        r.put("turnip.astc", "1");
+        turnip.probe = "version";
+        need(FrostpunkDevice.profileProblem(r, turnip) == null && !FrostpunkDevice.dxt(r, turnip),
+            "native Turnip accepts ASTC when it cannot sample BC originals");
     }
     public static void main(String[] args) throws Exception {
         need(args.length == 1 && args[0].startsWith("/data/local/tmp/frostpunk-pixel10-startup-fix/") && args[0].endsWith("/texture-test-fixture"), "isolated fixture root required");
@@ -199,6 +253,7 @@ public final class FrostpunkLauncherTest {
             need(ByteBuffer.wrap(pair(game)[1]).order(ByteOrder.LITTLE_ENDIAN).get(11 + 29 + 28) == (zipped ? 1 : 0), "opaque entry preserves gzip flag");
             long[] progress = backend.progress(); need(progress[0] == progress[1] && progress[2] == progress[3] && progress[1] == 1, "conversion completes progress");
         }
+        etc2(root);
         for (int phase = 0; phase <= 4; ++phase) {
             File game = game(root, "interrupted-" + phase, new byte[][]{texture(0x31545844, 8)}, false);
             byte[][] original = pair(game); File work = new File(game, ".frostpunk-astc-work"), backup = new File(game, ".frostpunk-dxt");
@@ -239,6 +294,6 @@ public final class FrostpunkLauncherTest {
         FrostpunkTextures atlas = new FrostpunkTextures(); need(atlas.scan(paddedAtlas).failure == null, "8196 atlas preflight");
         need(atlas.convert(paddedAtlas, TextureBackend.ASTC, 4) == 0, atlas.message());
         need(atlas.scan(paddedAtlas).converted == TextureBackend.ASTC, "8196 atlas converted");
-        System.out.println("FROSTPUNK_LAUNCHER_TEST profiles=10 conversions=14 recoveries=8 cancellation=1 malformed=1 ownership=1 folder_and_zip_undo=PASS zip_source_unchanged=PASS zip_integrity=PASS threads_1_vs_4_byte_exact=PASS quality_switch_vs_pc=PASS skipped_mips_byte_exact=PASS unchanged_entries_stay_compressed=PASS atlas_8196=PASS");
+        System.out.println("FROSTPUNK_LAUNCHER_TEST profiles=10 conversions=14 etc2=PASS etc2_array_elements_rgba=PASS recoveries=8 cancellation=1 malformed=1 ownership=1 folder_and_zip_undo=PASS zip_source_unchanged=PASS zip_integrity=PASS threads_1_vs_4_byte_exact=PASS quality_switch_vs_pc=PASS skipped_mips_byte_exact=PASS unchanged_entries_stay_compressed=PASS atlas_8196=PASS");
     }
 }

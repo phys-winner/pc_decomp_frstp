@@ -38,7 +38,11 @@ final class Spec {
         JSONObject theme;
         List<Part> parts = new ArrayList<>();
         List<String> renderers = new ArrayList<>();
+        List<String> textureFormats;
+        List<String> originalTextureRenderers = new ArrayList<>();
         boolean intro, introDefault;
+
+        boolean readsCache(Mode mode) { return mode.readsCache() && !originalTextureRenderers.contains(mode.id); }
 
         Part part(String id) {
             for (Part p : parts) if (p.id.equals(id)) return p;
@@ -47,16 +51,34 @@ final class Spec {
     }
 
     static final class Mode {
-        String id, kind, title;
+        String id, kind, title, textureCache = "";
+        int gles;
+        boolean maintenance1;
+        final List<String> vulkanRequires = new ArrayList<>();
+        List<String> originalFormats = TextureFormats.DXT;
         int vulkan;                   /* VK_MAKE_API_VERSION of the needed Vulkan; 0 none */
         int minSdk;
         int adrenoMin, adrenoMax;     /* Turnip: the Adreno models its driver supports */
-        String driver = "";           /* the custom driver library adrenotools loads */
+        String driver = "";           /* Turnip or PanVK: the driver library adrenotools loads */
         boolean needsBC = true;       /* a Vulkan mode needs BC1-3 (DXT) sampling: the game's textures */
+        /* What the driver check asks of a Vulkan mode (kind vulkan, turnip or panvk): "dxvk" (DXVK's
+           requirements) or "version" (the port's own Vulkan renderer: a driver that loads and offers
+           `vulkan`; BC1-3 only by needsBC). A panvk mode is always checked by version. */
+        String probe = "";
+        /* A bool option of "options" the mode needs on (the port's own renderer behind a switch):
+           while it is off the mode is unavailable and names the option. */
+        String option = "";
         List<String> libraries = new ArrayList<>();
         Object description;
 
         boolean vulkanKind() { return "vulkan".equals(kind) || "turnip".equals(kind) || "panvk".equals(kind); }
+
+        String driverKey() { return "turnip".equals(kind) || "panvk".equals(kind) ? kind : "stock"; }
+
+        boolean readsCache() { return textureCache.isEmpty() ? !vulkanKind() || (versionProbe() && !needsBC) : "read".equals(textureCache); }
+
+        /** The driver check asks only for a loading driver of the mode's Vulkan version ("probe": "version"). */
+        boolean versionProbe() { return vulkanKind() && ("version".equals(probe) || ("panvk".equals(kind) && probe.isEmpty())); }
     }
 
     /** A license text the APK carries (an asset file), with the name the player reads. */
@@ -73,11 +95,19 @@ final class Spec {
     static final class Option {
         String key, type, value, extra;
         int defaultMinRamGiB;
-        boolean arm64Only;
+        boolean arm64Only, rendererSetting;
         Object title, hint;
+        /* A bool option's question before the first start while it is off and the player never set
+           it (LauncherActivity.offerOption); null: none. */
+        Object offer;
         List<String> only = new ArrayList<>();
         List<String> choices = new ArrayList<>();
         List<Object> choiceTitles = new ArrayList<>();
+    }
+
+    static final class Folder {
+        String path;
+        Object title, hint;
     }
 
     static final class Category {
@@ -88,14 +118,17 @@ final class Spec {
 
     final JSONObject json;
     final String label, logTag, storage, github, hooks, textureBackend, gogInstaller;
-    final Object title, subtitle, gameFilesHint, optionsHint;
-    final boolean allFilesAccess, localNetwork, updates, autoLaunch;
+    final boolean separateTextureCache, performanceHud, textureSection;
+    final List<String> textureFormats = new ArrayList<>(), etc2Formats = new ArrayList<>(), astcFormats = new ArrayList<>();
+    final Object title, subtitle, gameFilesHint, optionsHint, textureHint;
+    final boolean allFilesAccess, localNetwork, updates, autoLaunch, hyperosNotice;
     final List<String> languages = new ArrayList<>();
     final List<Distribution> distributions = new ArrayList<>();
     final List<Mode> modes = new ArrayList<>();
     final String defaultMode;
     final List<String> autoModes = new ArrayList<>(), verifiedModes = new ArrayList<>();
     final List<Option> options = new ArrayList<>();
+    final List<Folder> folders = new ArrayList<>();
     final List<Category> categories = new ArrayList<>();
     final List<License> licenses = new ArrayList<>();
     final JSONObject theme, build;
@@ -127,11 +160,14 @@ final class Spec {
         storage = app.optString("storage", "");
         github = app.optString("github", "").trim();
         hooks = app.optString("hooks", "");
+        performanceHud = app.optBoolean("performanceHud", false);
         gogInstaller = app.optString("gogInstaller", "");
         allFilesAccess = app.optBoolean("allFilesAccess", true);
         localNetwork = app.optBoolean("localNetwork", false);
         updates = app.optBoolean("updates", true) && !github.isEmpty();
         autoLaunch = app.optBoolean("autoLaunch", false);
+        /* "gameModeNotice" (on by default) replaced "hyperosNotice", which no longer turns anything on or off. */
+        hyperosNotice = app.optBoolean("gameModeNotice", true);
         strings(app.optJSONArray("languages"), languages);
         if (languages.isEmpty()) languages.add("en");
         JSONArray texts = app.optJSONArray("licenses");
@@ -156,11 +192,19 @@ final class Spec {
                 mode.title = m.optString("title", mode.id);
                 mode.description = m.opt("description");
                 mode.vulkan = vulkanVersion(m.optString("vulkan", ""));
+                String gl = m.optString("gles", "");
+                if (gl.matches("[23]\\.[012]")) mode.gles = ((gl.charAt(0) - '0') << 16) | (gl.charAt(2) - '0');
+                mode.textureCache = m.optString("textureCache", "");
+                mode.maintenance1 = m.optBoolean("maintenance1", false);
+                strings(m.optJSONArray("vulkanRequires"), mode.vulkanRequires);
                 mode.minSdk = m.optInt("minSdk", 0);
                 JSONArray adreno = m.optJSONArray("adreno");
                 if (adreno != null) { mode.adrenoMin = adreno.getInt(0); mode.adrenoMax = adreno.getInt(1); }
                 mode.driver = m.optString("driver", "");
-                mode.needsBC = m.optBoolean("needsBC", true);
+                mode.probe = m.optString("probe", "");
+                /* A renderer of the port's own needs BC1-3 only when its mode says so. */
+                mode.needsBC = m.has("needsBC") ? m.optBoolean("needsBC", true) : !mode.versionProbe();
+                mode.option = m.optString("option", "");
                 strings(m.optJSONArray("libraries"), mode.libraries);
                 modes.add(mode);
             }
@@ -179,11 +223,16 @@ final class Spec {
             dist.title = d.opt("title") != null ? d.opt("title") : label;
             dist.version = d.optString("version", "");
             dist.activity = d.getString("activity");
+            if (d.has("textureFormats")) {
+                dist.textureFormats = new ArrayList<>();
+                strings(d.getJSONArray("textureFormats"), dist.textureFormats);
+            }
             dist.theme = d.optJSONObject("theme");
             JSONObject intro = d.optJSONObject("intro");
             dist.intro = intro != null;
             dist.introDefault = intro != null && intro.optBoolean("default", true);
             strings(d.optJSONArray("renderers"), dist.renderers);
+            strings(d.optJSONArray("originalTextureRenderers"), dist.originalTextureRenderers);
             if (dist.renderers.isEmpty()) for (Mode m : modes) dist.renderers.add(m.id);
             JSONArray parts = d.getJSONArray("parts");
             for (int j = 0; j < parts.length(); ++j) {
@@ -214,6 +263,16 @@ final class Spec {
         }
         if (distributions.isEmpty()) throw new JSONException("no distributions");
 
+        JSONArray shown = json.optJSONArray("folders");
+        if (shown != null) for (int i = 0; i < shown.length(); ++i) {
+            JSONObject f = shown.getJSONObject(i);
+            Folder folder = new Folder();
+            folder.path = f.getString("path");
+            folder.title = f.opt("title");
+            folder.hint = f.opt("hint");
+            folders.add(folder);
+        }
+
         JSONArray opts = json.optJSONArray("options");
         if (opts != null) for (int i = 0; i < opts.length(); ++i) {
             JSONObject o = opts.getJSONObject(i);
@@ -223,9 +282,11 @@ final class Spec {
             option.value = String.valueOf(o.opt("default") != null ? o.opt("default") : "");
             option.defaultMinRamGiB = o.optInt("defaultMinRamGiB", 0);
             option.arm64Only = o.optBoolean("arm64Only", false);
+            option.rendererSetting = o.optBoolean("rendererSetting", false);
             option.extra = o.optString("extra", "");
             option.title = o.opt("title") != null ? o.opt("title") : option.key;
             option.hint = o.opt("hint");
+            option.offer = o.opt("offer");
             strings(o.optJSONArray("only"), option.only);
             JSONArray choices = o.optJSONArray("choices");
             if (choices != null) for (int j = 0; j < choices.length(); ++j) {
@@ -251,13 +312,27 @@ final class Spec {
             categories.add(category);
         }
         JSONObject textures = json.optJSONObject("textures");
+        textureSection = textures != null;
         textureBackend = textures != null ? textures.optString("backend", "") : "";
+        textureHint = textures != null ? textures.opt("hint") : null;
+        if (textures != null) {
+            strings(textures.optJSONArray("formats"), textureFormats);
+            if (textureFormats.isEmpty() && !textures.has("formats") && !textureBackend.isEmpty()) textureFormats.addAll(TextureFormats.DXT);
+            if (textures.has("etc2Formats")) strings(textures.optJSONArray("etc2Formats"), etc2Formats);
+            else etc2Formats.addAll(TextureFormats.ETC2);
+            if (textures.has("astcFormats")) strings(textures.optJSONArray("astcFormats"), astcFormats);
+            else astcFormats.addAll(TextureFormats.ASTC);
+            if (textures.has("formats") || !textureFormats.isEmpty()) for (Mode mode : modes) mode.originalFormats = textureFormats;
+        }
+        separateTextureCache = textures != null && textures.optBoolean("separateCache", false);
     }
 
     Distribution distribution(String id) {
         for (Distribution d : distributions) if (d.id.equals(id)) return d;
         return null;
     }
+
+    List<String> formats(Distribution d) { return d.textureFormats != null ? d.textureFormats : textureFormats; }
 
     Mode mode(String id) {
         for (Mode m : modes) if (m.id.equals(id)) return m;
@@ -287,6 +362,17 @@ final class Spec {
         List<Option> result = new ArrayList<>();
         for (Option o : options) if (o.only.isEmpty() || o.only.contains(distribution)) result.add(o);
         return Collections.unmodifiableList(result);
+    }
+
+    Option option(String key) {
+        for (Option o : options) if (o.key.equals(key)) return o;
+        return null;
+    }
+
+    /** Whether a renderer mode needs this option on (its "option"): changing it changes the modes. */
+    boolean modesNeed(String key) {
+        for (Mode m : modes) if (m.option.equals(key)) return true;
+        return false;
     }
 
     /** "1.3" → VK_MAKE_API_VERSION(0, 1, 3, 0), the form PackageManager's Vulkan features use. */

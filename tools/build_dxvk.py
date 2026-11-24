@@ -29,6 +29,8 @@ import dxvk_queue_overlay
 import dxvk_latency_overlay
 import dxvk_buffer_ownership_overlay
 import dxvk_deferred_sequence_overlay
+import dxvk_wireframe_fallback_overlay
+import dxvk_device_lost_cache_overlay
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "reference/dxvk"
@@ -48,7 +50,8 @@ OVERLAYS = (dxvk_mali_overlay, dxvk_robustness_shader_overlay,
             dxvk_robustness_backend_overlay, dxvk_astc_overlay, dxvk_present_overlay,
             dxvk_scaling_overlay, dxvk_tiler_overlay, dxvk_mobile_overlay,
             dxvk_fsr_overlay, dxvk_fsr3_overlay, dxvk_pipeline_cache_overlay, dxvk_queue_overlay,
-            dxvk_latency_overlay, dxvk_buffer_ownership_overlay, dxvk_deferred_sequence_overlay)
+            dxvk_latency_overlay, dxvk_buffer_ownership_overlay, dxvk_deferred_sequence_overlay,
+            dxvk_wireframe_fallback_overlay, dxvk_device_lost_cache_overlay)
 OVERLAY_FILES = tuple(dict.fromkeys(name for overlay in OVERLAYS for name in overlay.FILES))
 
 

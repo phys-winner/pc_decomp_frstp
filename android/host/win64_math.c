@@ -905,6 +905,7 @@ static uint64_t integer_round(uint64_t bits,int wide,unsigned mode,unsigned daz,
     if((mode==0&&(bits&sign))||(mode==1&&!(bits&sign))||(mode==2&&tail>=(UINT64_C(1)<<(shift-1))))rounded+=UINT64_C(1)<<shift;
     return(bits&sign)|rounded;
 }
+static int family_kind(CPU*c,int kind,int wide);
 static int family_call(CPU*c,const char*name){
     int kind=-1,wide=1;
     if(!strcmp(name,"log2l"))kind=0;
@@ -917,6 +918,10 @@ static int family_call(CPU*c,const char*name){
     else if(!strcmp(name,"round"))kind=5;
     else if(!strcmp(name,"roundf")){kind=5;wide=0;}
     if(kind<0)return 0;
+    return family_kind(c,kind,wide);
+}
+/* family_call after the name: log2l/log2/log2f (kind 0-2), floor (3), ceil (4), round (5). */
+static int family_kind(CPU*c,int kind,int wide){
     uint64_t bits=wide?c->xmm[0].u64[0]:c->xmm[0].u32[0];unsigned flags=0;
     if(kind>=3)bits=integer_round(bits,wide,(unsigned)kind-3,(c->mxcsr>>6)&1u,&flags);
     else{
@@ -975,6 +980,51 @@ static unsigned math_memo_slot(const char *name){
     return (unsigned)(((uintptr_t)name*UINT64_C(0x9E3779B97F4A7C15))>>57)&(MATH_MEMO_SLOTS-1u);
 }
 int win64_math_fast_powf(CPU *c){return powf_call(c,"powf");}
+/* Direct handlers for win64.c's import cache: the chain handler that accepts the name (each
+ * handler of math_chain declines only a name it does not own), called with that name.  The import
+ * then skips the dispatcher, the provider chain and the memo; floorf, sqrtf, fmodf, atan2f and the
+ * like are called hundreds of times per frame.  A handler that declines would be a wrong table row,
+ * which must not pass silently. */
+static int root_call(CPU*c,int wide);
+static _Noreturn void fast_declined(const char *name){fprintf(stderr,"STOP Win64 math fast handler declined %s\n",name);fflush(stderr);_Exit(73);}
+#define MATH_FAST(id,handler,text) static int fast_##id(CPU *c){if(!handler(c,text))fast_declined(text);return 1;}
+static int fast_floorf(CPU *c){return family_kind(c,3,0);}
+static int fast_floor(CPU *c){return family_kind(c,3,1);}
+static int fast_ceilf(CPU *c){return family_kind(c,4,0);}
+static int fast_ceil(CPU *c){return family_kind(c,4,1);}
+static int fast_roundf(CPU *c){return family_kind(c,5,0);}
+static int fast_round(CPU *c){return family_kind(c,5,1);}
+MATH_FAST(sinf,trig_call,"sinf")
+MATH_FAST(cosf,trig_call,"cosf")
+MATH_FAST(tanf,trig_call,"tanf")
+MATH_FAST(atan2f,angles_call,"atan2f")
+MATH_FAST(asinf,angles_call,"asinf")
+MATH_FAST(acosf,acosf_candidate_call,"acosf")
+MATH_FAST(atanf,atanf_call,"atanf")
+MATH_FAST(fmodf,fmodf_call,"fmodf")
+MATH_FAST(expf,expf_call,"expf")
+MATH_FAST(logf,logf_call,"logf")
+MATH_FAST(log10f,logf_call,"log10f")
+MATH_FAST(exp2f,exp2f_call,"exp2f")
+MATH_FAST(modff,modff_call,"modff")
+MATH_FAST(tanhf,extended_math_call,"tanhf")
+MATH_FAST(sinhf,extended_math_call,"sinhf")
+MATH_FAST(coshf,extended_math_call,"coshf")
+#undef MATH_FAST
+/* sqrtf/sqrt are not chain handlers: win64_math_call's own branch. */
+static int fast_sqrtf(CPU *c){return root_call(c,0);}
+static int fast_sqrt(CPU *c){return root_call(c,1);}
+int (*win64_math_fast_import(const char *name))(CPU *){
+    static const struct {const char *name;int (*handler)(CPU *);} table[]={
+        {"floorf",fast_floorf},{"floor",fast_floor},{"ceilf",fast_ceilf},{"ceil",fast_ceil},{"roundf",fast_roundf},
+        {"round",fast_round},{"sinf",fast_sinf},{"cosf",fast_cosf},{"tanf",fast_tanf},{"atan2f",fast_atan2f},
+        {"asinf",fast_asinf},{"acosf",fast_acosf},{"atanf",fast_atanf},{"fmodf",fast_fmodf},{"expf",fast_expf},
+        {"logf",fast_logf},{"log10f",fast_log10f},{"exp2f",fast_exp2f},{"modff",fast_modff},{"tanhf",fast_tanhf},
+        {"sinhf",fast_sinhf},{"coshf",fast_coshf},{"sqrtf",fast_sqrtf},{"sqrt",fast_sqrt}};
+    for(size_t i=0;i<sizeof(table)/sizeof(*table);++i)if(!strcmp(name,table[i].name))return table[i].handler;
+    return NULL;
+}
+static int root_call(CPU*c,int wide);
 int win64_math_call(CPU*c,const char*name){
     {
         unsigned slot=math_memo_slot(name);
@@ -998,6 +1048,10 @@ int win64_math_call(CPU*c,const char*name){
         }
         return 0;
     }
+    return root_call(c,wide);
+}
+/* win64_math_call's sqrtf (wide 0) / sqrt (wide 1) branch. */
+static int root_call(CPU*c,int wide){
     uint64_t bits=wide?c->xmm[0].u64[0]:c->xmm[0].u32[0];
     const uint64_t sign=wide?UINT64_C(0x8000000000000000):UINT64_C(0x80000000);
     const uint64_t exponent=wide?UINT64_C(0x7ff0000000000000):UINT64_C(0x7f800000);

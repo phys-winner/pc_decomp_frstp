@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <locale.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -14,6 +15,9 @@
 #include <xmmintrin.h>
 #else
 #include <pthread.h>
+#endif
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
 #endif
 static _Thread_local uint32_t random_state=1;
 static _Noreturn void utility_stop(const char *reason){fprintf(stderr,"STOP Win64 utility %s\n",reason);fflush(stderr);_Exit(73);}
@@ -233,9 +237,47 @@ void (*frostpunk_static_target(uint64_t target))(CPU *) __attribute__((weak));
  * dispatcher for every comparison was about 4 % of that thread.  The comparator is resolved once
  * per sort; every comparison still starts from a full copy of the caller's CPU state and checks
  * both elements and the frame, as before. */
-typedef struct {CPU *parent;uint64_t base,count,width,function,frame;void (*direct)(CPU *);int host_errno;} guest_sort;
+typedef int32_t (*native_compare)(uint64_t left,uint64_t right);
+typedef struct {CPU *parent;uint64_t base,count,width,function,frame;void (*direct)(CPU *);int host_errno;native_compare native;} guest_sort;
+/* Native forms of the two comparators the render thread sorts with every frame (the comparator
+ * calls were 7 % of that thread on Adreno 650 in native Vulkan: a full CPU copy, the dispatcher and
+ * the guest body per comparison).  Each one is the lifted body's own arithmetic, read from the same
+ * memory, so it returns the same value for every input; the heap sort around it is unchanged, so
+ * the order of the sorted array is the same as before byte for byte (the draw-queue comparator is
+ * not transitive: distances within 1.0 compare equal, so the algorithm must stay as it is).
+ * Neither comparator writes memory, calls anything or touches errno.  debug.fp.native_sort=0 keeps
+ * the guest comparators. */
+static int32_t draw_queue_compare(uint64_t left,uint64_t right){
+    /* 1410310D0: cvttss2si(([[rdx]+0x200] - [[rcx]+0x200])) sign, then [+0x10], [+0x18], [+0x20] differences. */
+    float difference=rdss(rd64(right)+0x200ull)-rdss(rd64(left)+0x200ull);
+    int32_t truncated=sse_cvtt_i32(difference);
+    if(truncated>0)return 1;
+    if(truncated<0)return -1;
+    uint32_t value=rd32(right+0x10ull)-rd32(left+0x10ull);if(value)return (int32_t)value;
+    value=rd32(right+0x18ull)-rd32(left+0x18ull);if(value)return (int32_t)value;
+    return (int32_t)(rd32(right+0x20ull)-rd32(left+0x20ull));
+}
+static int32_t key_descending_compare(uint64_t left,uint64_t right){
+    /* 14102F320: mov eax,[rcx]; mov ecx,[rdx]; cmp ecx,eax; ja -> 1; else sbb eax,eax (-1 or 0). */
+    uint32_t a=rd32(left),b=rd32(right);
+    return b>a?1:b<a?-1:0;
+}
+/* debug.fp.native_sort: 0 guest comparators, 1 native (default), 2 both on every comparison, the
+ * guest result is used and differences are logged (NATIVE_SORT_VERIFY*; diagnostics only). */
+static int sort_mode=-1;
+static native_compare native_comparator(uint64_t function,uint64_t width){
+#ifdef __ANDROID__
+    if(sort_mode<0){char value[PROP_VALUE_MAX]={0};int saved=errno;
+        sort_mode=__system_property_get("debug.fp.native_sort",value)<=0?1:value[0]=='0'?0:value[0]=='2'?2:1;errno=saved;}
+    if(!sort_mode)return NULL;
+#endif
+    if(function==GVA(0x1410310D0)&&width==0x30)return draw_queue_compare;
+    if(function==GVA(0x14102F320)&&width==8)return key_descending_compare;
+    return NULL;
+}
 static int sort_compare(guest_sort *sort,uint64_t left,uint64_t right){
     uint64_t a=sort->base+left*sort->width,b=sort->base+right*sort->width;
+    if(sort->native&&sort_mode!=2)return sort->native(a,b);
     win64_pointer(a,(size_t)sort->width,0);win64_pointer(b,(size_t)sort->width,0);
     win64_pointer(sort->frame-8,40,1);
     CPU call=*sort->parent;call.rcx=a;call.rdx=b;call.rsp=sort->frame;
@@ -245,6 +287,17 @@ static int sort_compare(guest_sort *sort,uint64_t left,uint64_t right){
     sort->host_errno=errno;
     uint64_t returned;memcpy(&returned,win64_pointer(sort->frame-8,8,0),8);
     if(call.rsp!=sort->frame||returned!=sentinel)utility_stop("qsort comparator shadow/return stack imbalance");
+    if(sort->native){
+        static _Atomic unsigned long compared,differed;
+        unsigned long n=atomic_fetch_add_explicit(&compared,1,memory_order_relaxed)+1;
+        int32_t native=sort->native(a,b);
+        if(native!=(int32_t)(uint32_t)call.rax){
+            unsigned long m=atomic_fetch_add_explicit(&differed,1,memory_order_relaxed)+1;
+            if(m<=20)fprintf(stderr,"NATIVE_SORT_VERIFY_MISMATCH function=0x%llx native=%d guest=%d\n",
+                             (unsigned long long)sort->function,native,(int32_t)(uint32_t)call.rax);
+        }
+        if(!(n%200000))fprintf(stderr,"NATIVE_SORT_VERIFY compared=%lu mismatches=%lu\n",n,atomic_load(&differed));
+    }
     return (int32_t)(uint32_t)call.rax;
 }
 static void sort_swap(guest_sort *sort,uint64_t left,uint64_t right){
@@ -267,7 +320,7 @@ static void sort_sift(guest_sort *sort,uint64_t root,uint64_t count){
     }
 }
 static void windows_qsort(CPU *cpu){
-    guest_sort sort={cpu,cpu->rcx,cpu->rdx,cpu->r8,cpu->r9,0,NULL,errno};
+    guest_sort sort={cpu,cpu->rcx,cpu->rdx,cpu->r8,cpu->r9,0,NULL,errno,NULL};
     if((!sort.base&&sort.count)||!sort.width||!sort.function){
         win64_stdio_set_errno(22);utility_stop("qsort invalid-parameter callback required");
     }
@@ -279,12 +332,23 @@ static void windows_qsort(CPU *cpu){
     if(cpu->rsp<64)utility_stop("qsort comparator stack underflow");
     sort.frame=(cpu->rsp-48)&~UINT64_C(15);win64_pointer(sort.frame-8,40,1);
     sort.direct=SORT_STATIC_TARGET(sort.function);
+    sort.native=native_comparator(sort.function,sort.width);
     if(sort.base<sort.frame+32&&sort.frame-8<sort.base+bytes)utility_stop("qsort array overlaps comparator stack");
     /* Bionic API30 has no contextual qsort_r. An in-place heap gives bounded
      * O(n log n) comparisons, no native callback cast and no shared context. */
     for(uint64_t parent=sort.count/2;parent;){--parent;sort_sift(&sort,parent,sort.count);}
     for(uint64_t count=sort.count;count>1;){--count;sort_swap(&sort,0,count);sort_sift(&sort,0,count);}
     win64_pointer(sort.base,bytes,1);errno=sort.host_errno;
+}
+/* Direct handlers for win64.c's import cache: the same calls as win64_utility_call's branches. */
+static int fast_atoi(CPU *cpu){cpu->rax=windows_atoi(cpu->rcx);return 1;}
+static int fast_qsort(CPU *cpu){windows_qsort(cpu);return 1;}
+static int fast_bsearch(CPU *cpu){cpu->rax=windows_bsearch(cpu);return 1;}
+int (*win64_utility_fast_import(const char *name))(CPU *){
+    if(!strcmp(name,"atoi"))return fast_atoi;
+    if(!strcmp(name,"qsort"))return fast_qsort;
+    if(!strcmp(name,"bsearch"))return fast_bsearch;
+    return NULL;
 }
 int win64_utility_call(CPU *cpu,const char *name) {
     if(!strcmp(name,"qsort")){windows_qsort(cpu);return 1;}

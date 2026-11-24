@@ -26,6 +26,9 @@ import java.util.Map;
 
 /** Analog camera deltas are consumed by the original camera controller on its game thread. */
 final class TouchControls extends View {
+    private static native long nativeFrameTimes(int[] intervalsUs);
+    /** Presented-frame intervals for the launcher's FPS overlay; the constructor has loaded the library. */
+    static long frameTimes(int[] intervalsUs) { return nativeFrameTimes(intervalsUs); }
     private static native boolean nativePointer(int buttons, float x, float y, float wheel);
     private static native boolean nativeKey(int key, boolean down);
     private static native boolean nativeText(String text);

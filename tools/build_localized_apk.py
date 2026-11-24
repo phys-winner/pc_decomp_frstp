@@ -14,7 +14,7 @@ import fastlift
 import build_vulkan_dev
 
 
-def localized_runtime(work):
+def language_units(work):
     root = fastbuild.ROOT
     sources = root / 'build/fastlift'
     declarations = ('unsigned fp_fan_language_count(void);\n'
@@ -58,6 +58,12 @@ def localized_runtime(work):
             raise RuntimeError(errors)
         units[unit] = str(obj)
 
+    return units
+
+
+def localized_runtime(work):
+    units = language_units(work)
+    root = fastbuild.ROOT
     host, _ = fastbuild.compile_one('android/host/fan_languages.c', fastbuild.COMPILE_FLAGS, fastbuild.header_digest())
     bridge = root / 'build/release-0.3-dev/host/libwin64_d3d11-fastlift.a'
     if not bridge.is_file():

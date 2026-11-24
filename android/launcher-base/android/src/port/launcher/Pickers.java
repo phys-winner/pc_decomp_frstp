@@ -57,9 +57,10 @@ final class Pickers {
             intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         } else {
             intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
-            if (kind != DRIVER)
-                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed",
-                    "application/x-zip", "application/octet-stream"});
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, kind == DRIVER
+                ? new String[] {"application/zip", "application/x-zip-compressed", "application/x-zip",
+                    "application/x-sharedlib", "application/x-shared-library", "application/octet-stream"}
+                : new String[] {"application/zip", "application/x-zip-compressed", "application/x-zip", "application/octet-stream"});
         }
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         Uri initial = near != null ? Storage.documentOf(near) : null;

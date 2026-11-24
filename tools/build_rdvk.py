@@ -148,7 +148,10 @@ def build_hooks():
 # ---------------------------------------------------------------- backend library
 COMPAT = ROOT / 'android/vulkan/lib/compat'
 TREE = WORK / 'dxbc/src'   # DXVK's DXBC -> SPIR-V compiler with stand-ins for its backend headers
-CXX_FLAGS = ['--target=aarch64-linux-android30', '-std=c++17', '-O2', '-fPIC', '-fvisibility=hidden', '-g0',
+# The library imports nothing newer than API 26 (checked against the NDK stubs, 2026-11-24), so it is
+# built for 26: the APK's minSdk is then not held up by this library.
+TARGET = '--target=aarch64-linux-android26'
+CXX_FLAGS = [TARGET, '-std=c++17', '-O2', '-fPIC', '-fvisibility=hidden', '-g0',
              '-ffunction-sections', '-fdata-sections', '-Wall', '-Wno-unused-function', '-Wno-missing-field-initializers',
              '-DVK_NO_PROTOTYPES', '-DVK_USE_PLATFORM_ANDROID_KHR', '-DNDEBUG']
 
@@ -245,7 +248,7 @@ def build_lib(jobs=12):
         results = list(pool.map(one, sources))
     print('rdvk objects %d, compiled %s' % (len(results), [o.name for o, fresh in results if fresh]), flush=True)
     target = LIB / 'libfrostpunk_rdvk.so'
-    done = subprocess.run([str(fb.BIN / 'clang++.exe'), '--target=aarch64-linux-android30', '-shared', '-fPIC',
+    done = subprocess.run([str(fb.BIN / 'clang++.exe'), TARGET, '-shared', '-fPIC',
                            *[str(o) for o, _ in results], '-Wl,--gc-sections', '-Wl,--no-undefined', '-Wl,-z,max-page-size=16384',
                            '-Wl,--build-id=sha1', '-Wl,-soname,libfrostpunk_rdvk.so', '-static-libstdc++', '-landroid', '-llog', '-ldl', '-lm', '-lz',
                            '-o', str(target)], capture_output=True, text=True)

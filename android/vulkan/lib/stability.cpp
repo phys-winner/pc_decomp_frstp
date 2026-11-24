@@ -179,7 +179,8 @@ int guard_init() {
     }
     const char* renderer = std::getenv("PORT_RENDERER");
     bool panvk = renderer && !strcmp(renderer, "native_vulkan_panvk");
-    std::string path = std::string(host->files_dir) + (panvk ? "/rdvk-panvk-guard.txt" : "/rdvk-guard.txt");
+    bool turnip = renderer && !strcmp(renderer, "native_vulkan_turnip");
+    std::string path = std::string(host->files_dir) + (panvk ? "/rdvk-panvk-guard.txt" : turnip ? "/rdvk-turnip-guard.txt" : "/rdvk-guard.txt");
     unsigned crashes = 0;
     if (FILE* f = fopen(path.c_str(), "r")) {
         char line[256] = {};
@@ -192,8 +193,8 @@ int guard_init() {
         }
         fclose(f);
     }
-    // The watcher's DXVK selection is persistent. Picking Native Vulkan again is an explicit retry.
-    bool forced = property("debug.fp.renderer") == "vulkan" || panvk || (renderer && !strcmp(renderer, "native_vulkan"));
+    // An explicit native selection can retry after a previous startup crash.
+    bool forced = property("debug.fp.renderer") == "vulkan" || panvk || turnip || (renderer && !strcmp(renderer, "native_vulkan"));
     if (crashes >= 2 && !forced) {
         log("RDVK_SAFE_MODE level=2 crashes=%u: the native Vulkan renderer crashed in %u sessions in a row; this launch uses D3D11/DXVK "
             "(a new build, debug.fp.rdvk_guard=0 or debug.fp.renderer=vulkan tries it again)", crashes, crashes);

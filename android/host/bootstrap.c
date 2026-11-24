@@ -665,7 +665,7 @@ int frostpunk_process_main(int argc,char **argv,PFN_vkGetInstanceProcAddr suppli
     }
     if (!strcmp(argv[1],"--run-local")) {
         const char *services=getenv("FROSTPUNK_SERVICES_RUNTIME"),*profile=getenv("FROSTPUNK_SERVICES_PROFILE"),*game=getenv("FROSTPUNK_GAME_ROOT");
-        if (!win64_kernel_configure_roots(game,profile)) stop("explicit disjoint game/profile anchors must be configured before kernel use");
+        if (!win64_kernel_configure_roots(game,profile)) stop("cannot configure game and profile directories before kernel use");
         if (!win64_shell_provision()) stop("private known-folder provisioning failed error=%u",win64_get_error());
         fputs("SHELL_FOLDERS_READY current_redirects=2 private_profile_anchor=1 filesystem_verified=1\n",stderr);
         if (!frostpunk_startup_services_init(services,profile,game)) stop("explicit native local-services configuration failed");

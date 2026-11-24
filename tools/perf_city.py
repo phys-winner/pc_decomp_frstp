@@ -7,7 +7,7 @@ device and re-seeded with the same developed PC city before every launch; the pl
 (/sdcard/Frostpunk/userdata) is never started or written.
 
 Windows: `normal` (simulation at speed 1) and `paused`. FPS = accepted vkQueuePresent per second
-(PRESENT_SAMPLE in files/native.log), CPU per thread from /proc, CPU clocks from cpufreq sysfs.
+(PRESENT_SAMPLE in native.log), CPU per thread from /proc, CPU clocks from cpufreq sysfs.
 Results: build/perf/fastlift/<label>/result.json (+ native.log, screenshots, perf.data).
 """
 import argparse
@@ -416,6 +416,10 @@ def run(args):
         key(dev, 'SPACE', 300)
         time.sleep(2)
         result['paused'] = measure(dev, log, folder, 'paused', args.seconds)
+        if args.stat_paused:
+            # The paused city at the frame limit: cycles and instructions per presented frame of the work
+            # the player's CPU does there every frame (no simulation).
+            result['stat_paused'] = cpu_stat(dev, log, folder, 'paused', args.stat_paused)
         if args.meminfo:
             text = dev.sh('dumpsys meminfo ' + PKG, timeout=120)
             (folder / 'meminfo.txt').write_text(text, encoding='utf-8')
@@ -513,6 +517,7 @@ if __name__ == '__main__':
     ap.add_argument('--cool', type=int, default=0, help='wait until the battery is at or below this (tenths of a degree C)')
     ap.add_argument('--soak', type=int, default=0, help='seconds of running city with camera routes (stability)')
     ap.add_argument('--stat', type=int, default=0, help='seconds of per-thread cycle/instruction counting (running city)')
+    ap.add_argument('--stat-paused', type=int, default=0, help='seconds of per-thread cycle/instruction counting in the paused city')
     ap.add_argument('--perf-hz', type=int, default=499)
     ap.add_argument('--load-only', action='store_true')
     ap.add_argument('--meminfo', action='store_true', help='dumpsys meminfo of the game in the paused city (meminfo.txt)')

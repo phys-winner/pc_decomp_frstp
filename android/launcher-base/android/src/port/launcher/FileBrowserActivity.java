@@ -69,9 +69,8 @@ public final class FileBrowserActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackground(ui.backdrop());
         root.setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8));
-        int titleId = mode == Pickers.ZIP ? Texts.BROWSER_ZIP : mode == Pickers.GOG ? Texts.GOG_PICK
-            : mode == Pickers.DRIVER ? Texts.DRIVER_CHOOSE : Texts.BROWSER_FOLDER;
-        TextView title = ui.label(Texts.t(this, titleId), 20, ui.text);
+        TextView title = ui.label(Texts.t(this, mode == Pickers.ZIP ? Texts.BROWSER_ZIP : mode == Pickers.DRIVER ? Texts.BROWSER_DRIVER
+            : mode == Pickers.GOG ? Texts.GOG_PICK : Texts.BROWSER_FOLDER), 20, ui.text);
         title.setTypeface(ui.titleFont);
         root.addView(title);
         path = ui.label("", 12, ui.muted);
@@ -192,8 +191,8 @@ public final class FileBrowserActivity extends Activity {
                     if (child.getName().startsWith(".")) continue;
                     String name = child.getName().toLowerCase(Locale.ROOT);
                     if (child.isDirectory()) items.add(new Item(child, child.getName(), null, true));
-                    else if ((mode == Pickers.ZIP || mode == Pickers.DRIVER) && name.endsWith(".zip")
-                        || mode == Pickers.DRIVER && name.endsWith(".so") || mode == Pickers.GOG && name.endsWith(".exe"))
+                    else if (((mode == Pickers.ZIP || mode == Pickers.DRIVER) && name.endsWith(".zip"))
+                        || (mode == Pickers.DRIVER && name.endsWith(".so")) || (mode == Pickers.GOG && name.endsWith(".exe")))
                         items.add(new Item(child, child.getName(), Texts.size(this, child.length()), false));
                 }
                 if (items.isEmpty()) empty.setText(Texts.t(this, Texts.BROWSER_EMPTY));
@@ -225,7 +224,7 @@ public final class FileBrowserActivity extends Activity {
                         for (Spec.Part p : d.parts) if (Install.present(p, item.file)) names.add(Texts.of(this, p.title));
                     if (!names.isEmpty()) text = Texts.fmt(this, Texts.HAS_GAME, String.join(", ", names));
                 } else if (mode == Pickers.ZIP) {
-                    try (Zip zip = new Zip(new FileInputStream(item.file))) {
+                    try (FileInputStream in = new FileInputStream(item.file); Zip zip = new Zip(in.getChannel())) {
                         List<String> names = new ArrayList<>();
                         boolean stored = true;
                         for (Install.ArchivePart part : Install.plan(zip, spec)) {

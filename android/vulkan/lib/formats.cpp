@@ -1,5 +1,8 @@
 #include "formats.h"
 #include <array>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 #include "device.h"
 #include "rdvk.h"
 
@@ -106,6 +109,7 @@ constexpr Row ROWS[] = {
 };
 std::array<Format, 128> table;
 Format astc[6];
+Format etc2[6];
 bool ready = false;
 void build() {
     for (const Row& r : ROWS) {
@@ -126,14 +130,77 @@ void build() {
         f.view = a[i]; f.block = i < 3 ? 4 : 6; f.bytes = 16; f.compressed = true;
         f.typeless = i % 3 == 0; f.srgb = i % 3 == 2;
     }
+    const VkFormat e[6] = {VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK,
+                           VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK};
+    for (int i = 0; i < 6; ++i) {
+        Format& f = etc2[i];
+        f.image = i < 3 ? VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+        f.view = e[i]; f.block = 4; f.bytes = i < 3 ? 8 : 16; f.compressed = true;
+        f.typeless = i % 3 == 0; f.srgb = i % 3 == 2;
+    }
     ready = true;
 }
+struct DataFormat { VkFormat format; const char* name; };
+constexpr DataFormat DATA_FORMATS[] = {
+    {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, "BC1"}, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, "BC1_SRGB"},
+    {VK_FORMAT_BC2_UNORM_BLOCK, "BC2"}, {VK_FORMAT_BC2_SRGB_BLOCK, "BC2_SRGB"},
+    {VK_FORMAT_BC3_UNORM_BLOCK, "BC3"}, {VK_FORMAT_BC3_SRGB_BLOCK, "BC3_SRGB"},
+    {VK_FORMAT_ASTC_6x6_UNORM_BLOCK, "ASTC_6x6"}, {VK_FORMAT_ASTC_6x6_SRGB_BLOCK, "ASTC_6x6_SRGB"},
+    {VK_FORMAT_ASTC_4x4_UNORM_BLOCK, "ASTC_4x4"}, {VK_FORMAT_ASTC_4x4_SRGB_BLOCK, "ASTC_4x4_SRGB"},
+    {VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, "ETC2_RGB"}, {VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK, "ETC2_RGB_SRGB"},
+    {VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, "ETC2_RGBA"}, {VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK, "ETC2_RGBA_SRGB"},
+};
 }  // namespace
+
+const char* data_format_name(VkFormat format) {
+    for (const DataFormat& d : DATA_FORMATS) if (d.format == format) return d.name;
+    return nullptr;
+}
+
+bool format_sampled(VkFormat format) {
+    /* The feature bits textureCompressionBC/ETC2/ASTC_LDR promise whole families; a driver may still
+     * sample single formats without the bit (emulated BC on Mali) or lack one with it, so ask per format. */
+    VkFormatProperties p{};
+    vk.vkGetPhysicalDeviceFormatProperties(gpu.physical, format, &p);
+    const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (p.optimalTilingFeatures & need) == need;
+}
+
+void data_format_use(VkFormat image /* the view format of the DXGI code */, uint32_t width, uint32_t height, uint32_t mips, uint32_t layers) {
+    static std::mutex m;
+    static bool reported = false;
+    static VkFormat seen[16];
+    static unsigned count = 0;
+    const char* name = data_format_name(image);
+    if (!name) return;
+    std::lock_guard<std::mutex> lock(m);
+    if (!reported) { reported = true; formats_report(); }
+    for (unsigned i = 0; i < count; ++i) if (seen[i] == image) return;
+    if (count < 16) seen[count++] = image;
+    const bool sampled = format_sampled(image);
+    log("RDVK_TEXTURE_FORMAT %s first=%ux%u mips=%u layers=%u sampled=%d source=%s", name, width, height, mips, layers, int(sampled),
+        image >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && image <= VK_FORMAT_BC7_SRGB_BLOCK ? "original" : "converted");
+    if (!sampled)
+        log("RDVK_TEXTURE_UNSUPPORTED %s is not sampled by this Vulkan driver: convert the textures in the launcher "
+            "(ASTC or ETC2), or restore the originals for a driver that samples DXT", name);
+}
+
+void formats_report() {
+    char present[256] = "", missing[256] = "";
+    for (const DataFormat& d : DATA_FORMATS) {
+        char* list = format_sampled(d.format) ? present : missing;
+        size_t used = strlen(list);
+        snprintf(list + used, sizeof present - used, "%s%s", used ? "," : "", d.name);
+    }
+    log("RDVK_TEXTURE_FORMATS sampled=%s missing=%s", present[0] ? present : "-", missing[0] ? missing : "-");
+}
 
 const Format& format(uint32_t dxgi) {
     if (!ready) build();
     if (dxgi >= FP_ASTC4_TYPELESS && dxgi <= FP_ASTC4_SRGB) return astc[dxgi - FP_ASTC4_TYPELESS];
     if (dxgi >= FP_ASTC6_TYPELESS && dxgi <= FP_ASTC6_SRGB) return astc[3 + dxgi - FP_ASTC6_TYPELESS];
+    if (dxgi >= FP_ETC2_RGB_TYPELESS && dxgi <= FP_ETC2_RGB_SRGB) return etc2[dxgi - FP_ETC2_RGB_TYPELESS];
+    if (dxgi >= FP_ETC2_RGBA_TYPELESS && dxgi <= FP_ETC2_RGBA_SRGB) return etc2[3 + dxgi - FP_ETC2_RGBA_TYPELESS];
     if (dxgi < table.size() && table[dxgi].image != VK_FORMAT_UNDEFINED) return table[dxgi];
     stop("unsupported DXGI format %u", dxgi);
 }
@@ -154,6 +221,14 @@ uint32_t view_format_list(uint32_t dxgi, VkFormat image, VkFormat out[8]) {
     }
     if (dxgi >= FP_ASTC6_TYPELESS && dxgi <= FP_ASTC6_SRGB) {
         if (dxgi != FP_ASTC6_UNORM) { add(VK_FORMAT_ASTC_6x6_UNORM_BLOCK); add(VK_FORMAT_ASTC_6x6_SRGB_BLOCK); }
+        return n;
+    }
+    if (dxgi >= FP_ETC2_RGB_TYPELESS && dxgi <= FP_ETC2_RGB_SRGB) {
+        if (dxgi != FP_ETC2_RGB_UNORM) { add(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK); add(VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK); }
+        return n;
+    }
+    if (dxgi >= FP_ETC2_RGBA_TYPELESS && dxgi <= FP_ETC2_RGBA_SRGB) {
+        if (dxgi != FP_ETC2_RGBA_UNORM) { add(VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK); add(VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK); }
         return n;
     }
     if (dxgi >= table.size()) return n;

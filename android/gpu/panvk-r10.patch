@@ -1,22 +1,227 @@
 --- a/src/panfrost/lib/kmod/kbase_kmod.c
 +++ b/src/panfrost/lib/kmod/kbase_kmod.c
-@@ -2161,6 +2161,7 @@
+@@ -25,6 +25,7 @@
+
+ #include <errno.h>
+ #include <fcntl.h>
++#include <stddef.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <assert.h>
+@@ -512,11 +513,12 @@
+          goto err_free_dev;
+       }
+
+-      /* Reserve the executable VA zone. Without this, an allocation asking for GPU_EX is
+-       * silently downgraded to SAME_VA and returns a cookie instead of an address -- silently,
+-       * because nothing fails: the allocation succeeds and only the address is wrong. Not fatal
+-       * if the kernel refuses it; shader BOs then just live in the ordinary zone. */
++      /* Legacy CSF kbase rejects EXEC_INIT after the JIT VA zone is set up. */
+       struct kbase_ioctl_mem_exec_init ei = {.va_pages = KBASE_EXEC_ZONE_PAGES};
++      if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &ei))
++         mesa_logw("kbase: MEM_EXEC_INIT failed (err=%d); executable BOs will be SAME_VA", errno);
++      else
++         mesa_logi("kbase: executable VA zone initialized");
+
+       /* CSF: the kernel's own allocations for this context (tiler heap contexts and chunks)
+        * come from the CUSTOM_VA zone, which a 64-bit context only has once JIT is initialised:
+@@ -531,8 +533,6 @@
+          if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_JIT_INIT, &jit))
+             mesa_logw("kbase: MEM_JIT_INIT failed (err=%d); no tiler heap", errno);
+       }
+-      if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &ei))
+-         mesa_logw("kbase: MEM_EXEC_INIT failed (err=%d); executable BOs will be SAME_VA", errno);
+    }
+
+    const struct pan_kmod_driver drv_info = {
+@@ -2158,9 +2158,26 @@
+ #define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE                                                         \
+    _IOWR(KBASE_IOCTL_TYPE, 58, union kbase_ioctl_cs_queue_group_create)
+
++/* kbase encodes the input size in the ioctl number. These older ABIs use
++ * prefixes of the same request, with no CSI flags in the 1.6 group layout. */
++#define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_18 \
++   _IOC(_IOC_READ | _IOC_WRITE, KBASE_IOCTL_TYPE, 58, \
++        offsetof(union kbase_ioctl_cs_queue_group_create, in.padding))
++#define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6 \
++   _IOC(_IOC_READ | _IOC_WRITE, KBASE_IOCTL_TYPE, 42, \
++        offsetof(union kbase_ioctl_cs_queue_group_create, in.dvs_buf))
++#define KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13 \
++   _IOC(_IOC_READ | _IOC_WRITE, KBASE_IOCTL_TYPE, 48, \
++        offsetof(union kbase_ioctl_cs_tiler_heap_init, in.buf_desc_va))
++
++_Static_assert(_IOC_SIZE(KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_18) == 40, "kbase CSF 1.18 group ABI");
++_Static_assert(_IOC_SIZE(KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6) == 32, "kbase CSF 1.6 group ABI");
++_Static_assert(_IOC_SIZE(KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13) == 16, "kbase CSF 1.13 heap ABI");
++
  /* BASE_CSF_NOTIFICATION_*: what a read() of the context's fd returns, 64 bytes each. */
  #define KBASE_CSF_NOTIFICATION_SIZE              64
  #define KBASE_CSF_NOTIFICATION_GPU_QUEUE_GROUP_ERROR 1
 +#define BASE_CSF_TILER_OOM_EXCEPTION_FLAG (1u << 0)
- 
+
  /* CS opcodes and fields (genxml v12, "CS ..."). */
  #define CS_OP_MOVE48        1u
-@@ -2555,6 +2556,7 @@
+@@ -2311,7 +2328,8 @@
+          .streams_ptr = (uint64_t)(uintptr_t)streams,
+       },
+    };
+-   if (pan_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_CS_GET_GLB_IFACE, &req) || !req.out.group_num) {
++   if (pan_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_CS_GET_GLB_IFACE, &req) ||
++       !req.out.group_num || !req.out.total_stream_num) {
+       mesa_loge("kbase: CS_GET_GLB_IFACE failed (err=%d)", errno);
+       return false;
+    }
+@@ -2320,13 +2338,20 @@
+     * 128 registers, 16 scoreboards). Four unpreserved registers, as panthor's firmware
+     * interface reports. */
+    const uint32_t cs_features = streams[0].features;
++   const unsigned scoreboard_slots = (cs_features >> 8) & 0xff;
++   if (!scoreboard_slots || scoreboard_slots > 16) {
++      mesa_loge("kbase: unsupported CSF scoreboard count %u", scoreboard_slots);
++      return false;
++   }
+    kdev->csif = (struct drm_panthor_csif_info){
+       .csg_slot_count = req.out.group_num,
+       .cs_slot_count = groups[0].stream_num,
+       .cs_reg_count = (cs_features & 0xff) + 1,
+-      .scoreboard_slot_count = (cs_features >> 8) & 0xff,
++      .scoreboard_slot_count = scoreboard_slots,
+       .unpreserved_cs_reg_count = 4,
+    };
++   mesa_logi("kbase: CSF firmware 0x%x, %u registers, %u scoreboards",
++             req.out.glb_version, kdev->csif.cs_reg_count, scoreboard_slots);
+
+    struct kbase_csf_dev *c = calloc(1, sizeof(*c));
+    if (!c)
+@@ -2447,6 +2472,7 @@
+             static const char *const kinds[] = {"group fault", "queue fault",
+                                                 "progress timeout", "tiler heap out of memory"};
+             const uint8_t handle = notes[o + 8], kind = notes[o + 16];
++            const uint8_t queue = kind == 1 ? notes[o + 36] : 0;
+             uint64_t sideband;
+             uint32_t status;
+             memcpy(&sideband, &notes[o + 24], sizeof(sideband));
+@@ -2454,11 +2480,17 @@
+             mesa_loge("kbase: queue group %u: %s (type %u), status 0x%08x (exception 0x%02x), "
+                       "sideband 0x%016" PRIx64 ", queue %u",
+                       handle, kind < ARRAY_SIZE(kinds) ? kinds[kind] : "unknown", kind, status,
+-                      status & 0xff, sideband, kind == 1 ? notes[o + 36] : 0);
++                      status & 0xff, sideband, queue);
+             pthread_mutex_lock(&c->lock);
+             list_for_each_entry(struct pan_kmod_kbase_csf_group, g, &c->groups, link) {
+-               if (g->handle == handle)
+-                  g->faulted = true;
++               if (g->handle != handle)
++                  continue;
++               g->faulted = true;
++               if (kind == 1 && queue < g->nr_queues) {
++                  const uint64_t offset = sideband - g->ring[queue].va;
++                  if (offset < KBASE_CSF_RING_SIZE)
++                     mesa_loge("kbase: queue %u fault ring offset 0x%" PRIx64, queue, offset);
++               }
+             }
+             pthread_mutex_unlock(&c->lock);
+          }
+@@ -2520,6 +2552,33 @@
+
+ static void kbase_csf_emit(struct kbase_csf_ring *r, uint64_t ins);
+
++static bool
++kbase_csf_layout_rejected(int error)
++{
++   return error == ENOTTY || error == EINVAL;
++}
++
++static int
++kbase_csf_create_group(int fd, union kbase_ioctl_cs_queue_group_create *request)
++{
++   const union kbase_ioctl_cs_queue_group_create input = *request;
++   int result = pan_kmod_ioctl(fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, request);
++   if (result && kbase_csf_layout_rejected(errno)) {
++      *request = input;
++      result = pan_kmod_ioctl(fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_18, request);
++      if (!result)
++         mesa_logi("kbase: using CSF 1.18 queue group layout");
++   }
++   if (result && kbase_csf_layout_rejected(errno)) {
++      *request = input;
++      request->in.csi_handlers = 0;
++      result = pan_kmod_ioctl(fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6, request);
++      if (!result)
++         mesa_logi("kbase: using CSF 1.6 queue group layout");
++   }
++   return result;
++}
++
+ struct pan_kmod_kbase_csf_group *
+ pan_kmod_kbase_csf_group_create(struct pan_kmod_dev *dev, unsigned nr_queues,
+                                 uint64_t compute_mask, uint64_t fragment_mask,
+@@ -2555,9 +2614,10 @@
           .tiler_max = 1,
           .fragment_max = max_fragment,
           .compute_max = max_compute,
 +         .csi_handlers = BASE_CSF_TILER_OOM_EXCEPTION_FLAG,
        },
     };
-    if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc)) {
-@@ -2884,6 +2886,11 @@
+-   if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc)) {
++   if (kbase_csf_create_group(dev->fd, &gc)) {
+       mesa_loge("kbase: CS_QUEUE_GROUP_CREATE failed (err=%d)", errno);
+       goto err_free_seq;
+    }
+@@ -2688,7 +2748,7 @@
+                                      uint16_t target_in_flight, uint64_t *heap_ctx_va,
+                                      uint64_t *first_chunk_va)
+ {
+-   union kbase_ioctl_cs_tiler_heap_init req = {
++   const union kbase_ioctl_cs_tiler_heap_init input = {
+       .in = {
+          .chunk_size = chunk_size,
+          .initial_chunks = initial_chunks,
+@@ -2696,7 +2756,15 @@
+          .target_in_flight = target_in_flight,
+       },
+    };
+-   if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_TILER_HEAP_INIT, &req)) {
++   union kbase_ioctl_cs_tiler_heap_init req = input;
++   int result = pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_TILER_HEAP_INIT, &req);
++   if (result && kbase_csf_layout_rejected(errno)) {
++      req = input;
++      result = pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13, &req);
++      if (!result)
++         mesa_logi("kbase: using CSF 1.13 tiler heap layout");
++   }
++   if (result) {
+       mesa_loge("kbase: CS_TILER_HEAP_INIT failed (err=%d)", errno);
+       return false;
+    }
+@@ -2748,6 +2816,7 @@
+    struct kbase_csf_dev *c = kdev->csfq;
+    const unsigned K = kdev->csif.cs_reg_count - 4;
+    const uint64_t A = (uint64_t)K, V = (uint64_t)K + 2;
++   const uint64_t scoreboard_mask = BITFIELD_MASK(kdev->csif.scoreboard_slot_count);
+
+    uint32_t mask = signal_queue_mask;
+    for (unsigned i = 0; i < nr_calls; i++)
+@@ -2812,10 +2881,13 @@
+        * CS_INSERT, the seqno one short). The barrier goes before the signal. */
+       if (!kbase_csf_ring_reserve(g, r, 16 * 8))
+          return 0;
++      /* A deferred flush cannot wait on its own signal slot, and older CSF
++       * firmware rejects masks which reference unavailable scoreboard slots. */
++      kbase_csf_emit(r, cs_ins(CS_OP_WAIT, scoreboard_mask << 16));
+       kbase_csf_emit(r, cs_ins(CS_OP_MOVE32, V << 48));
+       kbase_csf_emit(r, cs_ins(CS_OP_FLUSH_CACHE2,
+-                               (V << 40) | (0xffffull << 16) | (1u << 4) | 1u)); /* clean */
+-      kbase_csf_emit(r, cs_ins(CS_OP_WAIT, 0xffffull << 16));
++                               (V << 40) | (1u << 4) | 1u)); /* clean, slot 0 */
++      kbase_csf_emit(r, cs_ins(CS_OP_WAIT, 1ull << 16));
+       kbase_csf_emit(r, cs_ins(CS_OP_ERROR_BARRIER, 0));
+       kbase_csf_emit(r, cs_ins(CS_OP_MOVE48, (A << 48) | (g->seq_va + q * 64)));
+       kbase_csf_emit(r, cs_ins(CS_OP_MOVE48, (V << 48) | 1));
+@@ -2881,9 +2953,14 @@
+    return done;
+ }
+
 +DEBUG_GET_ONCE_BOOL_OPTION(kbase_cpu_fence_export, "PANVK_KBASE_CPU_FENCE_EXPORT", false)
 +
  int

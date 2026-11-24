@@ -5,6 +5,10 @@ Original port code is licensed under the GNU General Public License,
 version 3 or (at your option) any later version. See LICENSE.
 SPDX-License-Identifier: GPL-3.0-or-later
 
+Redistribution of the covered port and modified versions is subject to the GPL.
+For distribution in object-code form, see the Corresponding Source requirements
+in section 6 of LICENSE.
+
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

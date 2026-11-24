@@ -82,6 +82,36 @@ PFN_vkGetInstanceProcAddr frostpunk_gpu_open_turnip(const char *runtime_dir,
     return open_custom(runtime_dir,driver_dir,custom && custom[0]=='/' ? custom : "vulkan.ad07xx.so",error,error_size);
 }
 
+static VkResult panvk_device_check(PFN_vkGetInstanceProcAddr get,VkInstance instance,VkPhysicalDevice physical) {
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties queues=(PFN_vkGetPhysicalDeviceQueueFamilyProperties)get(instance,"vkGetPhysicalDeviceQueueFamilyProperties");
+    PFN_vkCreateDevice create=(PFN_vkCreateDevice)get(instance,"vkCreateDevice");
+    PFN_vkDestroyDevice destroy=(PFN_vkDestroyDevice)get(instance,"vkDestroyDevice");
+    if(!queues||!create||!destroy)return VK_ERROR_INITIALIZATION_FAILED;
+    uint32_t count=0;queues(physical,&count,NULL);
+    if(!count)return VK_ERROR_INITIALIZATION_FAILED;
+    VkQueueFamilyProperties *families=calloc(count,sizeof(*families));
+    if(!families)return VK_ERROR_OUT_OF_HOST_MEMORY;
+    queues(physical,&count,families);
+    uint32_t family=0;
+    const VkQueueFlags required=VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT;
+    for(;family<count;++family)
+        if(families[family].queueCount&&(families[family].queueFlags&required)==required)break;
+    free(families);
+    if(family==count)return VK_ERROR_INITIALIZATION_FAILED;
+    float priority=1.0f;
+    VkDeviceQueueCreateInfo queue={.sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex=family,.queueCount=1,.pQueuePriorities=&priority};
+    VkPhysicalDeviceVulkan13Features features={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .synchronization2=VK_TRUE,.dynamicRendering=VK_TRUE};
+    const char *swapchain=VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    VkDeviceCreateInfo info={.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,.pNext=&features,
+        .queueCreateInfoCount=1,.pQueueCreateInfos=&queue,.enabledExtensionCount=1,.ppEnabledExtensionNames=&swapchain};
+    VkDevice device=VK_NULL_HANDLE;
+    VkResult result=create(physical,&info,NULL,&device);
+    if(result==VK_SUCCESS)destroy(device,NULL);
+    return result;
+}
+
 PFN_vkGetInstanceProcAddr frostpunk_gpu_open_panvk(const char *runtime_dir, char *error, size_t error_size) {
     char hooks[PATH_MAX], bundled[PATH_MAX];
     const char *custom=getenv("PORT_PANVK_DRIVER");
@@ -102,7 +132,9 @@ PFN_vkGetInstanceProcAddr frostpunk_gpu_open_panvk(const char *runtime_dir, char
     if(!get)return NULL;
     PFN_vkCreateInstance create=(PFN_vkCreateInstance)get(NULL,"vkCreateInstance");
     VkApplicationInfo app={.sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,.apiVersion=VK_API_VERSION_1_3};
-    VkInstanceCreateInfo info={.sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,.pApplicationInfo=&app};
+    const char *extensions[]={VK_KHR_SURFACE_EXTENSION_NAME,"VK_KHR_android_surface"};
+    VkInstanceCreateInfo info={.sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,.pApplicationInfo=&app,
+        .enabledExtensionCount=2,.ppEnabledExtensionNames=extensions};
     VkInstance instance=VK_NULL_HANDLE;
     VkResult result=create?create(&info,NULL,&instance):VK_ERROR_INITIALIZATION_FAILED;
     if(result!=VK_SUCCESS){
@@ -118,9 +150,16 @@ PFN_vkGetInstanceProcAddr frostpunk_gpu_open_panvk(const char *runtime_dir, char
     VkPhysicalDeviceProperties2 props={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,.pNext=&driver};
     if((result==VK_SUCCESS||result==VK_INCOMPLETE)&&count&&device&&properties)properties(device,&props);
     int mapped=port_panvk_mapped(path);
+    int valid=mapped&&props.properties.vendorID==0x13b5&&driver.driverID==VK_DRIVER_ID_MESA_PANVK;
+    if(valid)result=panvk_device_check(get,instance,device);
     if(destroy)destroy(instance,NULL);
-    if(!mapped||props.properties.vendorID!=0x13b5||driver.driverID!=VK_DRIVER_ID_MESA_PANVK){
+    if(!valid){
         snprintf(error,error_size,"PanVK driver not active (driver ID %d, library mapped %d)",driver.driverID,mapped);
+        return NULL;
+    }
+    fprintf(stderr,"PANVK_DEVICE_CHECK device=%s vkCreateDevice=%d\n",props.properties.deviceName,result);
+    if(result!=VK_SUCCESS){
+        snprintf(error,error_size,"PanVK vkCreateDevice failed (%d)",result);
         return NULL;
     }
     return get;

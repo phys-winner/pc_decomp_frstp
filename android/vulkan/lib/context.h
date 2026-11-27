@@ -99,6 +99,7 @@ public:
     }
     /* ---- statistics */
     uint64_t draws = 0, passes = 0, pipelines_created = 0, frames = 0;
+    uint64_t pipeline_create_ns = 0, pipeline_create_max_ns = 0; /* graphics creates, for RDVK_FRAME */
     /* Why render passes ended (index = PassEnd), for RDVK_PASSES. */
     enum PassEnd : uint8_t { PE_OTHER, PE_TARGETS, PE_CLEAR_RTV, PE_CLEAR_DSV, PE_CLEAR_UAV, PE_SPLIT, PE_DISPATCH, PE_UNMAP,
                              PE_UPDATE_BUFFER, PE_UPDATE_TEXTURE, PE_COPY, PE_COPY_REGION, PE_MIPS, PE_WAIT, PE_FLUSH, PE_FORGET,

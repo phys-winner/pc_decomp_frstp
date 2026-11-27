@@ -23,6 +23,10 @@ namespace rdvk {
 namespace {
 uint64_t now_ns() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return uint64_t(t.tv_sec) * 1000000000ull + uint64_t(t.tv_nsec); }
 
+bool quarter_turn(VkSurfaceTransformFlagBitsKHR transform) {
+    return transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR || transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR;
+}
+
 /* The Graphics row "Upscaling" (port_settings.c): 0 bilinear by the compositor, 1 FSR 1, 2 FSR 3. */
 int upscaler_mode() {
     static int (*const get)() = reinterpret_cast<int (*)()>(dlsym(RTLD_DEFAULT, "frostpunk_dxvk_upscaler"));
@@ -43,6 +47,7 @@ struct FsrPass {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0, height = 0;
+    VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 } fsr;
 
 VkShaderModule shader_module(const uint32_t* code, size_t bytes) {
@@ -55,7 +60,7 @@ VkShaderModule shader_module(const uint32_t* code, size_t bytes) {
 }
 
 /* The EASU pipeline for this output format and size (specialization constants 3 and 4). */
-bool fsr_ready(VkFormat format, uint32_t width, uint32_t height) {
+bool fsr_ready(VkFormat format, uint32_t width, uint32_t height, VkSurfaceTransformFlagBitsKHR transform) {
     if (!gpu.caps.push_descriptor) return false;
     if (!fsr.layout) {
         VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -77,11 +82,11 @@ bool fsr_ready(VkFormat format, uint32_t width, uint32_t height) {
         fsr.vs = shader_module(kFullscreenVert, sizeof(kFullscreenVert));
         fsr.fs = shader_module(kFsr1EasuFrag, sizeof(kFsr1EasuFrag));
     }
-    if (fsr.pipeline && fsr.format == format && fsr.width == width && fsr.height == height) return true;
+    if (fsr.pipeline && fsr.format == format && fsr.width == width && fsr.height == height && fsr.transform == transform) return true;
     if (fsr.pipeline) { VkPipeline old = fsr.pipeline; gpu.defer([old] { vk.vkDestroyPipeline(gpu.device, old, nullptr); }); fsr.pipeline = VK_NULL_HANDLE; }
-    uint32_t constants[2] = {width, height};
-    VkSpecializationMapEntry entries[2] = {{3, 0, 4}, {4, 4, 4}};
-    VkSpecializationInfo spec{2, entries, sizeof(constants), constants};
+    uint32_t constants[] = {width, height, uint32_t(transform)};
+    VkSpecializationMapEntry entries[] = {{3, 0, 4}, {4, 4, 4}, {5, 8, 4}};
+    VkSpecializationInfo spec{uint32_t(std::size(entries)), entries, sizeof(constants), constants};
     VkPipelineShaderStageCreateInfo stages[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = fsr.vs; stages[0].pName = "main";
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fsr.fs; stages[1].pName = "main"; stages[1].pSpecializationInfo = &spec;
@@ -112,7 +117,7 @@ bool fsr_ready(VkFormat format, uint32_t width, uint32_t height) {
         fsr.pipeline = VK_NULL_HANDLE;
         return false;
     }
-    fsr.format = format; fsr.width = width; fsr.height = height;
+    fsr.format = format; fsr.width = width; fsr.height = height; fsr.transform = transform;
     log("RDVK_FSR1 EASU pipeline %ux%u format=%d", width, height, int(format));
     return true;
 }
@@ -136,6 +141,15 @@ void destroy_swapchain(SwapChainObject* s) {
     s->window = nullptr;
 }
 
+/* Before the first presented frame, a surface or swap chain the driver keeps refusing means the renderer did not
+   start (renderer failure policy); a refusal while a window is being replaced is retried on the next frame. */
+static void swapchain_refused(const char* what, VkResult r) {
+    static unsigned refusals = 0;
+    if (r == VK_ERROR_DEVICE_LOST) renderer_stop(true, "%s: VK_ERROR_DEVICE_LOST (%d)", what, int(r));
+    if (renderer_has_presented() || r == VK_ERROR_SURFACE_LOST_KHR || r == VK_ERROR_OUT_OF_DATE_KHR) return;
+    if (++refusals >= 3) renderer_stop(false, "%s failed: %d %s (%u times before the first frame)", what, int(r), vk_result(r), refusals);
+}
+
 bool create_swapchain(SwapChainObject* s) {
     if (!s->window) {
         uint64_t generation = 0;
@@ -147,7 +161,7 @@ bool create_swapchain(SwapChainObject* s) {
         VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
         info.window = static_cast<ANativeWindow*>(s->window);
         VkResult r = vk.vkCreateAndroidSurfaceKHR(gpu.instance, &info, nullptr, &s->surface);
-        if (r != VK_SUCCESS) { log("RDVK_SURFACE_FAILED %s", vk_result(r)); return false; }
+        if (r != VK_SUCCESS) { log("RDVK_SURFACE_FAILED %s", vk_result(r)); swapchain_refused("vkCreateAndroidSurfaceKHR", r); return false; }
         VkBool32 supported = VK_FALSE;
         vk.vkGetPhysicalDeviceSurfaceSupportKHR(gpu.physical, gpu.family, s->surface, &supported);
         if (!supported) { log("RDVK_SURFACE_UNSUPPORTED"); return false; }
@@ -176,12 +190,23 @@ bool create_swapchain(SwapChainObject* s) {
     VkExtent2D extent{s->width, s->height};
     if (s->upscaler && caps.currentExtent.width != 0xFFFFFFFFu && caps.currentExtent.width > s->width && caps.currentExtent.height > s->height)
         extent = caps.currentExtent;
-    s->out_width = extent.width; s->out_height = extent.height;
-    info.imageExtent = extent;
     info.imageArrayLayers = 1;
     info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+    s->surface_transform = caps.currentTransform;
+    s->transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    if (gpu.caps.rotated_present && (quarter_turn(caps.currentTransform) || caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR)) {
+        VkExtent2D rotated = extent;
+        if (quarter_turn(caps.currentTransform)) std::swap(rotated.width, rotated.height);
+        if (rotated.width >= caps.minImageExtent.width && rotated.height >= caps.minImageExtent.height &&
+            rotated.width <= caps.maxImageExtent.width && rotated.height <= caps.maxImageExtent.height) {
+            info.preTransform = s->transform = caps.currentTransform;
+            extent = rotated;
+        }
+    }
+    s->out_width = extent.width; s->out_height = extent.height;
+    info.imageExtent = extent;
     info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     info.presentMode = mode;
     info.clipped = VK_TRUE;
@@ -189,7 +214,11 @@ bool create_swapchain(SwapChainObject* s) {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkResult r = vk.vkCreateSwapchainKHR(gpu.device, &info, nullptr, &swapchain);
     if (s->swapchain) { vk.vkDestroySwapchainKHR(gpu.device, s->swapchain, nullptr); s->swapchain = VK_NULL_HANDLE; }
-    if (r != VK_SUCCESS) { log("RDVK_SWAPCHAIN_FAILED %s %ux%u", vk_result(r), s->out_width, s->out_height); return false; }
+    if (r != VK_SUCCESS) {
+        log("RDVK_SWAPCHAIN_FAILED %s %ux%u", vk_result(r), s->out_width, s->out_height);
+        swapchain_refused("vkCreateSwapchainKHR", r);
+        return false;
+    }
     s->swapchain = swapchain;
     s->recreate = false;
     s->format = chosen.format;
@@ -209,8 +238,9 @@ bool create_swapchain(SwapChainObject* s) {
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (VkSemaphore& x : s->rendered) vk_check(vk.vkCreateSemaphore(gpu.device, &si, nullptr, &x), "vkCreateSemaphore");
     for (VkSemaphore& x : s->acquire) if (!x) vk_check(vk.vkCreateSemaphore(gpu.device, &si, nullptr, &x), "vkCreateSemaphore");
-    log("RDVK_SWAPCHAIN %ux%u images=%u format=%d mode=%d transform=0x%x generation=%llu back=%ux%u upscaler=%d", s->out_width, s->out_height,
-        count, int(s->format), int(mode), unsigned(info.preTransform), (unsigned long long)s->generation, s->width, s->height, s->upscaler);
+    log("RDVK_SWAPCHAIN %ux%u images=%u format=%d mode=%d transform=0x%x generation=%llu back=%ux%u upscaler=%d current=0x%x", s->out_width, s->out_height,
+        count, int(s->format), int(mode), unsigned(info.preTransform), (unsigned long long)s->generation, s->width, s->height, s->upscaler,
+        unsigned(caps.currentTransform));
     /* Same marker as DXVK's presenter: the measurement tools wait for it at the title screen. */
     log("info:  Presenter: Actual swap chain properties:");
     if (host->render_log) {
@@ -229,6 +259,16 @@ bool window_changed(SwapChainObject* s) {
     if (current) host->window_release(current);
     return changed;
 }
+
+void create_back_buffer(SwapChainObject* s) {
+    d3d::TEXTURE2D_DESC t{};
+    t.Width = s->width; t.Height = s->height; t.MipLevels = 1; t.ArraySize = 1; t.Format = s->desc.Format ? s->desc.Format : 28;
+    t.SampleDesc.Count = 1; t.Usage = d3d::USAGE_DEFAULT; t.BindFlags = d3d::BIND_RENDER_TARGET | d3d::BIND_SHADER_RESOURCE;
+    // DXGI allows an sRGB view of a UNORM swapchain back buffer.
+    VkFormat srgb = t.Format == 28 ? VK_FORMAT_R8G8B8A8_SRGB :
+                    (t.Format == 87 || t.Format == 88) ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_UNDEFINED;
+    if (create_texture(2, &t, nullptr, &s->back, srgb) != d3d::HR_S_OK) stop("back buffer %ux%u", s->width, s->height);
+}
 }  // namespace
 
 SwapChainObject* swapchain_create(uint64_t hwnd, const d3d::SWAP_CHAIN_DESC1& desc) {
@@ -237,10 +277,7 @@ SwapChainObject* swapchain_create(uint64_t hwnd, const d3d::SWAP_CHAIN_DESC1& de
     s->desc = desc;
     s->width = desc.Width ? desc.Width : 1280;
     s->height = desc.Height ? desc.Height : 720;
-    d3d::TEXTURE2D_DESC t{};
-    t.Width = s->width; t.Height = s->height; t.MipLevels = 1; t.ArraySize = 1; t.Format = desc.Format ? desc.Format : 28;
-    t.SampleDesc.Count = 1; t.Usage = d3d::USAGE_DEFAULT; t.BindFlags = d3d::BIND_RENDER_TARGET | d3d::BIND_SHADER_RESOURCE;
-    if (create_texture(2, &t, nullptr, &s->back) != d3d::HR_S_OK) stop("back buffer %ux%u", s->width, s->height);
+    create_back_buffer(s);
     if (!create_swapchain(s)) log("RDVK_SWAPCHAIN_DEFERRED no window yet");
     return s;
 }
@@ -254,10 +291,7 @@ uint32_t swapchain_resize(SwapChainObject* s, uint32_t width, uint32_t height, u
     if (s->back && s->back->refs.load() > 1) log("RDVK_RESIZE back buffer still referenced (%d)", s->back->refs.load());
     release(s->back);
     s->back = nullptr;
-    d3d::TEXTURE2D_DESC t{};
-    t.Width = s->width; t.Height = s->height; t.MipLevels = 1; t.ArraySize = 1; t.Format = s->desc.Format ? s->desc.Format : 28;
-    t.SampleDesc.Count = 1; t.Usage = d3d::USAGE_DEFAULT; t.BindFlags = d3d::BIND_RENDER_TARGET | d3d::BIND_SHADER_RESOURCE;
-    if (create_texture(2, &t, nullptr, &s->back) != d3d::HR_S_OK) stop("back buffer %ux%u", s->width, s->height);
+    create_back_buffer(s);
     create_swapchain(s);
     return d3d::HR_S_OK;
 }
@@ -271,6 +305,8 @@ void swapchain_destroy(Object* o) {
 
 void Context::present(SwapChainObject* s, uint32_t interval) {
     (void)interval;
+    static uint64_t next_pipeline_cache_frame = 600;
+    static uint64_t saved_pipeline_count = 0;
     geometry::present();
     com_census_frame();
     if (host->frame_pace) host->frame_pace();
@@ -287,6 +323,7 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
         cmd = cmd_ = gpu.cmd();
         reset_command_state();
         log("RDVK_SUSPEND generation=%llu", (unsigned long long)s->generation);
+        if (pipeline_cache_save_async("suspend")) saved_pipeline_count = g_ctx.pipelines_created;
         if (!frostpunk_android_wait_foreground()) return;
         log("RDVK_RESUME");
     }
@@ -313,11 +350,13 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
             if (first_time("acquire_lost")) log("RDVK_SURFACE_REBUILD acquire returned %s", vk_result(result));
             s->recreate = true;
         }
-        if (result == VK_ERROR_DEVICE_LOST) stop("vkAcquireNextImageKHR: %s", vk_result(result));
+        if (result == VK_ERROR_DEVICE_LOST) renderer_stop(true, "vkAcquireNextImageKHR: VK_ERROR_DEVICE_LOST (%d)", int(result));
         if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
             Texture* back = s->back;
-            bool upscale = s->upscaler && (s->out_width > back->width || s->out_height > back->height) &&
-                           index < s->views.size() && fsr_ready(s->format, s->out_width, s->out_height);
+            uint32_t width = s->out_width, height = s->out_height;
+            if (quarter_turn(s->transform)) std::swap(width, height);
+            bool upscale = s->upscaler && (width > back->width || height > back->height) &&
+                           index < s->views.size() && fsr_ready(s->format, width, height, s->transform);
             if (upscale && s->back_view_of != back) {
                 if (s->back_view) { VkImageView old = s->back_view; gpu.defer([old] { vk.vkDestroyImageView(gpu.device, old, nullptr); }); }
                 VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -375,7 +414,19 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
             b.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             barrier(b, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             flush_barriers();
-            if (back->vk_format == s->format && back->width == s->out_width && back->height == s->out_height) {
+            if (s->transform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+                VkCopyCommandTransformInfoQCOM transform{VK_STRUCTURE_TYPE_COPY_COMMAND_TRANSFORM_INFO_QCOM, nullptr, s->transform};
+                VkImageBlit2 region{VK_STRUCTURE_TYPE_IMAGE_BLIT_2, &transform};
+                region.srcSubresource = region.dstSubresource = VkImageSubresourceLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                region.srcOffsets[1] = VkOffset3D{int32_t(back->width), int32_t(back->height), 1};
+                region.dstOffsets[1] = VkOffset3D{int32_t(s->out_width), int32_t(s->out_height), 1};
+                VkBlitImageInfo2 blit{VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2};
+                blit.srcImage = back->image; blit.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                blit.dstImage = s->images[index]; blit.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                blit.regionCount = 1; blit.pRegions = &region;
+                blit.filter = width == back->width && height == back->height ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+                vk.vkCmdBlitImage2(cmd, &blit);
+            } else if (back->vk_format == s->format && back->width == s->out_width && back->height == s->out_height) {
                 VkImageCopy copy{};
                 copy.srcSubresource = copy.dstSubresource = VkImageSubresourceLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                 copy.extent = VkExtent3D{s->out_width, s->out_height, 1};
@@ -401,7 +452,13 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
                 pi.swapchainCount = 1; pi.pSwapchains = &swapchain; pi.pImageIndices = &index;
                 VkResult result = vk.vkQueuePresentKHR(gpu.queue, &pi);
                 if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) s->recreate = true;
-                if (result == VK_ERROR_DEVICE_LOST) stop("vkQueuePresentKHR: %s", vk_result(result));
+                if (result == VK_SUBOPTIMAL_KHR && gpu.caps.rotated_present) {
+                    VkSurfaceCapabilitiesKHR caps{};
+                    if (vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu.physical, s->surface, &caps) == VK_SUCCESS &&
+                        caps.currentTransform != s->surface_transform) s->recreate = true;
+                }
+                if (result == VK_ERROR_DEVICE_LOST) renderer_stop(true, "vkQueuePresentKHR: VK_ERROR_DEVICE_LOST (%d)", int(result));
+                if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) renderer_presented();
                 if (frostpunk_frame_profile_present && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR))
                     frostpunk_frame_profile_present(s, frame, now_ns(), int32_t(result));
             });
@@ -414,8 +471,14 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
         gpu.submit();
     }
     ++frames;
+    if (frames >= next_pipeline_cache_frame) {
+        next_pipeline_cache_frame += 900;
+        if (g_ctx.pipelines_created != saved_pipeline_count && pipeline_cache_save_async("frame"))
+            saved_pipeline_count = g_ctx.pipelines_created;
+    }
     trace_poll();
     guard_present(frames);
+    renderer_qa_frame();
     if (frames % 120 == 60) compact_stream();
     if (frames % 600 == 300) {
         static const char* const names[PE_COUNT] = {"other", "targets", "clear_rtv", "clear_dsv", "clear_uav", "split", "dispatch", "unmap",
@@ -464,9 +527,10 @@ void Context::present(SwapChainObject* s, uint32_t interval) {
             double(y.map_waits) / 600.0, double(y.map_wait_ns) / ms, (unsigned long long)y.map_flags, double(y.poll_calls) / 600.0);
         y = Gpu::SyncStats{};
         Ring::Stats ring = gpu.stream.stats();
-        log("RDVK_FRAME frames=%llu draws=%llu passes=%llu pipelines=%llu stream_mb=%llu stream_chunks=%u idle=%u pinned=%u "
+        log("RDVK_FRAME frames=%llu draws=%llu passes=%llu pipelines=%llu pipe_ms=%.1f pipe_max_ms=%.2f stream_mb=%llu stream_chunks=%u idle=%u pinned=%u "
             "moved_home=%llu/%lluKB memory_mb=%llu/%llu",
             (unsigned long long)frames, (unsigned long long)draws, (unsigned long long)passes, (unsigned long long)pipelines_created,
+            pipeline_create_ns / 1e6, pipeline_create_max_ns / 1e6,
             (unsigned long long)(gpu.stream.bytes() >> 20), ring.chunks, ring.idle, ring.pinned, (unsigned long long)home_buffers_,
             (unsigned long long)(home_bytes_ >> 10), (unsigned long long)(gpu.memory.used_bytes() >> 20),
             (unsigned long long)(gpu.memory.allocated_bytes() >> 20));

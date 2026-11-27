@@ -102,6 +102,8 @@ struct Features {
     bool depth_clamp = false, sampler_anisotropy = false, independent_blend = false, index_uint8 = false;
     bool depth_bias_clamp = false, dual_src_blend = false, depth_clip = false;
     bool host_query_reset = false, occlusion_precise = false;
+    bool rotated_present = false;
+    bool qualcomm_shader_interfaces = false;
     /* SPIR-V capabilities of the game's shaders that depend on optional device features. */
     uint32_t shader_features = 0;   /* SHADER_FEATURE_* supported by the device */
     bool reset_dynamic_per_pass = false;   /* re-set all dynamic state after each vkCmdBeginRendering (Mali) */
@@ -149,6 +151,7 @@ public:
     void wait_idle();
     void wait_serial(uint64_t serial);       /* CPU wait until that submission completed */
     uint64_t serial() const { return serial_; }             /* serial of the commands being recorded */
+    bool trace_submissions() const { return trace_submissions_; }
     uint64_t completed() const { return completed_.load(std::memory_order_acquire); }
     void defer(std::function<void()> destroy);              /* runs after the current serial completed */
     void poll();
@@ -206,6 +209,7 @@ private:
     std::mutex submissions_mutex_;
     std::condition_variable submissions_ready_;
     bool submission_stop_ = false;
+    bool trace_submissions_ = false;
     uint64_t serial_ = 1;
     std::atomic<uint64_t> submitted_{0};
     std::atomic<uint64_t> completed_{0};

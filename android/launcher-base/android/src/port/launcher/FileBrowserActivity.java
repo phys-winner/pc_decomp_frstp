@@ -33,6 +33,15 @@ import java.util.concurrent.Executors;
 public final class FileBrowserActivity extends Activity {
     static final String MODE = "mode", START = "start", RESULT = "path";
 
+    /** A game hook opens the built-in ZIP browser (The Sims 2: the Extender archive). */
+    public static void pickZip(Activity activity, int request, File near) {
+        Pickers.pick(activity, Pickers.ZIP, request, near, true);
+    }
+
+    public static String pickedPath(Intent data) {
+        return data == null ? null : data.getStringExtra(RESULT);
+    }
+
     private static final class Item {
         final File file;
         final String title, detail;

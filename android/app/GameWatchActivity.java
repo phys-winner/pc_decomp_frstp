@@ -124,6 +124,20 @@ public final class GameWatchActivity extends Activity {
 
     private boolean report() {
         if (shown) return true;
+        String distribution = getIntent().getStringExtra(Launch.EXTRA_DISTRIBUTION);
+        try {
+            /* The renderer failure policy (24 November 2026): the selected renderer did not start or lost its
+               device and the game recorded it (renderer_failure.h). The launcher offers the next renderer of its
+               list in place of this crash report. */
+            if (FrostpunkHooks.rendererFailureOffered(this, distribution)) {
+                android.util.Log.i("Frostpunk", "renderer failure recorded; the launcher offers the next renderer");
+                shown = true;
+                close();
+                return true;
+            }
+        } catch (RuntimeException error) {
+            android.util.Log.e("Frostpunk", "renderer failure record", error);
+        }
         try {
             File marker = crashFile();
             String markerText = "";
@@ -133,8 +147,10 @@ public final class GameWatchActivity extends Activity {
                 } catch (IOException error) { android.util.Log.w("Frostpunk", "Cannot read crash marker", error); }
             }
             ApplicationExitInfo info = exitInfo();
-            if (quiet(info, markerText)) return false;
-            if (markerText.isEmpty() && info == null && exitCode == 0) return false;
+            /* A renderer failure outside the offer's rules (a device loss after the window): its own words. */
+            String rendererFailure = FrostpunkHooks.rendererFailureReason(this, distribution);
+            if (rendererFailure == null && quiet(info, markerText)) return false;
+            if (markerText.isEmpty() && info == null && exitCode == 0 && rendererFailure == null) return false;
             boolean rendererWatched = FrostpunkHooks.watchedRenderer(renderer);
             String title = say("The game crashed", "Игра завершилась с ошибкой");
             String fallback = "";
@@ -155,6 +171,7 @@ public final class GameWatchActivity extends Activity {
             // The signal line of the native journal is the last resort: Android's own reason says more when it exists.
             boolean signalMarker = markerText.startsWith("Native signal ");
             String reason = startupError != null ? startupError : !markerText.isEmpty() && !signalMarker ? markerText
+                : rendererFailure != null ? rendererFailure
                 : exitCode != 0 ? (ru ? "Игра завершилась с кодом " : "Game exited with code ") + exitCode
                 : info != null ? CrashReport.exitReason(info.getReason(), info.getStatus(), info.getDescription(), ru)
                 : signalMarker ? CrashReport.signalReason(markerText, ru)

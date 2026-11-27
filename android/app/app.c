@@ -40,7 +40,7 @@
 #endif
 typedef struct {
     struct android_app *app;FrostpunkAndroidHost api;pthread_mutex_t mutex;pthread_cond_t changed;
-    ANativeWindow *window;uint64_t generation,wake_sequence,consumed_wake_sequence;unsigned head,count;int stopping,focused,overflow;
+    ANativeWindow *window;uint64_t generation,wake_sequence,consumed_wake_sequence;unsigned head,count;int stopping,destroyed,focused,overflow;
     FrostpunkAndroidEvent events[EVENTS];PFN_vkGetInstanceProcAddr provider;window_probe *probe;
     char private_path[PATH_MAX],game[PATH_MAX],profile[PATH_MAX],libraries[PATH_MAX],driver[PATH_MAX],error[512];
     int physical_width,physical_height,paused;unsigned touches,keys,consumed,acquire_checks;uint64_t total_frames;float x,y;
@@ -183,6 +183,7 @@ static void set_status(void *opaque,const char *text) {
  * The runtime's present profile calls frostpunk_android_frame once per accepted frame id, for DXVK
  * and the native Vulkan renderer alike. */
 #include "../launcher-base/native/frame_times.h"
+#include "../launcher-base/native/replacements/renderer_failure.h"
 static PortFrameTimes overlay_frames = PORT_FRAME_TIMES_INIT;
 static atomic_int overlay_reads; /* nothing is recorded until the overlay asks: it is off by default */
 __attribute__((visibility("default"))) void frostpunk_android_frame(uint64_t monotonic_ns) {
@@ -723,6 +724,16 @@ static void export_shader_library(app_context *c) {
 }
 static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t error_size);
 static void apply_debug_environment(void);
+/* The selected renderer's driver did not load or is not the driver it names (renderer failure policy of
+ * 24 November 2026: no other driver is tried). The record lets the launcher offer the next renderer of its
+ * list; the crash watcher (GameWatchActivity) opens the launcher when this process ends. Started without the
+ * launcher (no record path), the error dialog stays as before. */
+static void renderer_start_failed(const char *reason) {
+    int recorded=port_renderer_failed(reason,0);
+    char line[640];snprintf(line,sizeof(line),"FROSTPUNK_RENDERER_FAILURE kind=start recorded=%d %s",recorded,reason);log_text(line);
+    if(recorded)return;
+    fflush(NULL);_exit(73);
+}
 static void *game_worker(void *opaque) {
     app_context *c=opaque;int result=74;char error[512]={0},path[PATH_MAX];
     apply_debug_environment();
@@ -732,6 +743,7 @@ static void *game_worker(void *opaque) {
         PFN_vkGetInstanceProcAddr proc=open_vulkan(c,error,sizeof(error));
         pthread_mutex_lock(&c->mutex);c->provider=proc;pthread_mutex_unlock(&c->mutex);
         if(proc)export_shader_library(c);
+        else if(!stopping(c))renderer_start_failed(error[0]?error:"Vulkan driver could not be opened");
         void *library=proc&&!stopping(c)?dlopen(path,RTLD_NOW|RTLD_GLOBAL):NULL;
         if(!proc)goto finished;
         if(!library)snprintf(error,sizeof(error),"Cannot load native game runtime: %s",dlerror());
@@ -753,7 +765,7 @@ static void stop_probe(app_context *c){(void)c;}
  * port-settings.txt (applied at start); debug.frostpunk.vulkan_driver overrides it. */
 static int turnip_requested(app_context *c) {
     const char *renderer=getenv("PORT_RENDERER");
-    if(renderer && *renderer)return !strcmp(renderer,"turnip") || !strcmp(renderer,"native_vulkan_turnip");
+    if(renderer && *renderer)return !strcmp(renderer,"vulkan-turnip") || !strcmp(renderer,"turnip") || !strcmp(renderer,"native_vulkan_turnip");
     char value[PROP_VALUE_MAX]={0};
     if(__system_property_get("debug.frostpunk.vulkan_driver",value)>0)return !strcmp(value,"turnip");
     char path[PATH_MAX],line[128];int turnip=0;snprintf(path,sizeof(path),"%s/port-settings.txt",c->profile);
@@ -789,7 +801,7 @@ static void apply_debug_environment(void) {
 }
 static PFN_vkGetInstanceProcAddr open_vulkan(app_context *c,char *error,size_t error_size) {
     const char *renderer=getenv("PORT_RENDERER");
-    if(renderer&&(!strcmp(renderer,"native_vulkan_panvk")||!strcmp(renderer,"dxvk_panvk"))){
+    if(renderer&&(!strcmp(renderer,"vulkan-panvk")||!strcmp(renderer,"native_vulkan_panvk")||!strcmp(renderer,"dxvk_panvk"))){
         char cache[PATH_MAX], product[PROP_VALUE_MAX]={0};
         if(snprintf(cache,sizeof(cache),"%s/mesa-panvk-cache",c->private_path)<(int)sizeof(cache)&&
            (!mkdir(cache,0700)||errno==EEXIST))setenv("MESA_SHADER_CACHE_DIR",cache,0);
@@ -855,6 +867,10 @@ static void stop_game_worker(app_context *c) {
     struct timespec end;clock_gettime(CLOCK_MONOTONIC,&end);end.tv_sec+=2;
     while(c->worker_started&&!c->worker_finished){int status=pthread_cond_timedwait(&c->changed,&c->mutex,&end);if(status==ETIMEDOUT)break;}
     int started=c->worker_started,finished=c->worker_finished;pthread_mutex_unlock(&c->mutex);ALooper_wake(c->app->looper);
+    /* The activity was destroyed (the player swiped the game away in Recents, or Android closed it):
+     * the process ends anyway.  Status 74 made the launcher report "Game process stopped unexpectedly"
+     * at the next start, which players read as a crash at launch; 0 is a normal end for GameWatchActivity. */
+    if(started&&!finished&&(c->destroyed||c->app->destroyRequested)){log_text("FROSTPUNK_GAME_STOP_TIMEOUT after activity destroy; worker still active, quiet exit");fflush(NULL);_exit(0);}
     if(started&&!finished){log_text("FROSTPUNK_GAME_STOP_TIMEOUT worker still active; terminating own app process to preserve host lifetime");fflush(NULL);_exit(74);}
     if(started)pthread_join(c->worker,NULL);
 }
@@ -879,6 +895,10 @@ static void start_probe(app_context *c) {
 #endif
 static void command(struct android_app *app,int32_t value) {
     app_context *c=app->userData;
+    if(value==APP_CMD_INIT_WINDOW||value==APP_CMD_TERM_WINDOW){
+        void (*block)(unsigned,int)=c->runtime_handle?dlsym(c->runtime_handle,"port_adpf_block"):NULL;
+        if(block)block(2,value==APP_CMD_TERM_WINDOW);
+    }
     if(value==APP_CMD_PAUSE){set_game_paused(c,1);c->focused=0;push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_FOCUS,.focused=0});}
     else if(value==APP_CMD_RESUME){set_game_paused(c,0);c->focused=activity_flag(c,"hasWindowFocus");push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_FOCUS,.focused=c->focused});}
     else if(value==APP_CMD_INIT_WINDOW){stop_probe(c);set_window(c,app->window);start_probe(c);}
@@ -891,7 +911,7 @@ static void command(struct android_app *app,int32_t value) {
         if(c->focused){c->pointer_fixture_visible=0;c->api.set_pointer_visible(c->api.context,0);}
 #endif
     }
-    else if(value==APP_CMD_DESTROY){push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_DESTROY});pthread_mutex_lock(&c->mutex);c->stopping=1;pthread_cond_broadcast(&c->changed);pthread_mutex_unlock(&c->mutex);}
+    else if(value==APP_CMD_DESTROY){push(c,(FrostpunkAndroidEvent){.type=FP_ANDROID_DESTROY});pthread_mutex_lock(&c->mutex);c->stopping=c->destroyed=1;pthread_cond_broadcast(&c->changed);pthread_mutex_unlock(&c->mutex);}
 }
 static int32_t input(struct android_app *app,AInputEvent *native) {
     app_context *c=app->userData;int type=AInputEvent_getType(native);

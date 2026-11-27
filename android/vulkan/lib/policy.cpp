@@ -129,7 +129,7 @@ bool Context::fp_begin_lowres() {
         if (fp_lowres_image_) { release(fp_lowres_image_); fp_lowres_image_ = nullptr; }
         /* Same format and view format as the output, so the tone-map pipeline is unchanged. */
         d3d::TEXTURE2D_DESC desc{in_w, in_h, 1, 1, output->texture->dxgi, {1, 0}, d3d::USAGE_DEFAULT, d3d::BIND_RENDER_TARGET, 0, 0};
-        if (create_texture(2, &desc, nullptr, &fp_lowres_image_) != d3d::HR_S_OK) { fp_lowres_image_ = nullptr; return false; }
+        if (create_texture(2, &desc, nullptr, &fp_lowres_image_, output->format) != d3d::HR_S_OK) { fp_lowres_image_ = nullptr; return false; }
         d3d::RTV_DESC view{output->dxgi, d3d::RTV_TEXTURE2D, 0, 0, 0};
         if (create_rtv(fp_lowres_image_, &view, &fp_lowres_view_) != d3d::HR_S_OK) {
             release(fp_lowres_image_); fp_lowres_image_ = nullptr; fp_lowres_view_ = nullptr;

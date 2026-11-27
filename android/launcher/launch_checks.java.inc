@@ -211,7 +211,7 @@
             if (scan.failure != null) { note(Texts.TEXTURES, scan.failure, true); return; }
             boolean dxt = FrostpunkDevice.dxt(report, mode);
             boolean astc = FrostpunkDevice.astc(report, mode) && !spec.astcFormats.isEmpty();
-            boolean etc2 = FrostpunkDevice.etc2(report, mode) && !spec.etc2Formats.isEmpty();
+            boolean etc2 = FrostpunkDevice.etc2(report, mode) && !spec.etc2Formats.isEmpty() && FrostpunkTextures.rendererReads(renderer, TextureBackend.ETC2);
             String title = rendererTitle(mode);
             if (scan.converted != 0) {
                 boolean readable = scan.converted == TextureBackend.ASTC ? astc : etc2;
@@ -247,7 +247,8 @@
                 "%s не читает DXT-текстуры игры, поэтому их нужно один раз сконвертировать. После этого игра загружается быстрее и расходует меньше памяти. Исходные файлы сохранятся, а готовый набор можно удалить в карточке «Текстуры». Для качества Switch ненужные верхние mip-уровни пропускаются. После конвертации игра запустится."), title);
             body += "\n\n" + Texts.t(this, Texts.TEX_COMPARE);
             body += "\n\n" + fpTextureQualityTitle(reduced);
-            body += "\n" + FrostpunkDevice.tr(this, "Additional space: ", "Дополнительное место: ") + Texts.size(this, backend.outputBytes());
+            body += "\n" + FrostpunkDevice.tr(this, "Additional space: ", "Дополнительное место: ") + (astc ? "ASTC " + Texts.size(this, backend.outputBytes(TextureBackend.ASTC)) : "")
+                + (astc && etc2 ? " · " : "") + (etc2 ? "ETC2 " + Texts.size(this, backend.outputBytes(TextureBackend.ETC2)) : "");
             if (notificationsUnasked()) body += "\n\n" + Texts.t(this, Texts.PERM_NOTIFY);
             android.app.AlertDialog.Builder dialog = ui.dialog().setTitle(Texts.t(this, Texts.TEXTURES)).setMessage(body)
                 .setNegativeButton(Texts.t(this, Texts.CANCEL), null);
@@ -263,27 +264,6 @@
     }
 
     private void fpStart(Spec.Distribution distribution, String renderer) {
-        Spec.Mode chosen = spec.mode(renderer);
-        if (chosen != null && !FrostpunkDevice.nativeMode(chosen)
-                && !"1".equals(State.get(this, State.CHOICES, FrostpunkHooks.ASKED_NATIVE, ""))) {
-            String nativeMode = FrostpunkHooks.nativeTwin(renderer);
-            Renderers.Status nativeStatus = Renderers.status(rendererStatuses(distribution), nativeMode);
-            if (nativeStatus != null && nativeStatus.available && nativeStatus.verified) {
-                ui.show(ui.dialog().setTitle(FrostpunkDevice.tr(this, "Try Native Vulkan?", "Попробовать нативный Vulkan?"))
-                    .setMessage(FrostpunkDevice.tr(this,
-                        "Native Vulkan is experimental. You can change the renderer in the launcher.",
-                        "Нативный Vulkan работает в экспериментальном режиме. Рендерер можно сменить в лаунчере."))
-                    .setPositiveButton(FrostpunkDevice.tr(this, "Use Native Vulkan", "Включить нативный Vulkan"), (dialog, which) -> {
-                        Renderers.choose(this, distribution, hooks, nativeMode);
-                        State.put(this, State.CHOICES, FrostpunkHooks.ASKED_NATIVE, "1");
-                        fpLaunch(distribution, nativeMode);
-                    }).setNegativeButton(FrostpunkDevice.tr(this, "Keep DXVK", "Оставить DXVK"), (dialog, which) -> {
-                        State.put(this, State.CHOICES, FrostpunkHooks.ASKED_NATIVE, "1");
-                        fpLaunch(distribution, renderer);
-                    }));
-                return;
-            }
-        }
         fpLaunch(distribution, renderer);
     }
 

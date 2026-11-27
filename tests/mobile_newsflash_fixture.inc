@@ -18,12 +18,13 @@ static void check_mobile_newsflash(const CPU *caller){
     float authored[4]={302,169,3,2};CPU animation=cpu;animation.rcx=toast;animation.rdx=(uintptr_t)authored;
     // Native callbacks can precede layout with an already adapted X, even while the current field is zero.
     fp_mobile_ui_position(&animation,position_original);
-    assert(animation.rdx==(uintptr_t)authored&&rdss(toast+0xc0)==302&&rdss(toast+0xc8)==authored[2]&&rdss(toast+0xcc)==authored[3]);
+    assert(animation.rdx==(uintptr_t)authored&&rdss(toast+0xc0)==182&&rdss(toast+0xc8)==authored[2]&&rdss(toast+0xcc)==authored[3]);
     const unsigned scales[]={200,150,200,100,200,100};
     for(unsigned i=0;i<sizeof(scales)/sizeof(scales[0]);++i){
         scale=scales[i];
         for(unsigned repeat=0;repeat<12;++repeat)fp_mobile_ui_before(&cpu);
-        float expected=622+(scale>100?(rdss(GVA(0x142980E60))-1280)*.5f:0);
+        float width=rdss(GVA(0x142980E60));
+        float expected=scale>100?fminf(622+(width-1280)*.5f,width-458):622;
         assert(fabsf(rdss(toast+0xc0)-expected)<.001f&&rdss(toast+0xc4)==169);
         assert(rdss(toast+0x210)==450&&rdss(toast+0x214)==100&&rdss(toast+0x100)==450&&rdss(toast+0x104)==100);
         assert(rdss(toast+0xd0)==-225&&rdss(toast+0xd4)==-50&&rdss(toast+0xf0)==1&&rdss(toast+0xf4)==1);
@@ -42,9 +43,9 @@ static void check_mobile_newsflash(const CPU *caller){
     // A newly created instance may instead reach layout before its first animation callback.
     wr32(toast+0x1e4,0x7909);wrss(toast+0xc0,622);scale=200;
     for(unsigned repeat=0;repeat<12;++repeat)fp_mobile_ui_before(&cpu);
-    assert(rdss(toast+0xc0)==302);
+    assert(rdss(toast+0xc0)==182);
     animation.rdx=(uintptr_t)authored;fp_mobile_ui_position(&animation,position_original);
-    fp_mobile_ui_before(&cpu);assert(rdss(toast+0xc0)==302);
+    fp_mobile_ui_before(&cpu);assert(rdss(toast+0xc0)==182);
     scale=100;fp_mobile_ui_before(&cpu);assert(rdss(toast+0xc0)==622);
     // An identical name outside TOP must retain its authored position.
     wr64(top+0x1d8,(uintptr_t)"OTHER_TOP");scale=200;fp_mobile_ui_scale();animation.rdx=(uintptr_t)authored;

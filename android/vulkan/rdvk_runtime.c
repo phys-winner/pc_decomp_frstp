@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include "rdvk_abi.h"
 #include "win64.h"
+#include "../launcher-base/native/replacements/renderer_failure.h"
 
 /* Generated with the stubs (tools/build_rdvk.py hooks). */
 extern const uint64_t fp_rdvk_hook_vas[];
@@ -59,9 +60,11 @@ static int wanted(void) {
     const char *env = getenv("FROSTPUNK_RENDERER");
     if (env && *env) return !strcmp(env, "vulkan");
     const char *renderer = getenv("PORT_RENDERER");
-    if (renderer && (!strcmp(renderer, "native_vulkan") || !strcmp(renderer, "native_vulkan_turnip") || !strcmp(renderer, "native_vulkan_panvk"))) return 1;
-    const char *option = getenv("PORT_OPTION_NATIVE_VULKAN");
-    return option && !strcmp(option, "1");
+    /* The native Vulkan renderer is the only one of the APK: the launcher ids vulkan, vulkan-turnip and
+     * vulkan-panvk, their earlier names and the removed DXVK ids all start it. debug.fp.renderer=dxvk
+     * (above) still selects the D3D11 bridge for a development build that carries DXVK. */
+    (void)renderer;
+    return 1;
 }
 
 static const rdvk_library *entry_of(void *handle) {
@@ -89,8 +92,20 @@ static const rdvk_library *open_library(char *where, size_t size) {
     snprintf(where, size, "libfrostpunk_rdvk.so");
     void *handle = dlopen("libfrostpunk_rdvk.so", RTLD_NOW | RTLD_LOCAL);
     const rdvk_library *candidate = entry_of(handle);
-    if (!candidate) fprintf(stderr, "RDVK_UNAVAILABLE library=%s error=%s; using D3D11/DXVK\n", where, handle ? "abi/entry" : dlerror());
+    if (!candidate) fprintf(stderr, "RDVK_UNAVAILABLE library=%s error=%s; this build has no other renderer\n", where, handle ? "abi/entry" : dlerror());
     return candidate;
+}
+
+/* The native renderer is the only one of the APK: when it cannot start the game stops and the launcher
+ * offers the next renderer of its list (renderer failure policy, 24 November 2026) instead of the D3D11
+ * bridge running into its missing-DXVK trap. Without the launcher's record path it ends as before. */
+static void renderer_declined(const char *reason) {
+    int recorded = port_renderer_failed(reason, 0);
+    fprintf(stderr, "RDVK_RENDERER_FAILURE kind=start recorded=%d %s\n", recorded, reason);
+    if (recorded != 0) return;
+    fprintf(stderr, "STOP rdvk %s\n", reason);
+    fflush(stderr);
+    _Exit(73);
 }
 
 __attribute__((constructor)) static void rdvk_select(void) {
@@ -98,7 +113,7 @@ __attribute__((constructor)) static void rdvk_select(void) {
     if (!wanted()) return;
     char where[600] = {0};
     const rdvk_library *candidate = open_library(where, sizeof(where));
-    if (!candidate) return;
+    if (!candidate) { renderer_declined("the native Vulkan renderer library could not be loaded (libfrostpunk_rdvk.so)"); return; }
     host.abi = RDVK_ABI;
     host.size = sizeof(host);
     host.hook_count = fp_rdvk_hook_count;
@@ -124,7 +139,8 @@ __attribute__((constructor)) static void rdvk_select(void) {
     host.object_highlight = frostpunk_dxvk_object_highlight;
     rdvk_fn table[RDVK_HOOK_MAX] = {0};
     if (!candidate->init(&host, table)) {
-        fprintf(stderr, "RDVK_DECLINED library=%s; using D3D11/DXVK\n", where);
+        fprintf(stderr, "RDVK_DECLINED library=%s; this build has no other renderer\n", where);
+        renderer_declined("the native Vulkan renderer declined to start (shader library or library version, see RDVK lines)");
         return;
     }
     unsigned hooked = 0;

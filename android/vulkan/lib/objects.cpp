@@ -205,7 +205,7 @@ uint32_t create_buffer(const d3d::BUFFER_DESC& desc, const d3d::SUBRESOURCE_DATA
 }
 
 /* ------------------------------------------------------------------ textures */
-uint32_t create_texture(uint32_t dimension, const void* raw, const d3d::SUBRESOURCE_DATA* data, Texture** out) {
+uint32_t create_texture(uint32_t dimension, const void* raw, const d3d::SUBRESOURCE_DATA* data, Texture** out, VkFormat extra_view) {
     *out = nullptr;
     Kind kind = dimension == 1 ? Kind::Texture1D : dimension == 3 ? Kind::Texture3D : Kind::Texture2D;
     auto* t = new Texture(kind);
@@ -292,6 +292,9 @@ uint32_t create_texture(uint32_t dimension, const void* raw, const d3d::SUBRESOU
      * Depth views use the image's own format, so depth images are never mutable. */
     VkFormat view_formats[8];
     uint32_t view_format_count = t->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? view_format_list(t->dxgi, t->vk_format, view_formats) : 0;
+    if (extra_view != VK_FORMAT_UNDEFINED && view_format_count < std::size(view_formats) &&
+        std::find(view_formats, view_formats + view_format_count, extra_view) == view_formats + view_format_count)
+        view_formats[view_format_count++] = extra_view;
     VkImageFormatListCreateInfo format_list{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
     if (view_format_count > 1) {
         info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;

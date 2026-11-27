@@ -32,7 +32,7 @@ static void check_mobile_scouts(CPU *caller){
             law_selected_bounds(root,root_bounds);law_selected_bounds(text,text_bounds);law_selected_bounds(close,button_bounds);
             float canvas_width=rdss(GVA(0x142980e60)),canvas_height=rdss(GVA(0x142980e64));
             assert(root_bounds[0]>=16&&root_bounds[1]>=16&&root_bounds[0]+root_bounds[2]<=canvas_width-16&&root_bounds[1]+root_bounds[3]<=canvas_height-16);
-            assert(rdss(text+0x37c)==432&&rdss(text+0x380)==0&&rd8(text+0x384)==1);
+            assert(rdss(text+0x37c)==384&&rdss(text+0x380)==0&&rd8(text+0x384)==1);
             assert(text_bounds[0]>root_bounds[0]&&text_bounds[0]+text_bounds[2]<root_bounds[0]+root_bounds[2]);
             assert(text_bounds[1]+text_bounds[3]<button_bounds[1]&&button_bounds[1]+button_bounds[3]<root_bounds[1]+root_bounds[3]);
             assert(rdss(close+0xf0)==1&&(rd32(text+0x1e0)&4)&&(rd32(content+0x1e0)&4));

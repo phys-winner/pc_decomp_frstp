@@ -108,14 +108,15 @@ static void law_selected_fixture(CPU *cpu,uint64_t screen,uint64_t frame) {
     for(unsigned i=0;i<3;++i){wr8(masks[i]+0x383,1);wr8(masks[i]+0x385,1);wrss(masks[i]+0x378,75);}
     cpu->rcx=screen;scale=200;fp_mobile_ui_before(cpu);
     float table_scale=336.f/458;
+    float art_size=640*.34f-24;
     assert(fabsf(rdss(text_mask+0xf0)-table_scale)<.0001f&&fabsf(rdss(table+0xf0)-1)<.0001f);
-    assert(fabsf(rdss(art_mask+0xf0)-144.f/800)<.0001f&&fabsf(rdss(art+0xf0)-1)<.0001f);
+    assert(fabsf(rdss(art_mask+0xf0)-art_size/800)<.0001f&&fabsf(rdss(art+0xf0)-1)<.0001f);
     float action_bounds[4],back_bounds[4],portrait_bounds[4];
     law_selected_bounds(action,action_bounds);law_selected_bounds(back,back_bounds);law_selected_bounds(picture,portrait_bounds);
-    assert(fabsf(action_bounds[1]-210)<.002f&&fabsf(back_bounds[1]-318)<.002f);
+    assert(fabsf(action_bounds[1]-(66+art_size))<.002f&&fabsf(back_bounds[1]-8)<.002f);
     assert(portrait_bounds[1]+portrait_bounds[3]<action_bounds[1]);
-    assert(action_bounds[1]+action_bounds[3]<284-24);
-    assert(284+24<back_bounds[1]);
+    assert(action_bounds[1]+action_bounds[3]<304);
+    assert(back_bounds[1]+back_bounds[3]<portrait_bounds[1]);
     float backdrop_bounds[4],category_bounds[4],graphic_bounds[4];
     law_selected_bounds(backdrop,backdrop_bounds);law_selected_bounds(category,category_bounds);law_selected_bounds(category_graphic,graphic_bounds);
     assert(fabsf(backdrop_bounds[0]+105)<.002f&&fabsf(backdrop_bounds[1]+120)<.002f);
@@ -135,7 +136,7 @@ static void law_selected_fixture(CPU *cpu,uint64_t screen,uint64_t frame) {
     assert(fabsf(description_bounds[3]/rdss(category_description+0x104)-1.2f)<.002f);
     float matrix[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
     CPU paint=*cpu;paint.rdx=(uintptr_t)matrix;
-    const float art_source[]={561.4f,.5f,1281.4f,720.5f},art_target[]={12,60,156,204};
+    const float art_source[]={561.4f,.5f,1281.4f,720.5f},art_target[]={12,60,12+art_size,60+art_size};
     memcpy(law_paint_source,art_source,sizeof(art_source));memcpy(law_paint_target,art_target,sizeof(art_target));
     for(unsigned i=0;i<2;++i){
         paint.rcx=masks[i];fp_mobile_ui_template(&paint,law_paint_original);
@@ -167,6 +168,7 @@ static void law_selected_fixture(CPU *cpu,uint64_t screen,uint64_t frame) {
     wr64(GVA(0x142A89088),previous_list);wr32(GVA(0x142A89090),previous_count);
     wr32(second_category+0x1e0,0);fp_mobile_ui_before(cpu);law_selected_bounds(category_graphic,graphic_bounds);
     assert(graphic_bounds[2]>200&&graphic_bounds[2]<category_bounds[2]);
+    law_selected_bounds(category,category_bounds);category_center=category_bounds[0]+category_bounds[2]*.5f;
     law_selected_bounds(category_title,title_bounds);law_selected_bounds(category_description,description_bounds);
     assert(fabsf(title_bounds[0]+90*.9f*.5f-category_center)<.002f);
     plate_top=graphic_bounds[1]+41*graphic_bounds[3]/175;plate_bottom=plate_top+44*graphic_bounds[3]/175;

@@ -14,6 +14,7 @@ void fp_mobile_ui_template(CPU *cpu,void (*original)(CPU*));
 void fp_mobile_canvas_render(CPU *cpu,void (*original)(CPU*));
 void fp_mobile_law_camera_init(CPU *cpu,void (*original)(CPU*));
 void fp_mobile_law_camera(CPU *cpu,void (*original)(CPU*));
+void fp_mobile_ambience(CPU *cpu,void (*original)(CPU*));
 void fp_mobile_painters_created(CPU *cpu,void (*original)(CPU*));
 void fp_mobile_building_aim(CPU *cpu,void (*original)(CPU*));
 void fp_mobile_show_feedback(CPU *cpu,void (*original)(CPU*));

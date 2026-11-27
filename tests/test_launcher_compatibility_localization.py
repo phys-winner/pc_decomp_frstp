@@ -31,7 +31,10 @@ class CompatibilityLocalizationTest(unittest.TestCase):
             problem = re.search(r'static String profileProblem\(.*?\n    }\n', source, re.S)
             if problem:
                 asked.update(re.findall(r'return "(\w+)";', problem.group(0)))
-        self.assertTrue({'driver_qualcomm', 'no_texture_format', 'features'} <= asked, asked)
+        self.assertTrue({'driver_turnip', 'driver_panvk', 'no_texture_format', 'features'} <= asked, asked)
+        # The Qualcomm system driver is judged like any other since 24 November 2026: no port-policy reason.
+        self.assertNotIn('driver_qualcomm', asked)
+        self.assertNotIn('driver_qualcomm', words['en'])
         self.assertEqual(asked - set(words['en']), set())
 
     def test_launcher_settings_and_format_arguments(self):
@@ -51,6 +54,14 @@ class CompatibilityLocalizationTest(unittest.TestCase):
             for english, text in row.items():
                 self.assertTrue(text.strip(), (language, english))
                 self.assertEqual(sorted(formats.findall(text)), sorted(formats.findall(english)), (language, english))
+                self.assertEqual(text.count('\n'), english.count('\n'), (language, english))
+
+    def test_no_launcher_string_left_in_english(self):
+        # 24 November 2026: the 26 shared-base strings and the rest are translated in every language the port ships.
+        from launcher_strings import english_left
+        words = json.loads((ROOT / 'android/launcher-localization.json').read_text(encoding='utf-8'))
+        self.assertEqual(english_left(words), {})
+        self.assertFalse((ROOT / 'android/launcher-untranslated.json').exists())
 
 
 if __name__ == '__main__':

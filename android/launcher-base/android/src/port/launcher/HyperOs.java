@@ -4,6 +4,9 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.os.Build;
 import java.util.regex.Pattern;
 
@@ -41,7 +44,9 @@ final class HyperOs {
     /** Samsung's Gaming Hub (Game Launcher before One UI 5.1) and the realme/OPPO/OnePlus Game
      *  Assistant; both are opened by their launch intents. */
     static final String GAMING_HUB = "com.samsung.android.game.gamehome", GAME_ASSISTANT = "com.oplus.games";
-    /** Game Assistant's exported main screen (business.module.desktop.JumpSpaceActivity, version 10.38). */
+    /** Game Assistant's exported main screen (business.module.desktop.JumpSpaceActivity). Version
+     *  10.38 let any app start it; 10.39.22 (realme UI 7) demands oppo.permission.OPPO_COMPONENT_SAFE,
+     *  so open() skips it there (refusal) and starts the app's launch intent. */
     static final String GAME_ASSISTANT_MAIN = "com.oplus.games.action.desktop.space.main";
 
     private static boolean shown;
@@ -139,28 +144,56 @@ final class HyperOs {
 
     static void never(Context context, boolean never) { State.put(context, State.CHOICES, NEVER, never ? "1" : null); }
 
-    /** Opens Game Turbo, trying open()'s steps in order; false when none could start. Game Turbo
-     *  may still close at once by its own rules (turned off, not set up yet): nothing tells that
-     *  apart, so the tip's text says where Game Turbo is. */
+    /** Opens the device's game tool, trying its ways in (way()) in order; false when none could
+     *  start. The tool may still close at once by its own rules (turned off, not set up yet):
+     *  nothing tells that apart, so the tip's text says where the tool is. */
     static boolean open(Activity activity) {
         int vendor = vendor();
-        /* Xiaomi: every step. Game Assistant: its exported desktop action (its launcher icon is
-           hidden until the player turns it on), then its launch intent. Gaming Hub: the launch intent. */
-        for (int step = vendor == XIAOMI ? 0 : vendor == OPLUS ? STEPS - 2 : STEPS - 1; step < STEPS; ++step) {
-            Intent intent = vendor == XIAOMI ? intent(activity, step)
-                : vendor == SAMSUNG ? activity.getPackageManager().getLaunchIntentForPackage(GAMING_HUB)
-                : vendor != OPLUS ? null
-                : step == STEPS - 2 ? new Intent(GAME_ASSISTANT_MAIN).setPackage(GAME_ASSISTANT).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                : activity.getPackageManager().getLaunchIntentForPackage(GAME_ASSISTANT);
+        String tool = tool(vendor, 0);
+        for (int step = 0; step < STEPS; ++step) {
+            Intent intent = way(activity, vendor, step);
             if (intent == null) continue;
+            String refusal = refusal(activity, intent);
+            if (refusal != null) {
+                android.util.Log.w("Launcher", tool + ", step " + (step + 1) + " skipped: " + refusal);
+                continue;
+            }
             try {
                 activity.startActivity(intent);
                 return true;
             } catch (ActivityNotFoundException | SecurityException e) {
-                android.util.Log.w("Launcher", "Game Turbo, step " + (step + 1) + ": " + e);
+                android.util.Log.w("Launcher", tool + ", step " + (step + 1) + ": " + e);
             }
         }
         return false;
+    }
+
+    /** The intent of a step of open() for this vendor; null when the step has nothing to start.
+     *  Xiaomi: every step (intent()). Game Assistant: its exported desktop action (its launcher
+     *  icon is hidden until the player turns it on), then its launch intent. Gaming Hub: the
+     *  launch intent. Built only when the step is reached: a launch intent needs package visibility. */
+    static Intent way(Context context, int vendor, int step) {
+        switch (vendor) {
+        case XIAOMI: return intent(context, step);
+        case SAMSUNG: return step == STEPS - 1 ? context.getPackageManager().getLaunchIntentForPackage(GAMING_HUB) : null;
+        case OPLUS: return step == STEPS - 2 ? new Intent(GAME_ASSISTANT_MAIN).setPackage(GAME_ASSISTANT).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            : step == STEPS - 1 ? context.getPackageManager().getLaunchIntentForPackage(GAME_ASSISTANT) : null;
+        default: return null;
+        }
+    }
+
+    /** Why the activity a way in resolves to is known to refuse this app, or null: it is not
+     *  exported, or it demands a permission the app does not hold. A way that does not resolve is
+     *  still tried (an implicit intent starts without package visibility), so only a certain
+     *  refusal skips it. */
+    static String refusal(Context context, Intent intent) {
+        ResolveInfo info = context.getPackageManager().resolveActivity(intent, 0);
+        ActivityInfo activity = info == null ? null : info.activityInfo;
+        if (activity == null) return null;
+        if (!activity.exported) return activity.name + " is not exported";
+        if (activity.permission != null && context.checkSelfPermission(activity.permission) != PackageManager.PERMISSION_GRANTED)
+            return activity.name + " requires " + activity.permission;
+        return null;
     }
 
     /** A step's intent; null when the step has nothing to start. In Game Turbo's own task (its

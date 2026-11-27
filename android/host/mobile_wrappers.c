@@ -25,10 +25,12 @@ void fp_original_L_00014180A400(CPU*);
 void fp_original_L_0001419EF190(CPU*);
 void fp_original_L_000141A5EE10(CPU*);
 void fp_original_L_000141A62E90(CPU*);
+void fp_original_L_000141596CD0(CPU*);
 void fp_original_L_0001410CCA60(CPU*);
 void L_0001410CCA60(CPU* c){fp_mobile_canvas_render(c,fp_original_L_0001410CCA60);}
 void L_000141A5EE10(CPU* c){fp_mobile_law_camera_init(c,fp_original_L_000141A5EE10);}
 void L_000141A62E90(CPU* c){fp_mobile_law_camera(c,fp_original_L_000141A62E90);}
+void L_000141596CD0(CPU* c){fp_mobile_ambience(c,fp_original_L_000141596CD0);}
 void L_000141A04EB0(CPU* c){fp_mobile_painters_created(c,fp_original_L_000141A04EB0);}
 void L_000141AAAFB0(CPU* c){fp_mobile_building_aim(c,fp_original_L_000141AAAFB0);}
 void L_00014180A400(CPU* c){fp_mobile_show_feedback(c,fp_original_L_00014180A400);}

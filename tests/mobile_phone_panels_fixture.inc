@@ -1,3 +1,5 @@
+static void phone_panel_template_return(CPU *cpu){cpu->rsp+=8;}
+
 static void check_mobile_phone_panels(CPU *cpu){
     unsigned relayout_before=layout_relayout_calls;
     static _Alignas(16) unsigned char storage[22][0x600],rows[2][96],cells[2][80];
@@ -26,7 +28,7 @@ static void check_mobile_phone_panels(CPU *cpu){
     assert(rdss(n[1]+0x104)==240&&rdss(n[1]+0xf0)==1);
     assert(rdss(n[4]+0x104)==180&&rdss(n[5]+0x104)==180&&rdss(n[3]+0x104)==182);
     assert(rdss(row_list[0]+52)==26&&rdss(row_list[1]+52)==40&&rdss(row_list[1]+48)==26&&rdss(n[5]+0x324)==66);
-    assert(rdss(n[7]+0x3a0)==16&&table_row_calls==calls+1&&rdss(n[17]+0x104)==56&&rdss(n[18]+0x104)==56);
+    assert(rdss(n[7]+0x3a0)==21&&table_row_calls==calls+1&&rdss(n[17]+0x104)==56&&rdss(n[18]+0x104)==56);
     assert(rdss(n[19]+0xc4)==53&&rdss(n[20]+0xc4)==7.5f);
     assert(rd8(n[10]+0x2a9)==1&&rd8(n[11]+0x2a9)==1&&rd8(n[12]+0x2a9)==1);
     assert(rd8(n[10]+0x2aa)&&rd8(n[11]+0x2aa)&&rd8(n[12]+0x2aa));
@@ -55,7 +57,7 @@ static void check_mobile_phone_panels(CPU *cpu){
     assert(layout_relayout_calls==stable_flow+7);
     wr64(n[6]+0x1d8,(uintptr_t)"EXT_BUILDING_HEADER");wr64(n[7]+0x1d8,(uintptr_t)"SFX_MASK_BLUR");
     scale=200;fp_mobile_ui_scale();CPU drawing=*cpu;drawing.rcx=n[7];CPU before=drawing;
-    fp_mobile_ui_template(&drawing,template_original);
+    fp_mobile_ui_template(&drawing,phone_panel_template_return);
     before.rsp+=8;assert(!memcmp(&before,&drawing,sizeof(drawing)));
     wr64(n[6]+0x1d8,(uintptr_t)"EXT_TECHNOLOGY_PANEL");wr64(n[7]+0x1d8,(uintptr_t)"TECH_NAME");
     fp_mobile_ui_before(cpu);assert(rdss(n[7]+0x3a0)==12);

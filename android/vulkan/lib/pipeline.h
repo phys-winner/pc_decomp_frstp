@@ -38,5 +38,8 @@ const PipelineLayout* pipeline_layout(const Shader* const* shaders, uint32_t cou
 VkPipeline graphics_pipeline(const GraphicsKey& key, const PipelineLayout* layout, const InputLayout* input, const BlendState* blend);
 VkPipeline compute_pipeline(const Shader* cs, const PipelineLayout* layout);
 void pipeline_cache_init();
-void pipeline_cache_save();
+void pipeline_cache_save(const char* reason = "exit");
+bool pipeline_cache_save_async(const char* reason);
+void pipeline_cache_wait_and_save();
+void pipeline_cache_drop_device_lost();
 }  // namespace rdvk

@@ -6,6 +6,7 @@
 /problemes/
 /pub/
 /STATE.md
+/HANDOFF.md
 /port.json
 /android/switch-ui/
 /android/dxvk/aarch64-android.ini
@@ -91,3 +92,4 @@ __pycache__/
 /tests/test_android_game_collector.py
 /tests/test_android_region_journal_runner.py
 /tests/test_android_string_resize_build.py
+/WORKER_BRIEF.md

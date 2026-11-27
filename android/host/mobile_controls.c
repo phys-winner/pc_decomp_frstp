@@ -216,7 +216,7 @@ __attribute__((visibility("default"))) int frostpunk_dxvk_scene_active(void){ret
 
 __attribute__((visibility("default"))) int frostpunk_mobile_submit(unsigned action,float dx,float dy,float zoom,float angle) {
     touch_activity();
-    if(action>9 || !isfinite(dx)||!isfinite(dy)||!isfinite(zoom)||!isfinite(angle)
+    if(action>10 || !isfinite(dx)||!isfinite(dy)||!isfinite(zoom)||!isfinite(angle)
        ||fabsf(dx)>4||fabsf(dy)>4||fabsf(zoom)>4||fabsf(angle)>3.141593f)return 0;
     /* Triggers and the farthest city level use the original, bounded wheel command; pinches send a
      * continuous zoom (action 7). */
@@ -246,6 +246,7 @@ __attribute__((visibility("default"))) int frostpunk_mobile_submit(unsigned acti
         if(!painter_kind){pthread_mutex_unlock(&input_mutex);return 0;}
         painter_clear_pending=1;
     }
+    else if(action==10){if(dx||dy||angle){pthread_mutex_unlock(&input_mutex);return 0;}zoom_settle_pending=1;}
     else if(action==9)street_tool_pending=(unsigned)dx;
     else for(unsigned i=0;i<4;++i){float value=(float[]){dx,dy,zoom,angle}[i];pending[i]=fmaxf(-4,fminf(4,pending[i]+value));}
     pthread_mutex_unlock(&input_mutex);return 1;
@@ -430,7 +431,8 @@ static float visual_bottom(uint64_t node,unsigned depth,unsigned *budget);
 static float visual_extent(uint64_t node,unsigned depth,unsigned *budget){
     uint64_t type=rd64(node);unsigned flags=rd32(node+0x1e0);float own=rdss(node+0x104);
     if(!isfinite(own)||own<0||own>2000)own=0;
-    unsigned leaf=type==GVA(0x141DED7D8)||type==GVA(0x141D796F8)||type==GVA(0x141DE15E0)||type==GVA(0x1420C25C8)||(flags&0x4000000u);
+    // A clipping scroll pane draws its own box: its (larger-font) entries scroll and must not shrink the tab.
+    unsigned leaf=type==GVA(0x141DA74C8)||type==GVA(0x141DED7D8)||type==GVA(0x141D796F8)||type==GVA(0x141DE15E0)||type==GVA(0x1420C25C8)||(flags&0x4000000u);
     if(leaf||!rd64(node+0x220)||depth>=8)return own;
     unsigned layout=type==GVA(0x141D78A60)||type==GVA(0x141DE0A48)||type==GVA(0x141EDFC48)||type==GVA(0x141EDF7C8);
     return fmaxf(layout?0:own,visual_bottom(node,depth+1,budget));
@@ -648,6 +650,9 @@ static float mobile_text_ink(uint64_t text){
     return isfinite(ink)&&ink>0?ink:0;
 }
 
+#define FP_UI_ROW_01 1
+static unsigned ui_row_applied(uint64_t node,unsigned row);
+
 static void technology_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budget,float width,float height){
     if(!node||depth>32||!*budget)return;
     --*budget;
@@ -655,7 +660,11 @@ static void technology_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *
     uint64_t parent=rd64(node+0x230);const char *parent_name=parent?law_photo_name(parent):NULL;
     if(name){
         if(!strcmp(name,"TECH_ENTRY"))technology_focus(cpu,node,width,height);
-        if(!strcmp(name,"TECH_NAME"))phone_text_size(cpu,node,12);
+        if(!strcmp(name,"TECH_NAME")
+#if FP_UI_ROW_01
+           &&!ui_row_applied(node,1)
+#endif
+        )phone_text_size(cpu,node,12);
         if(!strcmp(name,"ornaments")&&parent_name&&!strcmp(parent_name,"top")&&law_photo_ancestor(node,"EXT_TECHNOLOGY_PANEL"))
             mobile_decoration_visible(cpu,node,applied_scale<=100);  /* desktop swirls run through the left-aligned title */
         if(applied_scale<=100){law_photo_restore(cpu,node);technology_restore(cpu,node);}
@@ -969,6 +978,534 @@ static void mobile_issue_count(CPU *cpu,uint64_t label){
     layout_position(cpu,label,base->x,y);
 }
 
+/* Scout diary entries (EXT_DIARY_DISPLAY DIARY_TEXT, 12 units; the world-map "Read diary" journal
+ * DILLEMA_DESCRIPTION_TEXT, 13) sit in panels fitted to the phone height and were unreadable.  They
+ * scroll in a clipping pane, so a larger font only adds lines.  Plain size (not phone_text_fit: its
+ * one-line shrink undoes this for a box whose wrap limit +0x384 is 0). */
+static void diary_text_fit(CPU *cpu,uint64_t node){
+    static int diary_logged;
+    if(diary_logged<4){diary_logged++;fprintf(stderr,"FP_DIARY node=%s size=%.1f scale=%u\n",
+        (const char*)(uintptr_t)rd64(node+0x1d8),rdss(node+0x3a0),(unsigned)applied_scale);}
+    uint64_t parent=rd64(node+0x230);
+    phone_text_size(cpu,node,20);
+    law_photo_saved *saved=law_photo_remember(node);
+    if(saved){
+        float measured=mobile_message_height(node);
+        if(applied_scale<=100)law_photo_restore(cpu,node);
+        else if(measured>0&&fabsf(rdss(node+0x214)-measured)>.5f){
+            law_photo_size(cpu,node,rdss(node+0x210),measured);
+            if(parent&&rd64(parent)==GVA(0x141DE0A48))call_value(cpu,UINT64_C(0x141096AE0),parent,0);
+        }
+    }
+}
+
+
+/* Survey rows can be compiled out independently. The property selects additional proposal rows
+ * while retaining the approved font rows, except for the explicit pre-survey baseline "none". */
+#define FP_UI_ROW_02 1
+#define FP_UI_ROW_03 1
+#define FP_UI_ROW_04 1
+#define FP_UI_ROW_05 1
+#define FP_UI_ROW_06 1
+#define FP_UI_ROW_07 1
+#define FP_UI_ROW_08 1
+#define FP_UI_ROW_09 1
+#define FP_UI_ROW_10 1
+#define FP_UI_ROW_11 1
+#define FP_UI_ROW_12 1
+#define FP_UI_ROW_13 1
+#define FP_UI_ROW_14 1
+#define FP_UI_ROW_15 1
+#define FP_UI_ROW_16 1
+#define FP_UI_ROW_17 1
+#define FP_UI_ROW_18 1
+
+#define UI_ROW_BIT(n) (1u << ((n)-1))
+enum {
+    UI_ROWS_ALL=(1u<<18)-1,
+    UI_ROWS_DEFAULT=UI_ROWS_ALL
+};
+
+static unsigned ui_rows_parse(const char *value){
+    if(!value||!*value)return UI_ROWS_DEFAULT;
+    while(*value==' '||*value=='	')++value;
+    const char *end=value+strlen(value);
+    while(end>value&&(end[-1]==' '||end[-1]=='	'))--end;
+    if(end-value==4&&!memcmp(value,"none",4))return 0;
+    if(end-value==3&&!memcmp(value,"all",3))return UI_ROWS_ALL;
+    unsigned rows=UI_ROWS_DEFAULT;
+    while(value<end){
+        const char *next=value;
+        while(next<end&&*next!=',')++next;
+        const char *p=value;
+        while(p<next&&(*p==' '||*p=='	'))++p;
+        unsigned row=0;
+        while(p<next&&*p>='0'&&*p<='9'&&row<=18)row=row*10+(*p++-'0');
+        while(p<next&&(*p==' '||*p=='	'))++p;
+        if(p==next&&row>=1&&row<=18)rows|=UI_ROW_BIT(row);
+        value=next<end?next+1:end;
+    }
+    return rows;
+}
+
+static unsigned ui_rows_enabled(void){
+    static unsigned initialized,rows;
+    static uint64_t checked;
+    uint64_t now=monotonic_ns();
+    if(!initialized||now-checked>=UINT64_C(2000000000)){
+#ifdef __ANDROID__
+        char property[PROP_VALUE_MAX]={0};
+        __system_property_get("debug.fp.ui_rows",property);
+        rows=ui_rows_parse(property);
+#else
+        rows=ui_rows_parse(getenv("debug.fp.ui_rows"));
+#endif
+        initialized=1;checked=now;
+    }
+    return rows;
+}
+
+enum { ROW_SIZE, ROW_FIT, ROW_WRAP, ROW_GROW, ROW_FIT_BOX, ROW_FIT_GROW };
+typedef struct {
+    float width,height,size,wrap,wrap_height;
+    unsigned limit,active,row;
+    float applied_width,applied_height,applied_size,after_width,after_height;
+    float target_width,slot_height;
+    uint64_t string;
+    float shift,written_y,padding,written_padding;
+    unsigned shifted,padded;
+} ui_row_saved;
+static ui_row_saved ui_row_nodes[4096];
+static ui_index_slot ui_row_index[8192];
+static unsigned ui_row_count,ui_row_logged,ui_row_touched;
+
+static ui_row_saved *ui_row_remember(uint64_t node,unsigned create){
+    uint32_t id=rd32(node+0x1e4);
+    int i=ui_index_find(ui_row_index,8191,node,id);
+    if(i>=0)return &ui_row_nodes[i];
+    if(!create||ui_row_count==4096)return NULL;
+    i=(int)ui_row_count++;
+    ui_index_add(ui_row_index,8191,node,id,i);
+    return &ui_row_nodes[i];
+}
+
+static unsigned ui_row_applied(uint64_t node,unsigned row){
+    if(!(ui_rows_enabled()&UI_ROW_BIT(row)))return 0;
+    ui_row_saved *saved=ui_row_remember(node,0);
+    return saved&&saved->active&&saved->row==row;
+}
+
+static void ui_row_layout(CPU *cpu,uint64_t node){
+    unsigned count=0;
+    for(;node&&count++<12;node=rd64(node+0x230)){
+        uint64_t type=rd64(node);
+        if(type==GVA(0x141DA74C8))break;
+        if(type==GVA(0x141DE0A48))call_value(cpu,UINT64_C(0x141096AE0),node,0);
+    }
+}
+
+/* Resize only the known repeated row (whose parent is a native flow). Let its containing layouts
+ * recompute pitch and any existing scroll range from the resulting geometry. */
+static float ui_row_resize(CPU *cpu,uint64_t node,unsigned enabled,float width,float height){
+    if(!node)return 0;
+    ui_row_saved *base=ui_row_remember(node,enabled);
+    if(!base||(!base->active&&!enabled))return 0;
+    float w=rdss(node+0x210),h=rdss(node+0x214);
+    if(!base->active||fabsf(w-base->applied_width)>.01f)base->width=w;
+    if(!base->active||fabsf(h-base->applied_height)>.01f)base->height=h;
+    float target_w=enabled?fmaxf(base->width,width):base->width;
+    float target_h=enabled?fmaxf(base->height,height):base->height;
+    if(fabsf(w-target_w)>.01f||fabsf(h-target_h)>.01f){
+        law_photo_size(cpu,node,target_w,target_h);
+        ui_row_layout(cpu,rd64(node+0x230));
+    }
+    base->applied_width=target_w;base->applied_height=target_h;base->active=enabled;
+    return target_h-base->height;
+}
+
+#if FP_UI_ROW_04 || FP_UI_ROW_08
+static void ui_row_shift_y(CPU *cpu,uint64_t node,float shift){
+    ui_row_saved *base=ui_row_remember(node,shift!=0);
+    if(!base)return;
+    float current=rdss(node+0xc4);
+    float home=base->shifted&&fabsf(current-base->written_y)<.01f?current-base->shift:current;
+    float target=home+shift;
+    if(fabsf(current-target)>.01f)layout_position(cpu,node,rdss(node+0xc0),target);
+    base->written_y=target;base->shift=shift;base->shifted=shift!=0;
+}
+#endif
+
+static void ui_row_rebuild(CPU *cpu,uint64_t node,float size,float wrap,float height,unsigned limit){
+    if(fabsf(size-rdss(node+0x3a0))<.01f&&fabsf(wrap-rdss(node+0x37c))<.01f
+        &&fabsf(height-rdss(node+0x380))<.01f&&limit==rd8(node+0x384))return;
+    call_value(cpu,UINT64_C(0x140FB3C50),node,0);
+    wrss(node+0x3a0,size);
+    wrss(node+0x37c,wrap);wrss(node+0x380,height);wr8(node+0x384,limit);
+    call_value(cpu,UINT64_C(0x140FB4090),node,0);
+}
+
+/* +0x4d0/+0x4d4 are native measured ink extents. For fixed regions fit within the authored
+ * allocation, stepping down only to the original font. For scroll/flow entries use the measured
+ * height, leaving the viewport and its native input handlers in place. */
+static float ui_row_text(CPU *cpu,uint64_t node,unsigned row,unsigned enabled,float minimum,
+                        unsigned mode,float extra_width,float slot_height){
+    if(rd8(node+0x40e))return -1;
+    float old=rdss(node+0x3a0),w=rdss(node+0x210),h=rdss(node+0x214);
+    if(!(old>0&&old<200&&w>0&&w<2200&&h>0&&h<1600))return -1;
+    ui_row_saved *base=ui_row_remember(node,enabled);
+    if(!base||(!enabled&&!base->active))return -1;
+    if(!base->active){
+        base->size=old;base->width=w;base->height=h;
+        base->wrap=rdss(node+0x37c);base->wrap_height=rdss(node+0x380);base->limit=rd8(node+0x384);
+    }else{
+        if(fabsf(old-base->applied_size)>.01f)base->size=old;
+        if(fabsf(w-base->applied_width)>.01f)base->width=w;
+        if(fabsf(h-base->applied_height)>.01f)base->height=h;
+    }
+    float width=base->width,height=base->height,size=base->size;
+    float wrap=base->wrap,wrap_height=base->wrap_height;
+    unsigned limit=base->limit;
+    if(enabled){
+        ui_row_touched|=UI_ROW_BIT(row);
+        size=fmaxf(minimum,size);
+        if(mode==ROW_WRAP||mode==ROW_GROW){
+            width=extra_width<0?fmaxf(width,-extra_width):width+extra_width;
+            wrap=width;wrap_height=0;limit=1;
+        }
+        float cap=slot_height>0?fmaxf(height,slot_height):height;
+        float ink=rdss(node+0x4d0),measured=rdss(node+0x4d4);
+        uint64_t string=rd64(node+0x3e8);
+        /* Native text updates can change content on the same node. Reuse a fit only while both
+         * its string and measured dimensions, and our font/wrap/slot, still match. */
+        unsigned cached=base->active&&old==base->applied_size&&wrap==rdss(node+0x37c)
+            &&limit==rd8(node+0x384)&&width==base->target_width&&cap==base->slot_height
+            &&string==base->string&&ink==base->after_width&&measured==base->after_height;
+        if(cached)size=old;
+        ui_row_rebuild(cpu,node,size,wrap,wrap_height,limit);
+        if(!cached&&(mode==ROW_FIT||mode==ROW_FIT_GROW)&&!limit){
+            /* Match phone_text_fit's one-line shrink using the survey baseline. */
+            ink=rdss(node+0x4d0);
+            if(isfinite(ink)&&ink>width*1.02f){
+                size=fmaxf(base->size,floorf(size*width/ink*4)/4);
+                ui_row_rebuild(cpu,node,size,wrap,wrap_height,limit);
+            }
+        }
+        if(!cached&&(mode==ROW_WRAP||mode==ROW_FIT_BOX)){
+            /* Search discrete font units. Line breaks change discontinuously as the font shrinks. */
+            while(size>base->size){
+                ink=rdss(node+0x4d0);measured=rdss(node+0x4d4);
+                float available=mode==ROW_FIT_BOX?fmaxf(1,width-4):width*1.02f;
+                if((!isfinite(ink)||ink<=available)&&(!isfinite(measured)||measured<=cap+.5f))break;
+                size=fmaxf(base->size,size-1);
+                ui_row_rebuild(cpu,node,size,wrap,wrap_height,limit);
+            }
+        }
+        measured=rdss(node+0x4d4);
+        if(isfinite(measured)&&measured>0&&measured<1600){
+            if(mode==ROW_GROW||mode==ROW_FIT_GROW)height=fmaxf(height,ceilf(measured));
+            if(mode==ROW_WRAP)height=fminf(cap,fmaxf(height,ceilf(measured)));
+        }
+        base->target_width=width;base->slot_height=cap;base->string=string;
+        base->after_width=rdss(node+0x4d0);base->after_height=measured;
+    }else ui_row_rebuild(cpu,node,size,wrap,wrap_height,limit);
+    if(fabsf(rdss(node+0x210)-width)>.01f||fabsf(rdss(node+0x214)-height)>.01f){
+        law_photo_size(cpu,node,width,height);
+        ui_row_layout(cpu,rd64(node+0x230));
+    }
+    if(enabled&&(size!=base->size||height!=base->height||width!=base->width)&&!(ui_row_logged&UI_ROW_BIT(row))){
+        const char *name=law_photo_name(node);
+        ui_row_logged|=UI_ROW_BIT(row);
+        fprintf(stderr,"FP_UIROW row=%02u node=%s size=%g->%g h=%g->%g\n",
+                row,name&&*name?name:"<unnamed>",base->size,size,base->height,height);
+    }
+    base->applied_width=width;base->applied_height=height;base->applied_size=size;base->active=enabled;base->row=row;
+    return height;
+}
+
+static unsigned ui_row_panel(const char *name){
+    if(!name||strncmp(name,"EXT_",4))return 0;
+    if(!strcmp(name,"EXT_TECHNOLOGY_PANEL"))return UI_ROW_BIT(1)|UI_ROW_BIT(5);
+    if(!strcmp(name,"EXT_TAB_GENERATOR"))return UI_ROW_BIT(2);
+    if(!strcmp(name,"EXT_EXPEDITION_BUILDING_PANEL"))return UI_ROW_BIT(3);
+    if(!strcmp(name,"EXT_WORLD_MAP_SELECTION_PANEL"))return UI_ROW_BIT(4);
+    if(!strcmp(name,"EXT_SOCIOTECH_PANEL"))return UI_ROW_BIT(6)|UI_ROW_BIT(10);
+    if(!strcmp(name,"EXT_TAB_TECHNOLOGY_RESEARCH")||!strcmp(name,"EXT_EMPLOYMENT_MANAGEMENT"))return UI_ROW_BIT(7);
+    if(!strcmp(name,"EXT_QUEST_PANEL"))return UI_ROW_BIT(8);
+    if(!strcmp(name,"EXT_DILEMMA_EXPEDITION_PANEL"))return UI_ROW_BIT(9);
+    if(!strcmp(name,"EXT_DILEMMA_SMALL_PANEL"))return UI_ROW_BIT(11);
+    if(!strcmp(name,"EXT_HOPE_TOOLTIP"))return UI_ROW_BIT(12);
+    if(!strcmp(name,"EXT_TUTORIAL_SUMMARY_PANEL"))return UI_ROW_BIT(13);
+    if(!strcmp(name,"EXT_WORKERS_DETAILS"))return UI_ROW_BIT(14);
+    if(!strcmp(name,"EXT_NEWSFLASH_NOTIFICATION_PANEL"))return UI_ROW_BIT(15);
+    if(!strcmp(name,"EXT_SIMPLE_TOOLTIP"))return UI_ROW_BIT(16);
+    if(!strcmp(name,"EXT_MESSAGE_SCOUTS_PANEL"))return UI_ROW_BIT(17);
+    if(!strcmp(name,"EXT_INGAME_MENU_SETTINGS_PANEL"))return UI_ROW_BIT(18);
+    return 0;
+}
+
+#define ROW_HAS(n) (scope&UI_ROW_BIT(n))
+#define ROW_ON(n) (enabled&UI_ROW_BIT(n))
+#define ROW_TEXT(n,size,mode,w,h) ui_row_text(cpu,node,n,ROW_ON(n),size,mode,w,h)
+#define ROW_NAME(value) (!strcmp(name,value))
+#define ROW_PARENT(value) (parent_name&&!strcmp(parent_name,value))
+#define ROW_IN(value) law_photo_ancestor(parent,value)
+
+static void ui_row_apply_text(CPU *cpu,uint64_t node,const char *name,unsigned scope,unsigned enabled){
+    uint64_t type=rd64(node);
+    if(type!=GVA(0x141DED7D8)&&type!=GVA(0x141DAD740))return;
+    uint64_t parent=rd64(node+0x230);
+    const char *parent_name=parent?law_photo_name(parent):NULL;
+#if FP_UI_ROW_07
+    if(ROW_HAS(7)&&ROW_NAME("SEPARATOR_TEXT")&&type==GVA(0x141DAD740)&&ROW_IN("EXT_EMPLOYMENT_MANAGEMENT"))
+        ROW_TEXT(7,14,ROW_SIZE,0,0);
+#endif
+    if(type!=GVA(0x141DED7D8))return;
+#if FP_UI_ROW_01
+    if(ROW_HAS(1)&&ROW_NAME("TECH_NAME")&&ROW_IN("TECHTREE"))
+        ROW_TEXT(1,23,ROW_WRAP,12,36);
+#endif
+#if FP_UI_ROW_02
+    if(ROW_HAS(2)&&ROW_NAME("temperature_overlay_tag")&&ROW_PARENT("TEMPERATURE_OVERLAY_BUTTON"))
+        ROW_TEXT(2,20,ROW_WRAP,0,0);
+    if(ROW_HAS(2)&&ROW_NAME("TEXT_GENERATOR_UPKEEP"))
+        ROW_TEXT(2,19,ROW_WRAP,0,0);
+#endif
+#if FP_UI_ROW_03
+    if(ROW_HAS(3)&&ROW_NAME("LOCATION_TEXT")&&ROW_IN("UNITS_SCROLL_PANE"))
+        ROW_TEXT(3,17,ROW_WRAP,0,22);
+    if(ROW_HAS(3)&&ROW_NAME("Text")&&ROW_PARENT("Idle")&&ROW_IN("button")&&ROW_IN("UNITS_SCROLL_PANE"))
+        ROW_TEXT(3,17,ROW_FIT_BOX,0,0);
+#endif
+#if FP_UI_ROW_05
+    if(ROW_HAS(5)&&ROW_NAME("TECH_DESCRIPTION")&&ROW_IN("DETAILS_WINDOW"))
+        ROW_TEXT(5,20,ROW_GROW,32,0);
+    if(ROW_HAS(5)&&ROW_NAME("COUNT")&&ROW_PARENT("ITEM")&&ROW_IN("COSTS_LAYOUT")&&ROW_IN("DETAILS_WINDOW")){
+        ROW_TEXT(5,18,ROW_FIT,0,0);
+        ui_row_resize(cpu,parent,ROW_ON(5),54,23);
+    }
+#endif
+#if FP_UI_ROW_06
+    if(ROW_HAS(6)&&ROW_NAME("TECH_DESCRIPTION_TEXT")&&ROW_IN("INFO_PANEL"))
+        ROW_TEXT(6,21,ROW_WRAP,0,0);
+    if(ROW_HAS(6)&&ROW_NAME("TEXT")&&(ROW_PARENT("POSITIVE_EFFECT_ENTRY")||ROW_PARENT("NEGATIVE_EFFECT_ENTRY"))&&ROW_IN("INFO_PANEL")){
+        float height=ROW_TEXT(6,19,ROW_GROW,0,0);
+        if(!ROW_ON(6)||height>0)ui_row_resize(cpu,parent,ROW_ON(6),0,height);
+    }
+#endif
+#if FP_UI_ROW_07
+    if(ROW_HAS(7)&&ROW_NAME("TECHNOLOGY_DESCRIPTION_TEXT")&&ROW_IN("EXT_TAB_TECHNOLOGY_RESEARCH"))
+        ROW_TEXT(7,17,ROW_GROW,0,0);
+#endif
+#if FP_UI_ROW_08
+    if(ROW_HAS(8)&&ROW_NAME("TEXT")&&ROW_PARENT("OBJECTIVE_PANEL")){
+        float height=ROW_TEXT(8,17,ROW_GROW,0,0);
+        float bottom=rdss(node+0xc4)+(rdss(node+0xd4)+height)*rdss(node+0xf4);
+        if(!ROW_ON(8)||height>0)ui_row_resize(cpu,parent,ROW_ON(8),0,bottom+4);
+    }
+#endif
+#if FP_UI_ROW_09
+    if(ROW_HAS(9)&&ROW_NAME("DESCRIPTION_TEXT")){
+        if(ROW_PARENT("DESCRIPTION_LAYOUT")&&ROW_IN("DILEMMA_MAIN_SCREEN"))
+            ROW_TEXT(9,22,ROW_WRAP,64,170);
+        else if(ROW_IN("DILEMMA_SECOND_SCREEN"))
+            ROW_TEXT(9,22,ROW_WRAP,44,0);
+    }
+#endif
+#if FP_UI_ROW_10
+    if(ROW_HAS(10)&&ROW_NAME("TECH_NAME")&&ROW_IN("SOCIOTECHTREE"))
+        ROW_TEXT(10,27,ROW_WRAP,0,0);
+#endif
+#if FP_UI_ROW_11
+    if(ROW_HAS(11)&&ROW_NAME("DESCRIPTION_TEXT")&&ROW_PARENT("DESCRIPTION_LAYOUT"))
+        ROW_TEXT(11,17,ROW_WRAP,0,48);
+#endif
+#if FP_UI_ROW_12
+    if(ROW_HAS(12)&&ROW_NAME("TEXT")&&ROW_PARENT("TEXTS_LAYOUT")
+        &&(ROW_IN("PERMANENT_BONUSES_LAYOUT")||ROW_IN("TEMPORARY_BONUSES_LAYOUT")))
+        ROW_TEXT(12,17,ROW_GROW,-260,0);
+#endif
+#if FP_UI_ROW_13
+    if(ROW_HAS(13)&&ROW_NAME("title")&&ROW_PARENT("TEXT")&&ROW_IN("CUSTOM_HEATZONE"))
+        ROW_TEXT(13,17,ROW_FIT_BOX,0,0);
+    if(ROW_HAS(13)&&ROW_NAME("DESCRIPTION_TEXT")&&ROW_IN("DESCRIPTION_SCROLL_PANE"))
+        ROW_TEXT(13,32,ROW_GROW,0,0);
+#endif
+#if FP_UI_ROW_14
+    if(ROW_HAS(14)&&!*name&&ROW_IN("background")&&ROW_IN("TABLE"))
+        ROW_TEXT(14,15,ROW_WRAP,0,0);
+#endif
+#if FP_UI_ROW_15
+    if(ROW_HAS(15)&&ROW_NAME("NOTIFICATION_TEXT"))ROW_TEXT(15,17,ROW_FIT,0,0);
+#endif
+#if FP_UI_ROW_16
+    if(ROW_HAS(16)&&ROW_NAME("TEXT")&&ROW_PARENT("EXT_SIMPLE_TOOLTIP"))
+        ROW_TEXT(16,13,ROW_SIZE,0,0);
+#endif
+#if FP_UI_ROW_17
+    if(ROW_HAS(17)&&ROW_NAME("what_journey_has_geven_txt"))ROW_TEXT(17,27,ROW_FIT,0,0);
+#endif
+#if FP_UI_ROW_18
+    if(ROW_HAS(18)&&(ROW_NAME("SETTING_SLOT_TEXT")||ROW_NAME("VALUE_TEXT"))&&ROW_IN("SETTINGS_SCROLL_PANE")){
+        ROW_TEXT(18,14,ROW_WRAP,0,30);
+        uint64_t slot=ROW_IN("SETTINGS_SELECTOR");
+        if(!slot)slot=ROW_IN("SETTINGS_SELECTOR_ADDITIONAL");
+        if(!slot)slot=ROW_IN("SETTINGS_MUTE");
+        if(!slot)slot=ROW_IN("SETTINGS_LANGUAGE_SELECTOR");
+        ui_row_resize(cpu,slot,ROW_ON(18),0,34);
+    }
+#endif
+}
+#undef ROW_HAS
+#undef ROW_ON
+#undef ROW_TEXT
+#undef ROW_NAME
+#undef ROW_PARENT
+#undef ROW_IN
+
+#if FP_UI_ROW_04
+static void ui_row_site_padding(CPU *cpu,uint64_t node,float extra){
+    if(rd64(node)!=GVA(0x141DE0A48))return;
+    ui_row_saved *base=ui_row_remember(node,extra>0);
+    if(!base)return;
+    float current=rdss(node+0x28c);
+    if(!base->padded||fabsf(current-base->written_padding)>.01f)base->padding=current;
+    float target=base->padding+extra;
+    if(fabsf(current-target)>.01f){
+        wrss(node+0x28c,target);
+        ui_row_layout(cpu,node);
+    }
+    base->written_padding=target;base->padded=extra>0;
+}
+
+static void ui_row_site_results(CPU *cpu,uint64_t site,unsigned enabled){
+    uint64_t prose=law_photo_child(site,"TEXT_DESCRIPTION_CONTAINER");
+    uint64_t text=prose?law_photo_child(prose,"TEXT_DESCRIPTION"):0;
+    uint64_t rewards=law_photo_child(site,"VISITED_PANEL");
+    uint64_t frame=rewards?law_photo_child(rewards,"resources_frame"):0;
+    uint64_t caption=frame?law_photo_child(frame,"what_journey_will_give_txt"):0;
+    if(text&&rd64(text)==GVA(0x141DED7D8))
+        ui_row_text(cpu,text,4,enabled,23,ROW_WRAP,32,156);
+    float extra=0;
+    if(caption&&rd64(caption)==GVA(0x141DED7D8)){
+        unsigned show=enabled&&ui_visible_chain(caption)&&rdss(caption+0x4d0)>0;
+        float height=ui_row_text(cpu,caption,4,show,24,ROW_FIT_GROW,0,0);
+        float shift=0;
+        if(show&&height>0){
+            ui_row_saved *base=ui_row_remember(caption,0);
+            float y=rdss(caption+0xc4);
+            if(base&&base->shifted&&fabsf(y-base->written_y)<.01f)y-=base->shift;
+            // The upper border art reaches y=-22. Keep the entire caption above it.
+            float bottom=y+(rdss(caption+0xd4)+height)*rdss(caption+0xf4);
+            shift=fminf(0,-24-bottom);
+            // The reserved space is part of the description flow, so the game moves VISITED_PANEL.
+            extra=ceilf(fmaxf(0,-(rdss(frame+0xc4)+y+shift)+4));
+        }
+        ui_row_shift_y(cpu,caption,shift);
+    }
+    if(prose)ui_row_site_padding(cpu,prose,extra);
+}
+#endif
+
+#if FP_UI_ROW_08
+static uint64_t ui_find_named(uint64_t node,const char *want,unsigned depth,unsigned *budget);
+
+static void ui_row_quest_stack(CPU *cpu,uint64_t stack,unsigned enabled){
+    float added=0;
+    unsigned count=0;
+    for(uint64_t card=rd64(stack+0x220);card&&count++<64;card=rd64(card+0x240)){
+        if(rd32(card+0x1e0)&2)continue;
+        unsigned budget=120;
+        uint64_t objectives=ui_find_named(card,"OBJECTIVES",0,&budget);
+        float grow=0;
+        if(enabled&&objectives){
+            unsigned rows=0;
+            for(uint64_t entry=rd64(objectives+0x220);entry&&rows++<64;entry=rd64(entry+0x240)){
+                if(rd32(entry+0x1e0)&2)continue;
+                ui_row_saved *base=ui_row_remember(entry,0);
+                if(base&&base->active)grow+=fmaxf(0,base->applied_height-base->height)*rdss(entry+0xf4);
+            }
+        }
+        ui_row_saved *base=ui_row_remember(card,0);
+        float home=rdss(card+0x214);
+        if(base&&base->active&&fabsf(home-base->applied_height)<.01f)home=base->height;
+        if(objectives||base)ui_row_resize(cpu,card,enabled&&grow>0,0,home+grow);
+        // Child offsets absorb preceding growth. Lift the entire bottom-docked stack by the total.
+        ui_row_shift_y(cpu,card,added);
+        added+=grow*rdss(card+0xf4);
+    }
+    ui_row_shift_y(cpu,stack,-added*rdss(stack+0xf4));
+}
+#endif
+
+#if FP_UI_ROW_12
+static void ui_row_hope_clamp(CPU *cpu,uint64_t node,unsigned enabled){
+    /* The tooltip follows its anchor. Keep native changes to the position and scale. */
+    static uint64_t last;
+    static uint32_t id;
+    static float offset,written,base_x,base_y,applied_x,applied_y;
+    uint32_t current_id=rd32(node+0x1e4);
+    unsigned ours=last==node&&id==current_id;
+    if(!enabled&&!ours)return;
+    float y=rdss(node+0xc4),home=y;
+    float local_x=rdss(node+0xf0),local_y=rdss(node+0xf4);
+    if(ours&&fabsf(y-written)<.01f)home-=offset;
+    if(!ours||fabsf(local_x-applied_x)>.0001f)base_x=local_x;
+    if(!ours||fabsf(local_y-applied_y)>.0001f)base_y=local_y;
+    float x0,y0,sx,sy,shift=0;
+    parent_transform(node,&x0,&y0,&sx,&sy);
+    float factor=1;
+    if(enabled&&sy>0&&base_x>0&&base_y>0){
+        unsigned budget=250;
+        float bottom=fmaxf(rdss(node+0x104),visual_bottom(node,0,&budget));
+        float height=rdss(GVA(0x142980E64));
+        float span=bottom*base_y*sy;
+        if(height>8&&span>height-8)factor=(height-8)/span;
+        float top=y0+(home+rdss(node+0xd4)*base_y*factor)*sy;
+        shift=fmaxf(4-top,fminf(0,height-4-top-span*factor))/sy;
+    }
+    applied_x=base_x*factor;applied_y=base_y*factor;
+    layout_scale(cpu,node,applied_x,applied_y);
+    if(fabsf(home+shift-y)>.01f)layout_position(cpu,node,rdss(node+0xc0),home+shift);
+    last=enabled?node:0;id=current_id;offset=shift;written=home+shift;
+}
+#endif
+
+static void ui_rows_walk(CPU *cpu,uint64_t node,unsigned scope,unsigned enabled,unsigned depth,unsigned *budget){
+    if(!node||depth>32||!*budget||(rd32(node+0x1e0)&2))return;
+    --*budget;
+    const char *name=law_photo_name(node);
+    unsigned panel=ui_row_panel(name);
+    scope|=panel;
+    unsigned applicable=scope&(enabled|ui_row_touched);
+    if(applicable)ui_row_apply_text(cpu,node,name?name:"",applicable,enabled);
+    unsigned count=0;
+    for(uint64_t child=rd64(node+0x220);child&&count++<512;child=rd64(child+0x240))
+        ui_rows_walk(cpu,child,scope,enabled,depth+1,budget);
+#if FP_UI_ROW_04
+    if((applicable&UI_ROW_BIT(4))&&name&&!strcmp(name,"SITE_ELEMENTS")
+       &&law_photo_ancestor(node,"EXPEDITION_SITE_SUBPANEL"))
+        ui_row_site_results(cpu,node,enabled&UI_ROW_BIT(4));
+#endif
+#if FP_UI_ROW_08
+    if((applicable&UI_ROW_BIT(8))&&name&&!strcmp(name,"QUESTS"))
+        ui_row_quest_stack(cpu,node,enabled&UI_ROW_BIT(8));
+#endif
+#if FP_UI_ROW_12
+    if(panel==UI_ROW_BIT(12))ui_row_hope_clamp(cpu,node,enabled&UI_ROW_BIT(12));
+#endif
+}
+
+static uint64_t ui_find_named(uint64_t node,const char *want,unsigned depth,unsigned *budget){
+    if(!node||depth>24||!*budget)return 0;
+    --*budget;
+    const char *name=(const char*)(uintptr_t)rd64(node+0x1d8);
+    if(name&&!strcmp(name,want))return node;
+    unsigned count=0;
+    for(uint64_t child=rd64(node+0x220);child&&count++<512;child=rd64(child+0x240)){
+        uint64_t hit=ui_find_named(child,want,depth+1,budget);if(hit)return hit;}
+    return 0;
+}
+
 static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budget,float width,float height){
     if(!node||depth>32||!*budget)return;
     --*budget;
@@ -1117,7 +1654,12 @@ static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budg
         // Tutorial pages stay a fitted PC dialog (scale 0.5); their paragraphs live in a scroll pane, so a
         // larger font only adds lines.  Section tabs and headers keep their authored size.
         // Only the paragraph: the clock label belongs to the illustration and the footer has a one-line frame.
-        if(name&&!strcmp(name,"DESCRIPTION_TEXT")&&law_photo_ancestor(node,"EXT_TUTORIAL_SUMMARY_PANEL")){
+        if(name&&!strcmp(name,"DESCRIPTION_TEXT")&&law_photo_ancestor(node,"EXT_TUTORIAL_SUMMARY_PANEL")
+#if FP_UI_ROW_13
+           // Skip the old paragraph pass only after row 13 has taken ownership of this tutorial node.
+           &&!ui_row_applied(node,13)
+#endif
+        ){
             phone_text_fit(cpu,node,23);
             // The paragraph's box keeps its authored 60-unit height; give the flow the measured height so
             // the pictures below move down instead of being overwritten.
@@ -1132,6 +1674,11 @@ static void dialog_contents(CPU *cpu,uint64_t node,unsigned depth,unsigned *budg
             }
         }
     }
+    /* The selection panel is fitted to the screen height, so the authored 12-unit scout diary entries were
+     * unreadable on phones.  They scroll in a clipping pane, so a larger font only adds lines.  Plain size
+     * (not phone_text_fit: its one-line shrink undoes this for a box whose wrap limit +0x384 is 0). */
+    if(rd64(node)==GVA(0x141DED7D8)&&name&&!strcmp(name,"DIARY_TEXT")&&law_photo_ancestor(node,"EXT_DIARY_DISPLAY"))
+        diary_text_fit(cpu,node);
     unsigned count=0;
     for(uint64_t child=rd64(node+0x220);child&&count++<512;child=rd64(child+0x240))
         dialog_contents(cpu,child,depth+1,budget,width,height);
@@ -1379,6 +1926,9 @@ static void selection_tab_fit(CPU *cpu,uint64_t node){
  * buttons) below a phone screen.  Lift it until its content fits under the top bar. */
 static struct {uint64_t node;uint32_t id;float written,shift;} world_site;
 static void world_site_fit(CPU *cpu,uint64_t node,float height){
+    {   unsigned budget=800;uint64_t journal=ui_find_named(node,"EXPLORED_JOURNAL_PANEL",0,&budget);
+        uint64_t text=journal?(budget=200,ui_find_named(journal,"DILLEMA_DESCRIPTION_TEXT",0,&budget)):0;
+        if(text&&rd64(text)==GVA(0x141DED7D8))diary_text_fit(cpu,text);}
     float y=rdss(node+0xc4);uint32_t id=rd32(node+0x1e4);
     unsigned ours=world_site.node==node&&world_site.id==id&&fabsf(y-world_site.written)<.01f;
     if(ours)y-=world_site.shift;                 /* the engine's own position */
@@ -2089,6 +2639,11 @@ void fp_mobile_ui_before(CPU *cpu) {
     if(rd8(screen+0x2d5))return;
     unsigned budget=50000;
     ++ui_pass;
+    unsigned rows=ui_rows_enabled();
+    if(rows||ui_row_touched){
+        unsigned proposal_budget=24000;
+        ui_rows_walk(cpu,screen,0,rows,0,&proposal_budget);
+    }
     phone_hud_visibility(cpu,screen);
     switch_mode=frostpunk_switch_ui();
     atomic_store(&switch_available,switch_mode&&camera_available&&!building_available&&!road_available&&!phone_hud_covered&&!pause_menu_visible&&!atomic_load(&switch_modal_visible));
@@ -2495,7 +3050,44 @@ static uint64_t zoom_level_entry(CPU *cpu,uint64_t system,int index){
     if(!links||index<0||(uint32_t)index>=count||count>64)return 0;
     return call_result(cpu,UINT64_C(0x14124C6A0),links+16ull*(uint64_t)index);
 }
-static unsigned zoom_active,zoom_settling,zoom_quiet;static float zoom_z;
+static unsigned zoom_active,zoom_settling,zoom_quiet;static float zoom_z;static int zoom_settle_target;
+static int zoom_city_last;static unsigned ambience_logged;
+/* The game's ambience multiplier (141596CD0) follows its level index, which stays on the old level during
+ * the port's smooth pinch zoom and then jumps. Blend the two neighbouring levels' values (141596E20) by zoom_z. */
+void fp_mobile_ambience(CPU *c,void (*original)(CPU*)){
+    uint64_t blend=c->rcx;original(c);
+    uint64_t system=rd64(GVA(0x143FC0998));int city=zoom_city_last;
+    if(!zoom_active)ambience_logged=0;
+    if(!zoom_active||!blend||!system||rdss(system+0x228)>0||city<1)return;
+    int lower=(int)floorf(zoom_z);if(lower>city-1)lower=city-1;if(lower<0)lower=0;
+    int upper=lower+1<city?lower+1:lower;
+    float f=fminf(1,fmaxf(0,zoom_z-(float)lower));
+    uint64_t entry[2]={zoom_level_entry(c,system,lower),zoom_level_entry(c,system,upper)};
+    if(!entry[0]||!entry[1])return;
+    float value[2];
+    for(unsigned i=0;i<2;++i){
+        CPU t=*c;t.rsp=(t.rsp-512)&~UINT64_C(15);t.rcx=blend;t.rdx=entry[i];
+        push64(&t,UINT64_C(0xe5ee0010));dispatch(&t,UINT64_C(0x141596E20));
+        value[i]=t.xmm[0].f32[0];
+    }
+    float v=value[0]+(value[1]-value[0])*f,orig=c->xmm[0].f32[0];
+    if(!isfinite(v))return;
+    c->xmm[0].f32[0]=v;
+    static float last_logged;static unsigned long long last_time;
+    unsigned long long now=(unsigned long long)clock()*1000ull/CLOCKS_PER_SEC;
+    if(!ambience_logged||(fabsf(v-last_logged)>.05f&&now-last_time>250)){
+        ambience_logged=1;last_logged=v;last_time=now;
+        fprintf(stderr,"FP_AMBIENCE z=%.3f orig=%.3f value=%.3f\n",zoom_z,orig,v);
+    }
+}
+/* Transition durations of the zoom settings (rd64(S+0xB8): +0x08 normal, +0x40 distant, read by 141253DD0)
+ * held at 0.001 s for a few frames after a commit, because the camera update starts the transition again. */
+static const unsigned zoom_fast_offs[4]={0x00,0x08,0x34,0x40};
+static uint64_t zoom_fast_list;static uint32_t zoom_fast_saved[4];static unsigned zoom_fast_frames;
+static void zoom_fast_restore(void){
+    if(zoom_fast_list)for(unsigned i=0;i<4;++i)wr32(zoom_fast_list+zoom_fast_offs[i],zoom_fast_saved[i]);
+    zoom_fast_list=0;zoom_fast_frames=0;
+}
 static void zoom_apply(CPU *cpu,uint64_t system,uint64_t controller,float delta,unsigned settle,int city){
     int index=(int32_t)rd32(system+0x1F4);unsigned mode=rd32(controller+0xa0);
     if(city<1||index<0||index>=city||(mode!=0&&mode!=4)){
@@ -2517,19 +3109,45 @@ static void zoom_apply(CPU *cpu,uint64_t system,uint64_t controller,float delta,
     if(!zoom_active)return;
     if(settle&&!zoom_settling){
         int nearest=(int)lroundf(zoom_z);zoom_limit_out=0;
+        if(nearest<0)nearest=0;if(nearest>city-1)nearest=city-1;
         fprintf(stderr,"FP_ZOOM end z=%.3f level=%d->%d\n",zoom_z,index,nearest);
-        if(nearest!=index){
-            /* SetZoomLevel (1412537F0): the game's own transition from here to the level, with its
-             * level of detail, sound and bounds; the next touch frames wait for it (+0x228 > 0). */
-            CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=system;c.rdx=(uint64_t)(uint32_t)nearest;c.r8=1;
-            push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x1412537F0));
-            zoom_active=0;return;
-        }
-        zoom_settling=1;
+        zoom_settle_target=nearest;zoom_settling=1;
     }
     if(zoom_settling){
-        float target=(float)index;zoom_z+=(target-zoom_z)*.3f;
-        if(fabsf(target-zoom_z)<.005f){zoom_z=target;zoom_active=zoom_settling=0;}
+        float target=(float)zoom_settle_target;zoom_z+=(target-zoom_z)*.3f;
+        if(fabsf(target-zoom_z)<.005f){
+            zoom_z=target;
+            if(zoom_settle_target!=index){
+                /* Commit with SetZoomLevel (1412537F0: level of detail, sound, bounds). The camera is already
+                 * at the level, so its transition runs over ~1 ms and the touch frames never wait for it.
+                 * 141253DD0: [S+0xb8]+8 (+0x40 when 14124F090 is true, base +0x34) is both the 141C36060
+                 * duration (254070, xmm3=xmm6) and S+0x228 (254099). */
+                uint64_t list=rd64(system+0xb8);
+                if(zoom_fast_list&&zoom_fast_list!=list){zoom_fast_list=0;zoom_fast_frames=0;}
+                if(list&&!zoom_fast_list){
+                    zoom_fast_list=list;
+                    for(unsigned i=0;i<4;++i){
+                        zoom_fast_saved[i]=rd32(list+zoom_fast_offs[i]);float v;memcpy(&v,&zoom_fast_saved[i],4);
+                        if(isfinite(v)&&v>.001f&&v<60.f){float q=.001f;uint32_t w;memcpy(&w,&q,4);wr32(list+zoom_fast_offs[i],w);}
+                    }
+                }
+                if(zoom_fast_list)zoom_fast_frames=30;
+                float dv[4];memcpy(dv,zoom_fast_saved,16);
+                fprintf(stderr,"FP_ZOOM commit level=%d->%d sys_durations list+0x00=%.3f list+0x08=%.3f list+0x34=%.3f list+0x40=%.3f\n",
+                    index,zoom_settle_target,dv[0],dv[1],dv[2],dv[3]);
+                CPU c=*cpu;c.rsp=(c.rsp-512)&~UINT64_C(15);c.rcx=system;c.rdx=(uint64_t)(uint32_t)zoom_settle_target;c.r8=1;
+                push64(&c,UINT64_C(0xe5ee0010));dispatch(&c,UINT64_C(0x1412537F0));
+                fprintf(stderr,"FP_ZOOM commit_after transition=%.3f mode=%u\n",rdss(system+0x228),rd32(controller+0xa0));
+                /* A transition still running here blocks the touch camera (S+0x228 > 0, mode 9); end it the way
+                 * SetZoomLevel does before a new one (141253921: 14124DCD0). The view is already at the level. */
+                if(rdss(system+0x228)>.01f){
+                    CPU e=*cpu;e.rsp=(e.rsp-512)&~UINT64_C(15);e.rcx=system;
+                    push64(&e,UINT64_C(0xe5ee0010));dispatch(&e,UINT64_C(0x14124DCD0));
+                    fprintf(stderr,"FP_ZOOM commit_end transition=%.3f mode=%u\n",rdss(system+0x228),rd32(controller+0xa0));
+                }
+            }
+            zoom_active=zoom_settling=0;
+        }
     }
     int lower=(int)floorf(zoom_z);if(lower>city-1)lower=city-1;if(lower<0)lower=0;
     float f=fminf(1,fmaxf(0,zoom_z-(float)lower));
@@ -2574,8 +3192,14 @@ void fp_mobile_camera_before(CPU *cpu) {
     pthread_mutex_lock(&input_mutex);
     camera_available=available;
     uint64_t placement=rd64(GVA(0x143FF63E8));
-    building_available=placement&&rd64(placement)==GVA(0x142014120)&&rd32(placement+0x2068)>0;
     uint64_t painter=painters?rd64(painters+0x80):0;
+    /* +0x2068 counts every entity of the placement component system (generic component add/remove), not
+     * the building in the hand. Only a FrostpunkBuildingPainter holds one, and rotate_building turns only
+     * that one: without the painter check a stale count routes every 2-finger gesture to a dead building
+     * turn and pinch zoom/rotation stop (Java: (context&6)==4). The painter's cleanup (0x141AAA0D0) zeroes
+     * its preview entity (+0x20) but leaves it current at painters+0x80, so the preview is checked too:
+     * activation (0x141AA9C50) creates it synchronously and the per-frame update exits without it. */
+    building_available=painter&&rd64(painter)==GVA(0x1421381E0)&&rd64(painter+0x20)&&placement&&rd64(placement)==GVA(0x142014120)&&rd32(placement+0x2068)>0;
     road_available=painter&&(rd64(painter)==GVA(0x142138308)||rd64(painter)==GVA(0x1421383A8));
     {   /* FrostpunkBuildingPainter, BuildStreet, BuildPipeStreet, Demolish, DemolishStreet painters. */
         uint64_t type=painter?rd64(painter):0;
@@ -2596,7 +3220,7 @@ void fp_mobile_camera_before(CPU *cpu) {
     unsigned street_tool=street_tool_pending;street_tool_pending=0;
     float zoom_delta=pending_zoom;pending_zoom=0;unsigned zoom_settle=zoom_settle_pending;zoom_settle_pending=0;
     int zoom_city;{int first=atomic_load(&gate_first_distant);uint64_t list=rd64(system+0xb8);
-        zoom_city=first>0?first:list?(int)rd32(list+0x60):0;
+        zoom_city=first>0?first:list?(int)rd32(list+0x60):0;zoom_city_last=zoom_city;
         int level=(int32_t)rd32(system+0x1F4);
         unsigned was_ok=zoom_city_ok;
         zoom_city_ok=available&&level>=0&&level<zoom_city&&(rd32(controller+0xa0)==0||rd32(controller+0xa0)==4);
@@ -2605,7 +3229,32 @@ void fp_mobile_camera_before(CPU *cpu) {
         static uint64_t refused_logged;uint64_t now=monotonic_ns();
         if(was_ok&&!zoom_city_ok&&now-refused_logged>1000000000u){refused_logged=now;
             fprintf(stderr,"FP_ZOOM refused level=%d city=%d mode=%u locked=%u transition=%.2f follow=%u\n",level,zoom_city,
-                controller?rd32(controller+0xa0):~0u,rd32(system+0x1f0),rdss(system+0x228),rd64(system+0x230)!=0);}}
+                controller?rd32(controller+0xa0):~0u,rd32(system+0x1f0),rdss(system+0x228),rd64(system+0x230)!=0);}
+        /* FP_CAM_STATE: every gate of the touch camera, on a change (modes 0 and 4 count as one) at most
+         * four times a second, and every ten seconds. */
+        {static uint64_t state_logged,state_last=~UINT64_C(0);
+         unsigned mode=controller?rd32(controller+0xa0):~0u,free_mode=mode==0||mode==4;
+         uint64_t state=(uint64_t)available|(uint64_t)zoom_city_ok<<1|(uint64_t)building_available<<2|(uint64_t)road_available<<3
+             |(uint64_t)(rd32(system+0x1f0)!=0)<<4|(uint64_t)(rdss(system+0x228)>0)<<5|(uint64_t)(rd64(system+0x230)!=0)<<6
+             |(uint64_t)(painter_kind&7)<<7|(uint64_t)(free_mode?0xFFu:mode&0xFFu)<<10|(uint64_t)(uint32_t)level<<18
+             |(uint64_t)(zoom_city&0xFF)<<50;
+         if((state!=state_last&&now-state_logged>250000000u)||now-state_logged>10000000000u){
+            state_last=state;state_logged=now;
+            fprintf(stderr,"FP_CAM_STATE available=%u zoom_ok=%u building=%u road=%u locked=%u transition=%.2f follow=%u painter=%u mode=%u level=%d city=%d controller=%llx rects=%u\n",
+                available,zoom_city_ok,building_available,road_available,rd32(system+0x1f0),rdss(system+0x228),rd64(system+0x230)!=0,
+                painter_kind,mode,level,zoom_city,(unsigned long long)controller,rectangle_count);}}}
+    if(zoom_fast_frames){
+        if(zoom_fast_list!=rd64(system+0xb8)){zoom_fast_list=0;zoom_fast_frames=0;}
+        else{
+            if(controller&&rdss(system+0x228)>.01f&&rd32(controller+0xa0)==9){
+                fprintf(stderr,"FP_ZOOM late_transition=%.3f frames_left=%u\n",rdss(system+0x228),zoom_fast_frames);
+                CPU e=*cpu;e.rsp=(e.rsp-512)&~UINT64_C(15);e.rcx=system;
+                push64(&e,UINT64_C(0xe5ee0010));dispatch(&e,UINT64_C(0x14124DCD0));
+                fprintf(stderr,"FP_ZOOM late_end transition=%.3f mode=%u\n",rdss(system+0x228),rd32(controller+0xa0));
+            }
+            if(--zoom_fast_frames==0){zoom_fast_restore();fprintf(stderr,"FP_ZOOM fast_restore\n");}
+        }
+    }
     uint64_t time_system=rd64(GVA(0x142B8D800)),clock=rd64(GVA(0x142B8B390));
     time_state_valid=time_system&&rd64(time_system)==GVA(0x141E049B0)&&clock;
     if(time_state_valid){current_speed=0;
@@ -2677,6 +3326,9 @@ void fp_mobile_camera_before(CPU *cpu) {
     if(values[3]!=0){
         float angle=-values[3],x=position[0]-target[0],z=position[2]-target[2];
         unsigned mode=rd32(controller+0xa0);
+        {static unsigned turn_logged_mode=~0u;
+         if(mode!=0&&mode!=4&&mode!=turn_logged_mode)fprintf(stderr,"FP_TURN mode=%u kept=0\n",mode);
+         turn_logged_mode=mode==0||mode==4?~0u:mode;}
         call(cpu,UINT64_C(0x141C36360),controller,NULL,angle*(180.f/3.141592654f),1000,1);
         position[0]=target[0]+cosf(angle)*x+sinf(angle)*z;
         position[2]=target[2]-sinf(angle)*x+cosf(angle)*z;
@@ -2799,6 +3451,7 @@ void fp_mobile_camera_after(CPU *cpu) {
 }
 
 void fp_mobile_camera_destroy(void) {
+    zoom_fast_list=0;zoom_fast_frames=0;
     atomic_store(&gate_system,0);atomic_store(&gate_first_distant,-1);gate_entry=0;gate_count=0;
     pthread_mutex_lock(&input_mutex);
     camera_available=building_available=road_available=rectangle_count=setting_target_count=slider_target_count=reset_pending=0;saved_controller=0;

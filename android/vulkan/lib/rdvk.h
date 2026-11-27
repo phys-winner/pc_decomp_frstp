@@ -10,6 +10,15 @@ namespace rdvk {
 extern const rdvk_host* host;
 void log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void stop(const char* format, ...) __attribute__((format(printf, 1, 2)));
+/* The selected renderer failed (renderer_failure.h): device_lost false, it did not start (driver refused, device or
+   swapchain creation failed, a feature missing) before the first presented frame; true, the GPU device was lost.
+   Records it for the launcher, which offers the next renderer, and ends the game like stop(). */
+[[noreturn]] void renderer_stop(bool device_lost, const char* format, ...) __attribute__((format(printf, 2, 3)));
+void renderer_presented();          /* after a present that returned VK_SUCCESS or VK_SUBOPTIMAL_KHR */
+bool renderer_has_presented();
+const char* gpu_failure_note();     /* why Gpu::init refused the driver (its last RDVK_GPU line) */
+void renderer_qa_start();           /* debug.fp.renderer_fail=start:<id>: before the device is created */
+void renderer_qa_frame();           /* debug.fp.renderer_fail=lost:<id>: 60 frames after the first present */
 std::string property(const char* name);
 
 /* Native mode: fills the hook table; 0 keeps the D3D11/DXVK backend. */

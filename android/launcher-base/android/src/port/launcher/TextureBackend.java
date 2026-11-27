@@ -12,6 +12,31 @@ import java.util.List;
 public interface TextureBackend {
     int ETC2 = 1, ASTC = 2;
 
+    /** False when this build of the converter cannot write the format (The Sims 2: no ASTC encoder in its
+     *  32-bit library); the launcher then does not offer that conversion. */
+    default boolean canEncode(int format) { return format == ETC2 || format == ASTC; }
+
+    /** Selective conversion: true when convert(..., sources) converts only the textures of the given source
+     *  formats and the game's renderer reads the cache per texture, keeping the originals of all the others
+     *  (and adds to an existing cache of the same target format). Only then does the launcher convert just what
+     *  the selected renderer lacks. False (the default): a conversion re-encodes the whole data set, as before,
+     *  and the launcher says so in its offer. A port whose conversion replaces the game's files as a whole
+     *  must keep false. */
+    default boolean selective() { return false; }
+
+    /** Optional quality levels of the conversion (Prey: all mips, without the top mip, without the two top mips), each
+     *  title with the size it takes; the launcher shows the chosen one in the Textures card, where the player changes
+     *  it, and in the first-start offer. The backend keeps the choice per data set (game folder and cache root) and its
+     *  scan reports the conversion as missing (Scan.converted 0) while the cache was made at another level, so the
+     *  next conversion re-encodes or extends it. Called on the UI thread: return what the last scan measured. null: none. */
+    default List<String> qualities(Context context, File game, File cache) { return null; }
+
+    /** The chosen quality level (an index into qualities) for this data set. */
+    default int quality(Context context, File game, File cache) { return 0; }
+
+    /** Saves the quality level for this data set; the launcher scans again afterwards. */
+    default void setQuality(Context context, File game, File cache, int level) { }
+
     final class Scan {
         public long textures, bytes;          /* convertible originals and their size */
         public boolean sampled;              /* one package checked; full discovery happens on conversion */
@@ -26,6 +51,10 @@ public interface TextureBackend {
         public long removable;
         /** The originals were removed after the conversion: it can no longer be undone. */
         public boolean originalsRemoved;
+        /** The source formats (TextureFormats names) the existing conversion covers, when the backend knows them
+         *  (a selective backend reads them from its cache); null: the launcher's record of the conversions it ran,
+         *  else all of them. */
+        public List<String> convertedFormats;
     }
 
     /** Blocking: what there is to convert in the game folder. */
@@ -46,6 +75,13 @@ public interface TextureBackend {
 
     default int convert(File game, File cache, int format, int threads, File index, int archiveFd) {
         return convert(game, format, threads, index, archiveFd);
+    }
+
+    /** Blocking: converts the textures whose source format is one of `sources` (TextureFormats names: "DXT1",
+     *  "BC5", …; null: all of them). The launcher passes sources only to a selective() backend; the default
+     *  converts everything. */
+    default int convert(File game, File cache, int format, int threads, File index, int archiveFd, List<String> sources) {
+        return convert(game, cache, format, threads, index, archiveFd);
     }
 
     /** Blocking: removes a conversion; 0 when done. */

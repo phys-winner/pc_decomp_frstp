@@ -9,6 +9,25 @@
 static uint64_t test_milliseconds=1000;
 int clock_gettime(clockid_t clock,struct timespec *now){(void)clock;now->tv_sec=test_milliseconds/1000;now->tv_nsec=(test_milliseconds%1000)*1000000;return 0;}
 
+/* Camera calls in the fixture model separate frames, including snapshots of synthetic UI edits. */
+static void fixture_camera_frame(CPU *cpu){
+    test_milliseconds+=100;
+    fp_mobile_camera_before(cpu);
+}
+#define fp_mobile_camera_before fixture_camera_frame
+
+#ifdef __ANDROID__
+static const char *test_ui_rows="";
+int __system_property_get(const char *name,char *value){
+    const char *setting=strcmp(name,"debug.fp.ui_rows")?"":test_ui_rows;
+    strcpy(value,setting);
+    return (int)strlen(setting);
+}
+static void fixture_ui_rows(const char *value){test_ui_rows=value;}
+#else
+static void fixture_ui_rows(const char *value){assert(setenv("debug.fp.ui_rows",value,1)==0);}
+#endif
+
 int64_t g_image_delta;
 int win64_skip_intro;
 static unsigned scale=150,pan_calls,turn_calls,resize_calls,building_calls,position_calls,speed_calls,pause_calls,debug_calls;
@@ -20,6 +39,7 @@ static unsigned layout_relayout_calls;
 static float test_ime_fraction=1;
 static uint64_t test_ime_editor;
 static unsigned message_wrap_calls;
+enum { REVIEW_TECH=47101, REVIEW_EVENT, REVIEW_MAP_TEXT, REVIEW_CAPTION, REVIEW_IDLE, REVIEW_HEAT, REVIEW_OBJECTIVE };
 static unsigned table_row_calls;
 static unsigned scrollbar_refresh_calls;
 static unsigned technology_focus_calls;
@@ -47,7 +67,17 @@ void dispatch(CPU *c,uint64_t target){
     else if(target==UINT64_C(0x140fb4090)){
         assert(rd8(c->rcx+0x40e)&&rdss(c->rcx+0x37c)>0);wr8(c->rcx+0x40e,0);++message_wrap_calls;
         /* Native glyph measuring is exercised in-game; this fixture supplies long/short measurements to test all geometry. */
-        float measured=rdss(c->rcx+0x4d4);if(measured<60)wrss(c->rcx+0x4d4,40);
+        float measured=rdss(c->rcx+0x4d4);
+        uint32_t id=rd32(c->rcx+0x1e4);
+        float font=rdss(c->rcx+0x3a0);
+        if(id==47006)wrss(c->rcx+0x4d4,font>12?32:20);
+        else if(id>=REVIEW_TECH&&id<=REVIEW_OBJECTIVE){
+            float width=font*(id==REVIEW_HEAT?8:4);
+            float height=id==REVIEW_EVENT?(font>13?160:99):id==REVIEW_MAP_TEXT?(font>14?105:63):
+                id==REVIEW_OBJECTIVE?(font>12?56:24):font;
+            wrss(c->rcx+0x4d0,width);wrss(c->rcx+0x4d4,height);
+        }
+        else if(measured<60)wrss(c->rcx+0x4d4,40);
     }
     else if(target==UINT64_C(0x140ec39c0)){
         wr32(c->rcx+0x138,(uint32_t)c->rdx);
@@ -112,6 +142,7 @@ static void template_original(CPU*c){
 #include "mobile_confirmation_fixture.inc"
 #include "mobile_photo_mask_fixture.inc"
 #include "mobile_scouts_fixture.inc"
+#include "mobile_diary_fixture.inc"
 #include "mobile_selection_close_fixture.inc"
 #include "mobile_phone_panels_fixture.inc"
 #include "mobile_switch_panels_fixture.inc"
@@ -262,7 +293,159 @@ static void check_mobile_technology(CPU *cpu){
     cpu->rcx=saved;
 }
 
-int main(void){
+static void check_ui_rows(const CPU *caller,unsigned baseline){
+    _Alignas(16) unsigned char storage[13][0x600]={0};
+    uint64_t n[13];
+    const char *names[]={"","EXT_SIMPLE_TOOLTIP","TEXT","EXT_QUEST_PANEL","OBJECTIVES","OBJECTIVE_PANEL","TEXT",
+        "EXT_TUTORIAL_SUMMARY_PANEL","DESCRIPTION_SCROLL_PANE","DESCRIPTION_TEXT",
+        "EXT_SOCIOTECH_PANEL","DESCRIPTION_SCROLL_PANE","DESCRIPTION_TEXT"};
+    const unsigned parents[]={0,0,1,0,3,4,5,0,7,8,0,10,11};
+    for(unsigned i=0;i<13;++i){
+        n[i]=(uintptr_t)storage[i];
+        wr64(n[i],GVA(i==2||i==6||i==9||i==12?0x141DED7D8:i==4?0x141DE0A48:
+            i==8||i==11?0x141DA74C8:0x141D78A60));
+        wr64(n[i]+0x1d8,(uintptr_t)names[i]);wr32(n[i]+0x1e4,47000+i);
+        wrss(n[i]+0xf0,1);wrss(n[i]+0xf4,1);
+        wrss(n[i]+0x100,150);wrss(n[i]+0x210,150);
+        wrss(n[i]+0x104,24);wrss(n[i]+0x214,24);
+        if(i){
+            uint64_t parent=n[parents[i]];
+            wr64(n[i]+0x230,parent);
+            wr64(n[i]+0x240,rd64(parent+0x220));
+            wr64(parent+0x220,n[i]);
+        }
+    }
+    wrss(n[2]+0x3a0,10);wrss(n[2]+0x37c,150);
+    wrss(n[6]+0x3a0,12);wrss(n[6]+0x37c,140);wrss(n[6]+0x4d4,32);wrss(n[6]+0xc4,5);
+    wrss(n[7]+0x210,1280);wrss(n[7]+0x214,720);
+    static const uint16_t prose[]={'h','i',0};
+    wr64(n[9]+0x3e8,(uintptr_t)prose);wrss(n[9]+0x3a0,19);wrss(n[9]+0x37c,140);
+    wrss(n[12]+0x3a0,23);wrss(n[12]+0x37c,140);
+    CPU cpu=*caller;cpu.rcx=n[0];
+    scale=200;
+    if(baseline){
+        fp_mobile_ui_before(&cpu);
+        assert(rdss(n[2]+0x3a0)==10&&rdss(n[6]+0x3a0)==12&&rdss(n[5]+0x214)==24);
+        assert(rdss(n[9]+0x3a0)==23&&rdss(n[9]+0x214)==40&&rdss(n[9]+0x37c)==140);
+        assert(rdss(n[12]+0x3a0)==23);
+        return;
+    }
+    fixture_ui_rows("");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[2]+0x3a0)==13&&rdss(n[6]+0x3a0)==17&&rdss(n[6]+0x214)==32&&rdss(n[5]+0x214)==41);
+    assert(rdss(n[9]+0x3a0)==32&&rdss(n[9]+0x214)==40&&rdss(n[12]+0x3a0)==23);
+    fixture_ui_rows("none");
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[6]+0x3a0)==17);
+    fixture_ui_rows(" 08,99,12x ");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[2]+0x3a0)==13&&rdss(n[6]+0x3a0)==17&&rdss(n[6]+0x214)==32&&rdss(n[5]+0x214)==41);
+    unsigned relayouts=layout_relayout_calls;
+    fp_mobile_ui_before(&cpu);
+    assert(layout_relayout_calls==relayouts);
+    fixture_ui_rows("none");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[2]+0x3a0)==10&&rdss(n[6]+0x3a0)==12&&rdss(n[5]+0x214)==24);
+    assert(rdss(n[6]+0x214)==24&&rdss(n[6]+0x37c)==140&&rd8(n[6]+0x384)==0);
+    assert(rdss(n[9]+0x3a0)==23&&rdss(n[9]+0x214)==40&&rdss(n[9]+0x37c)==140&&rdss(n[12]+0x3a0)==23);
+    fixture_ui_rows("all");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[2]+0x3a0)==13&&rdss(n[6]+0x3a0)==17);
+    assert(rdss(n[9]+0x3a0)==32&&rdss(n[12]+0x3a0)==23);
+    fixture_ui_rows("");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[2]+0x3a0)==13&&rdss(n[6]+0x3a0)==17);
+}
+
+static void check_ui_review_rows(const CPU *caller){
+    enum { SCREEN, TECH, TREE, TECH_NAME, EVENT, MAIN, DESCRIPTION, EVENT_TEXT,
+        MAP, SITE, ELEMENTS, MAP_PROSE, MAP_TEXT, REWARDS, REWARD_FRAME, CAPTION,
+        BEACON, UNITS, BUTTON, IDLE, IDLE_TEXT, TUTORIAL, DIAGRAM, DIAGRAM_TEXT, HEAT,
+        QUEST, QUESTS, CARD, OBJECTIVES, OBJECTIVE, OBJECTIVE_TEXT, COUNT };
+    static const struct {
+        const char *name;
+        unsigned parent,id;
+        float w,h,y,font;
+    } nodes[COUNT]={
+        [TECH]={"EXT_TECHNOLOGY_PANEL",SCREEN,0,900,600}, [TREE]={"TECHTREE",TECH,0,600,300},
+        [TECH_NAME]={"TECH_NAME",TREE,REVIEW_TECH,76,19,0,10},
+        [EVENT]={"EXT_DILEMMA_EXPEDITION_PANEL",SCREEN,0,1280,720},
+        [MAIN]={"DILEMMA_MAIN_SCREEN",EVENT,0,1280,720},
+        [DESCRIPTION]={"DESCRIPTION_LAYOUT",MAIN,0,340,141,220},
+        [EVENT_TEXT]={"DESCRIPTION_TEXT",DESCRIPTION,REVIEW_EVENT,340,99,2,13},
+        [MAP]={"EXT_WORLD_MAP_SELECTION_PANEL",SCREEN,0,300,475},
+        [SITE]={"EXPEDITION_SITE_SUBPANEL",MAP,0,350,400},
+        [ELEMENTS]={"SITE_ELEMENTS",SITE,0,342,193},
+        [MAP_PROSE]={"TEXT_DESCRIPTION_CONTAINER",ELEMENTS,0,234,63},
+        [MAP_TEXT]={"TEXT_DESCRIPTION",MAP_PROSE,REVIEW_MAP_TEXT,234,63,0,14},
+        [REWARDS]={"VISITED_PANEL",ELEMENTS,0,300,100,78},
+        [REWARD_FRAME]={"resources_frame",REWARDS,0,310,108,-3},
+        [CAPTION]={"what_journey_will_give_txt",REWARD_FRAME,REVIEW_CAPTION,310,20,-16,12},
+        [BEACON]={"EXT_EXPEDITION_BUILDING_PANEL",SCREEN,0,331,391},
+        [UNITS]={"UNITS_SCROLL_PANE",BEACON,0,333,233},
+        [BUTTON]={"button",UNITS,0,74,93},
+        [IDLE]={"Idle",BUTTON,0,80,20,74}, [IDLE_TEXT]={"Text",IDLE,REVIEW_IDLE,80,20,0,12},
+        [TUTORIAL]={"EXT_TUTORIAL_SUMMARY_PANEL",SCREEN,0,1280,720},
+        [DIAGRAM]={"CUSTOM_HEATZONE",TUTORIAL,0,720,277},
+        [DIAGRAM_TEXT]={"TEXT",DIAGRAM,0,705,20},
+        [HEAT]={"title",DIAGRAM_TEXT,REVIEW_HEAT,120,24,0,12},
+        [QUEST]={"EXT_QUEST_PANEL",SCREEN,0,275,334},
+        [QUESTS]={"QUESTS",QUEST,0,340,300},
+        [CARD]={"OPPOSITION_QUEST_PANEL",QUESTS,0,381,74,196},
+        [OBJECTIVES]={"OBJECTIVES",CARD,0,240,24,54},
+        [OBJECTIVE]={"OBJECTIVE_PANEL",OBJECTIVES,0,215,24},
+        [OBJECTIVE_TEXT]={"TEXT",OBJECTIVE,REVIEW_OBJECTIVE,247,24,5,12},
+    };
+    _Alignas(16) unsigned char memory[COUNT][0x600]={0};
+    uint64_t n[COUNT];
+    for(unsigned i=0;i<COUNT;++i)n[i]=(uintptr_t)memory[i];
+    for(unsigned i=1;i<COUNT;++i){
+        uint64_t node=n[i],parent=n[nodes[i].parent];
+        wr64(node,GVA(nodes[i].id?0x141DED7D8:i==MAP_PROSE||i==ELEMENTS||i==OBJECTIVES||i==DESCRIPTION?
+            0x141DE0A48:0x141D78A60));
+        wr64(node+0x1d8,(uintptr_t)nodes[i].name);
+        wr32(node+0x1e4,nodes[i].id?nodes[i].id:47200+i);
+        wr64(node+0x230,parent);wr64(node+0x240,rd64(parent+0x220));wr64(parent+0x220,node);
+        wrss(node+0xf0,1);wrss(node+0xf4,1);wrss(node+0xc4,nodes[i].y);
+        wrss(node+0x100,nodes[i].w);wrss(node+0x210,nodes[i].w);
+        wrss(node+0x104,nodes[i].h);wrss(node+0x214,nodes[i].h);
+        if(nodes[i].id){
+            wrss(node+0x3a0,nodes[i].font);wrss(node+0x37c,nodes[i].w);
+            wrss(node+0x4d0,nodes[i].font*4);wrss(node+0x4d4,nodes[i].h);
+        }
+    }
+    wrss(n[QUESTS]+0xf4,.8f);
+    CPU cpu=*caller;cpu.rcx=n[SCREEN];
+    fixture_ui_rows("none");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    // Seed the legacy technology font registry before enabling the proposal on the same node.
+    assert(rdss(n[TECH_NAME]+0x3a0)==12&&rdss(n[EVENT_TEXT]+0x3a0)==13);
+    fixture_ui_rows("all");test_milliseconds+=2000;
+    for(unsigned pass=0;pass<2;++pass){
+        fp_mobile_ui_before(&cpu);
+        assert(rdss(n[TECH_NAME]+0x3a0)==22&&rdss(n[TECH_NAME]+0x210)==88);
+        assert(rdss(n[EVENT_TEXT]+0x3a0)==22&&rdss(n[EVENT_TEXT]+0x214)==160);
+        assert(rdss(n[MAP_TEXT]+0x3a0)==23&&rdss(n[MAP_TEXT]+0x214)==105);
+        assert(rdss(n[CAPTION]+0x3a0)==24&&rdss(n[CAPTION]+0xc4)==-48&&rdss(n[MAP_PROSE]+0x28c)==55);
+        assert(rdss(n[IDLE_TEXT]+0x3a0)==17&&rdss(n[IDLE]+0x214)==20);
+        assert(rdss(n[HEAT]+0x3a0)==14&&rdss(n[HEAT]+0x210)==120);
+        assert(rdss(n[OBJECTIVE_TEXT]+0x214)==56&&rdss(n[OBJECTIVE]+0x214)==65&&rdss(n[CARD]+0x214)==115);
+        assert(fabsf(rdss(n[QUESTS]+0xc4)+32.8f)<.001f);
+    }
+    fixture_ui_rows("none");test_milliseconds+=2000;
+    fp_mobile_ui_before(&cpu);
+    assert(rdss(n[TECH_NAME]+0x3a0)==12&&rdss(n[TECH_NAME]+0x210)==76);
+    assert(rdss(n[EVENT_TEXT]+0x3a0)==13&&rdss(n[EVENT_TEXT]+0x214)==99);
+    assert(rdss(n[MAP_TEXT]+0x3a0)==14&&rdss(n[CAPTION]+0xc4)==-16&&rdss(n[MAP_PROSE]+0x28c)==0);
+    assert(rdss(n[IDLE_TEXT]+0x3a0)==12&&rdss(n[HEAT]+0x3a0)==12);
+    assert(rdss(n[OBJECTIVE]+0x214)==24&&rdss(n[CARD]+0x214)==74&&rdss(n[QUESTS]+0xc4)==0);
+    fixture_ui_rows("");
+}
+
+int main(int argc,char **argv){
+    unsigned baseline=argc==2&&!strcmp(argv[1],"--baseline");
+    if(argc!=1&&!baseline)return 2;
+    if(baseline)fixture_ui_rows("none");
     assert(!frostpunk_dxvk_scene_active());
     unsigned char *image=calloc(1,0x4539000);assert(image);g_image_delta=(intptr_t)image-UINT64_C(0x140000000);
     wrss(GVA(0x142980e60),1280);wrss(GVA(0x142980e64),720);
@@ -322,7 +505,7 @@ int main(void){
     scale=100;fp_mobile_ui_before(&cpu);assert(rdss((uintptr_t)wide+0xf0)==1);
     check_mobile_bottom_family(&cpu);
     check_population_inputs(&cpu);
-    check_mobile_technology(&cpu);check_mobile_scouts(&cpu);check_mobile_selection_close(&cpu);check_mobile_phone_panels(&cpu);check_phone_hud_cover(&cpu);
+    check_mobile_technology(&cpu);check_mobile_scouts(&cpu);check_mobile_diary(&cpu);check_mobile_selection_close(&cpu);check_mobile_phone_panels(&cpu);check_phone_hud_cover(&cpu);
     check_mobile_bottom(&cpu);
     check_mobile_newsflash(&cpu);
     _Alignas(16) unsigned char bar[0x280]={0},group[0x280]={0},first_button[0x280]={0},last_button[0x280]={0};
@@ -454,7 +637,7 @@ int main(void){
     wrss((uintptr_t)society_bar+0xd0,-108);wrss((uintptr_t)society_bar+0xd4,-17);
     scale=200;fp_mobile_ui_before(&cpu);
     float resource_scale=rdss((uintptr_t)resource_bar+0xf0);
-    assert(fabsf(rdss((uintptr_t)resource_bar+0xc0)+504*resource_scale-320)<.001f&&fabsf(rdss((uintptr_t)resource_bar+0xc4)+12*resource_scale)<.001f);
+    assert(fabsf(rdss((uintptr_t)resource_bar+0xc0)+504*resource_scale-320)<.001f&&fabsf(rdss((uintptr_t)resource_bar+0xc4)+14*resource_scale)<.001f);
     assert(fabsf(resource_scale-632.f/840)<.001f&&resource_scale>616.f/1073);
     assert(rdss((uintptr_t)society_bar+0xc0)==320&&rdss((uintptr_t)society_bar+0xc4)==324);
     _Alignas(16) unsigned char bar_blocker[0x280]={0};
@@ -462,7 +645,7 @@ int main(void){
     wr64((uintptr_t)bar_blocker+0x1d8,(uintptr_t)"lock_click_btn");wr32((uintptr_t)bar_blocker+0x1e4,19500);wr32((uintptr_t)bar_blocker+0x1e0,0x10);
     fp_mobile_ui_before(&cpu);assert(!(rd32((uintptr_t)bar_blocker+0x1e0)&0x10));
     scale=100;fp_mobile_ui_before(&cpu);assert(rdss((uintptr_t)resource_bar+0xf0)==1);
-    assert(rdss((uintptr_t)resource_bar+0xc0)==103.5f&&rdss((uintptr_t)resource_bar+0xc4)==-12);
+    assert(rdss((uintptr_t)resource_bar+0xc0)==103.5f&&rdss((uintptr_t)resource_bar+0xc4)==-14);
     assert(rd32((uintptr_t)bar_blocker+0x1e0)&0x10);wr64((uintptr_t)resource_bar+0x220,0);
     wr64((uintptr_t)resource_bar+0x1d8,(uintptr_t)"FEEDBACK_PANEL");
     wrss((uintptr_t)resource_bar+0x210,400);wrss((uintptr_t)resource_bar+0x214,52);wrss((uintptr_t)resource_bar+0xd0,-200);
@@ -501,15 +684,16 @@ int main(void){
     assert(rdss((uintptr_t)selected_tabs+0xc0)==0&&rdss((uintptr_t)selected_tabs+0xc4)==230); /* Native flow owns positions; tested separately with real original bodies. */
     assert(rdss((uintptr_t)selected_body+0x280)==342&&rd8((uintptr_t)selected_body+0x2a9)==1&&layout_relayout_calls==1);
     assert((rd32((uintptr_t)selected_header+0x1e0)&4)&&!rd32((uintptr_t)selected_header+0x13c));
-    assert(rdss((uintptr_t)resource_bar+0x210)==684&&rdss((uintptr_t)resource_bar+0x214)==302);
-    assert(rdss((uintptr_t)selected_background+0x210)==702&&rdss((uintptr_t)selected_background+0x214)==244);
+    float compact_height=241+68/(616.f/684.f);
+    assert(rdss((uintptr_t)resource_bar+0x210)==684&&fabsf(rdss((uintptr_t)resource_bar+0x214)-compact_height)<.001f);
+    assert(rdss((uintptr_t)selected_background+0x210)==702&&fabsf(rdss((uintptr_t)selected_background+0x214)-(compact_height-58))<.001f);
     assert(rdss((uintptr_t)selected_background+0xc0)==-23&&rdss((uintptr_t)selected_background+0xc4)==62);
     assert(rdss((uintptr_t)selected_slice+0x210)==63&&rdss((uintptr_t)selected_slice+0x214)==56);
     assert(rdss((uintptr_t)resource_bar+0xf0)>.75f);
     float compact_top=rdss((uintptr_t)resource_bar+0xc4),compact_scale=rdss((uintptr_t)resource_bar+0xf4);
-    assert(compact_top>=55.99f&&compact_top+302*compact_scale<=284.001f);
+    assert(fabsf(compact_top+241*compact_scale-284)<.001f&&compact_top+compact_height*compact_scale<=352.001f);
     fp_mobile_ui_position(&animation,position_original);
-    assert(fabsf(rdss((uintptr_t)resource_bar+0xc4)+302*compact_scale-284)<.001f);
+    assert(fabsf(rdss((uintptr_t)resource_bar+0xc4)-compact_top)<.001f);
     fp_mobile_ui_before(&cpu);assert(layout_relayout_calls==1);
     scale=100;fp_mobile_ui_before(&cpu);
     assert(rdss((uintptr_t)selected_tabs+0xc0)==0&&rdss((uintptr_t)selected_tabs+0xc4)==230);
@@ -701,6 +885,7 @@ int main(void){
     wrss((uintptr_t)entity+0x138,1);wrss((uintptr_t)entity+0x140,1);wrss((uintptr_t)entity+0x144,2);wrss((uintptr_t)entity+0x148,3);
     _Alignas(16) unsigned char manager[0x100]={0},painter[0x100]={0};
     wr64((uintptr_t)manager+0x80,(uintptr_t)painter);wr64((uintptr_t)painter,GVA(0x1421381E0));
+    wr64((uintptr_t)painter+0x20,entry);
     cpu.rcx=(uintptr_t)manager;fp_mobile_painters_created(&cpu,created_original);cpu.rcx=(uintptr_t)system;
     frostpunk_mobile_submit(3,0,0,0,.36f);fp_mobile_camera_before(&cpu);
     assert((frostpunk_mobile_context(.5f,.5f)&4)&&building_calls==1&&turn_calls==1);
@@ -849,8 +1034,8 @@ int main(void){
     assert((frostpunk_mobile_context(.5f,.5f)&((1u<<25)|2))==((1u<<25)|2));
     for(unsigned i=0;i<5;++i){
         uint64_t node=(uintptr_t)radial_buttons[i],hit=(uintptr_t)radial_hits[i];
-        assert(rdss(node+0x110)==.2f&&rdss(node+0x11c)==0&&(rd32(node+0x1e0)&0x10));
-        assert(rd32((uintptr_t)radial_art[i]+0x1e0)&2);
+        assert(rdss(node+0x110)==.2f&&rdss(node+0x11c)==(i==1?1:0)&&(rd32(node+0x1e0)&0x10));
+        assert(!!(rd32((uintptr_t)radial_art[i]+0x1e0)&2)==(i!=1));
         if(i!=1)assert(rdss(node+0xc0)==150+i*70&&rdss(node+0xc4)==260&&rdss(node+0xf0)==1);
         float x=.3f+i*.1f,y=.85f;
         for(unsigned v=0;v<4;++v){wrss(hit+v*16,(x+(v&1?.02f:-.02f))*2-1);wrss(hit+v*16+4,1-(y+(v&2?.02f:-.02f))*2);}
@@ -877,8 +1062,10 @@ int main(void){
     assert((frostpunk_mobile_context(.5f,.5f)&(1u<<26))&&frostpunk_mobile_submit(5,1,0,0,0));
     assert(frostpunk_mobile_submit(5,0,0,0,0));cpu.rcx=(uintptr_t)screen;fp_mobile_ui_before(&cpu);
     assert(!(frostpunk_mobile_context(.5f,.5f)&(1u<<25))&&!frostpunk_mobile_swipe_target(.5f,.5f,3));
-    for(unsigned i=0;i<5;++i)assert(rd32((uintptr_t)radial_buttons[i]+0x1e0)&2);
+    for(unsigned i=0;i<5;++i)assert(!!(rd32((uintptr_t)radial_buttons[i]+0x1e0)&2)==(i!=1));
     switch_active=0;
+    check_ui_rows(&cpu,baseline);
+    if(!baseline)check_ui_review_rows(&cpu);
     fp_mobile_camera_destroy();assert(!frostpunk_dxvk_scene_active());
-    free(image);puts("{\"success\":true,\"ui_scale\":true,\"ui_root_resize\":true,\"ui_partial_canvas_restore\":true,\"ui_scale_live_tree_only\":true,\"paint_mask_projection\":true,\"fixed_dialog_fit\":true,\"construction_widgets\":true,\"law_tree_viewport_and_content\":true,\"settings_header\":true,\"small_event_layout\":true,\"input_during_loading_blocked\":true,\"ui_context_while_camera_suspended\":true,\"right_drag_scroll_pane\":true,\"native_time_selection\":true,\"time_hit_rectangles\":true,\"building_rotation_both_directions\":true,\"analog_accumulation\":true,\"reset_position_rotation_zoom\":true,\"cancel_and_camera_lock\":true,\"invalid_inputs\":true,\"phone_table_rows_and_restore\":true,\"phone_parent_measure_invalidation\":true,\"phone_scrollbar_geometry_cache\":true,\"technology_detail_viewport_reflow\":true,\"building_blur_guest_return\":true}");
+    free(image);printf("{\"success\":true,\"ui_scale\":true,\"ui_root_resize\":true,\"ui_partial_canvas_restore\":true,\"ui_scale_live_tree_only\":true,\"paint_mask_projection\":true,\"fixed_dialog_fit\":true,\"construction_widgets\":true,\"law_tree_viewport_and_content\":true,\"settings_header\":true,\"small_event_layout\":true,\"input_during_loading_blocked\":true,\"ui_context_while_camera_suspended\":true,\"right_drag_scroll_pane\":true,\"native_time_selection\":true,\"time_hit_rectangles\":true,\"building_rotation_both_directions\":true,\"analog_accumulation\":true,\"reset_position_rotation_zoom\":true,\"cancel_and_camera_lock\":true,\"invalid_inputs\":true,\"phone_table_rows_and_restore\":true,\"phone_parent_measure_invalidation\":true,\"phone_scrollbar_geometry_cache\":true,\"technology_detail_viewport_reflow\":true,\"building_blur_guest_return\":true,\"ui_rows_runtime_gate\":%s}\n",baseline?"false":"true");
 }

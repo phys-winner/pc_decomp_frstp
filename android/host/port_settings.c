@@ -1,3 +1,5 @@
+#define PORT_ADPF_IMPLEMENTATION
+#include "port_adpf.h"
 #define _GNU_SOURCE
 #include "port_settings.h"
 #include <errno.h>

@@ -2,7 +2,12 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <mutex>
+#include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include "context.h"
 #include "rdvk.h"
@@ -23,6 +28,11 @@ std::unordered_map<uint64_t, PipelineLayout*> layouts;
 std::unordered_map<GraphicsKey, VkPipeline, KeyHash> graphics;
 std::unordered_map<const Shader*, VkPipeline> computes;
 VkPipelineCache cache = VK_NULL_HANDLE;
+std::string saved_cache_path;
+std::atomic<bool> cache_save_running{false};
+std::atomic<bool> cache_device_lost{false};
+std::atomic<bool> cache_shutting_down{false};
+std::mutex cache_save_gate;
 
 Stage engine_stage(VkShaderStageFlagBits s) {
     switch (s) {
@@ -38,8 +48,11 @@ std::string cache_path() {
 }  // namespace
 
 void pipeline_cache_init() {
+    saved_cache_path = cache_path();
+    cache_device_lost.store(false, std::memory_order_release);
+    cache_shutting_down.store(false, std::memory_order_release);
     std::vector<uint8_t> data;
-    if (FILE* f = fopen(cache_path().c_str(), "rb")) {
+    if (FILE* f = fopen(saved_cache_path.c_str(), "rb")) {
         fseek(f, 0, SEEK_END);
         long n = ftell(f);
         fseek(f, 0, SEEK_SET);
@@ -56,18 +69,73 @@ void pipeline_cache_init() {
     log("RDVK_PIPELINE_CACHE loaded_bytes=%zu", data.size());
 }
 
-void pipeline_cache_save() {
-    if (!cache) return;
+void pipeline_cache_save(const char* reason) {
+    using clock = std::chrono::steady_clock;
+    const auto started = clock::now();
+    if (!cache || cache_device_lost.load(std::memory_order_acquire) || saved_cache_path.empty()) return;
     size_t size = 0;
-    if (vk.vkGetPipelineCacheData(gpu.device, cache, &size, nullptr) != VK_SUCCESS || !size) return;
+    if (vk.vkGetPipelineCacheData(gpu.device, cache, &size, nullptr) != VK_SUCCESS || !size || size > (256ull << 20)) return;
     std::vector<uint8_t> data(size);
-    if (vk.vkGetPipelineCacheData(gpu.device, cache, &size, data.data()) != VK_SUCCESS) return;
-    std::string path = cache_path(), part = path + ".part";
+    if (vk.vkGetPipelineCacheData(gpu.device, cache, &size, data.data()) != VK_SUCCESS || size > (256ull << 20)) return;
+    const std::string part = saved_cache_path + ".part";
     if (FILE* f = fopen(part.c_str(), "wb")) {
         bool ok = fwrite(data.data(), 1, size, f) == size;
         ok = fclose(f) == 0 && ok;
-        if (ok) rename(part.c_str(), path.c_str());
+        if (ok && !cache_device_lost.load(std::memory_order_acquire)) ok = rename(part.c_str(), saved_cache_path.c_str()) == 0;
+        else ok = false;
+        if (!ok) unlink(part.c_str());
+        else log("RDVK_PIPELINE_CACHE saved_bytes=%zu ms=%.1f reason=%s", size,
+                 std::chrono::duration<double, std::milli>(clock::now() - started).count(), reason ? reason : "exit");
     }
+}
+
+bool pipeline_cache_save_async(const char* reason) {
+    std::lock_guard<std::mutex> gate(cache_save_gate);
+    if (cache_device_lost.load(std::memory_order_acquire) || cache_shutting_down.load(std::memory_order_acquire) || !cache)
+        return false;
+    bool expected = false;
+    if (!cache_save_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
+    const char* why = reason ? reason : "frame";
+    try {
+        std::thread([why] {
+            try { pipeline_cache_save(why); } catch (...) {}
+            cache_save_running.store(false, std::memory_order_release);
+        }).detach();
+    } catch (...) {
+        cache_save_running.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+namespace {
+void wait_for_cache_save() {
+    while (cache_save_running.load(std::memory_order_acquire)) std::this_thread::yield();
+}
+}
+
+void pipeline_cache_wait_and_save() {
+    {
+        std::lock_guard<std::mutex> gate(cache_save_gate);
+        cache_shutting_down.store(true, std::memory_order_release);
+    }
+    wait_for_cache_save();
+    if (!cache_device_lost.load(std::memory_order_acquire)) pipeline_cache_save("exit");
+}
+
+void pipeline_cache_drop_device_lost() {
+    {
+        std::lock_guard<std::mutex> gate(cache_save_gate);
+        cache_device_lost.store(true, std::memory_order_release);
+        cache_shutting_down.store(true, std::memory_order_release);
+    }
+    wait_for_cache_save();
+    if (saved_cache_path.empty() && host && host->files_dir) saved_cache_path = cache_path();
+    if (saved_cache_path.empty()) return;
+    const std::string part = saved_cache_path + ".part";
+    unlink(saved_cache_path.c_str());
+    unlink(part.c_str());
+    log("RDVK_PIPELINE_CACHE dropped reason=device_lost");
 }
 
 const PipelineLayout* pipeline_layout(const Shader* const* shaders, uint32_t count, bool compute) {
@@ -145,13 +213,30 @@ VkPipeline graphics_pipeline(const GraphicsKey& key, const PipelineLayout* layou
         graphics.emplace(key, VK_NULL_HANDLE);
         return VK_NULL_HANDLE;
     }
+    VkShaderModule matched_fragment = VK_NULL_HANDLE;
+    const Shader* fragment = key.shader[PS];
+    if (fragment && !fragment->fragment_spirv.empty()) {
+        const Shader* previous = uses_gs ? key.shader[GS] : key.shader[DS] ? key.shader[DS] : key.shader[VS];
+        if (previous) {
+            uint32_t locations;
+            // This driver hangs on legal maintenance4 interfaces with a narrower fragment input.
+            auto code = match_shader_inputs(fragment->fragment_spirv, previous->output_widths, locations);
+            if (!code.empty()) {
+                VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                shader.codeSize = code.size() * sizeof(uint32_t);
+                shader.pCode = code.data();
+                vk_check(vk.vkCreateShaderModule(gpu.device, &shader, nullptr, &matched_fragment), "vkCreateShaderModule(matched interface)");
+                log("RDVK_QUALCOMM_SHADER_INTERFACE previous=%s fragment=%s locations=0x%08x", previous->name, fragment->name, locations);
+            }
+        }
+    }
     VkPipelineShaderStageCreateInfo stages[5];
     uint32_t stage_count = 0;
     for (const Shader* s : key.shader) {
         if (!s) continue;
         VkPipelineShaderStageCreateInfo& st = stages[stage_count++];
         st = VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        st.stage = s->stage; st.module = s->module; st.pName = "main";
+        st.stage = s->stage; st.module = s == fragment && matched_fragment ? matched_fragment : s->module; st.pName = "main";
     }
     VkVertexInputBindingDescription vb[16];
     VkVertexInputAttributeDescription va[32];
@@ -234,7 +319,10 @@ VkPipeline graphics_pipeline(const GraphicsKey& key, const PipelineLayout* layou
     info.pDepthStencilState = &ds; info.pColorBlendState = &cb; info.pDynamicState = &dyn;
     info.layout = layout->layout;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    const auto create_started = std::chrono::steady_clock::now();
     VkResult r = vk.vkCreateGraphicsPipelines(gpu.device, cache, 1, &info, nullptr, &pipeline);
+    const uint64_t create_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - create_started).count());
+    if (matched_fragment) vk.vkDestroyShaderModule(gpu.device, matched_fragment, nullptr);
     /* Mali can return VK_INCOMPLETE with a valid pipeline (external-theories T05 b): accepted. */
     if (r > VK_SUCCESS && pipeline && first_time("pipeline_result")) log("RDVK_PIPELINE_RESULT %s with a valid pipeline: accepted", vk_result(r));
     if (r < VK_SUCCESS || !pipeline) {
@@ -245,6 +333,8 @@ VkPipeline graphics_pipeline(const GraphicsKey& key, const PipelineLayout* layou
     std::lock_guard lock(mutex);
     graphics.emplace(key, pipeline);
     ++g_ctx.pipelines_created;
+    g_ctx.pipeline_create_ns += create_ns;
+    if (create_ns > g_ctx.pipeline_create_max_ns) g_ctx.pipeline_create_max_ns = create_ns;
     return pipeline;
 }
 

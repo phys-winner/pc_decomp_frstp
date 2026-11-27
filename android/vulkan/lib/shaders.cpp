@@ -155,6 +155,14 @@ uint32_t create_shader(Kind kind, const uint8_t* bytecode, size_t size, Shader**
         mi.codeSize = size_t(entry.spirv_words) * 4;
         mi.pCode = code;
         vk_check(vk.vkCreateShaderModule(gpu.device, &mi, nullptr, &s->module), "vkCreateShaderModule");
+        if (gpu.caps.qualcomm_shader_interfaces) {
+            if (kind == Kind::PixelShader) {
+                if (scratch.empty()) s->fragment_spirv.assign(code, code + entry.spirv_words);
+                else s->fragment_spirv = std::move(scratch);
+            } else if (kind == Kind::VertexShader || kind == Kind::DomainShader || kind == Kind::GeometryShader) {
+                s->output_widths = shader_output_widths(code, entry.spirv_words);
+            }
+        }
     }
     if (!s->uniform_data.empty()) {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};

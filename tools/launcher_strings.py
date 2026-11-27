@@ -4,7 +4,8 @@
 
 PREPARED is the folder tools/android_launcher.py prepare() wrote (…/launcher/prepared). The shared base
 carries en/ru/de/pl; android/launcher-localization.json holds the other languages keyed by the English
-text, plus de/pl for the port's own tr(english, russian) strings. Exit code 1 when a string lacks a language.
+text, plus de/pl for the port's own tr(english, russian) strings. Exit code 1 when a string lacks a language or a language still
+shows it in English (a row equal to its key, outside SAME_EVERYWHERE / SAME_IN).
 """
 import json
 import re
@@ -12,6 +13,28 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# A row equal to its English key counts as untranslated, except these (units, names, words the language shares).
+SAME_EVERYWHERE = {' (%s)', 'GitHub', 'GB', 'KB', 'MB', 'OK', 'PC', 'GPU: %1$s · Vulkan %2$s'}
+SAME_IN = {
+    'de': {'Details: %s', 'Downloads', 'Launcher', 'Minimal', 'Normal', 'Renderer', 'System', 'Version %s'},
+    'pl': {'Folder…', 'Renderer', 'Minimum: Android API %1$d · %2$s'},
+    'fr': {'Textures', 'Version %s', 'Normal'},
+    'es': {'Error: %s', 'Normal'},
+    'pt-BR': {'Normal'},
+    'tr': {'Normal'},
+}
+
+
+def english_left(words):
+    """{language: [English keys whose row still shows the English text]} of launcher-localization.json."""
+    left = {}
+    for language, row in words.items():
+        for english, text in row.items():
+            if text == english and english not in SAME_EVERYWHERE and english not in SAME_IN.get(language, ()):
+                left.setdefault(language, []).append(english)
+    return left
+
+
 STRING = r'"((?:[^"\\]|\\.)*)"'
 CONCAT = r'((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+)'
 BASE = ('Texts', 'HudField', 'HyperOs')
@@ -80,9 +103,10 @@ def needed(prepared):
 def missing(prepared):
     words = json.loads((ROOT / 'android/launcher-localization.json').read_text(encoding='utf-8'))
     result = {}
+    left = english_left(words)
     for english, origin in needed(prepared).items():
         for language, row in words.items():
-            if english in row:
+            if english in row and english not in left.get(language, ()):
                 continue
             if language in ('ru', 'de', 'pl') and origin in BASE:
                 continue

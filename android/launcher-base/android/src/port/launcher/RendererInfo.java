@@ -3,6 +3,19 @@ package port.launcher;
 import java.util.Map;
 
 final class RendererInfo {
+    /** The renderer samples every texture format the game needs (its real formats for the data set): the
+     *  launcher then says so in one short line in its green. Unknown caps or unknown formats are not "all". */
+    static boolean allSupported(Long caps, java.util.List<String> originals) {
+        return Boolean.TRUE.equals(TextureFormats.supports(caps, originals));
+    }
+
+    /** A renderer row's texture line: one short message when it supports all of the game's own formats,
+     *  else what it supports and lacks of those and of the converter's output formats (formats). */
+    static String textures(android.content.Context context, Long caps, java.util.List<String> formats, java.util.List<String> originals) {
+        if (allSupported(caps, originals)) return Texts.t(context, Texts.TEXTURES) + " · " + Texts.t(context, Texts.TEX_ALL_SUPPORTED);
+        return textures(context, caps, formats);
+    }
+
     static String textures(android.content.Context context, Long caps, java.util.List<String> formats) {
         String label = Texts.t(context, Texts.TEXTURES) + " · ";
         if (formats.isEmpty()) return label + Texts.t(context, Texts.TEX_UNKNOWN_SOURCE);

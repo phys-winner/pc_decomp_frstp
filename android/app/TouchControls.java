@@ -40,6 +40,9 @@ final class TouchControls extends View {
     private static native boolean nativeClickReady(long ticket);
     private static native boolean nativeMouse(int action, int buttons, int meta, float x, float y, float scrollX, float scrollY);
     private static native boolean nativeCamera(int action, float dx, float dy, float zoom, float angle);
+    /** uptimeMillis of the last pinch commit (nativeCamera 10): the engine reports the camera unavailable
+     *  for a frame after it, so a drag starting then must not become a mouse drag. */
+    private static volatile long zoomCommitAt;
     private static native int nativeContext(float x, float y);
     private static native long nativeSwipeTarget(float x,float y,int direction);
     private static native int nativeConstructionView(float[] corners,char[] detail,int painter);
@@ -133,6 +136,13 @@ final class TouchControls extends View {
         if(centerMode&&painterKind!=0&&getWidth()>0&&getHeight()>0&&pointerRelease==null)pointer(0,centerX(),centerY(),0);
     }
     private PopupWindow popup;
+    private FrameLayout layer;
+    /** The launcher's FPS overlay.  Vulkan owns NativeActivity's window surface, so a view added with
+     *  addContentView is never drawn; above the touch view in this subwindow it is.  The overlay is not
+     *  clickable, so every touch still reaches the touch view below it. */
+    public void addOverlay(View overlay) {
+        if (layer != null && overlay != null) layer.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+    }
     private View keyboard;
     private volatile boolean keyboardVisible;
     boolean textInputActive(){return keyboardVisible;}
@@ -245,7 +255,7 @@ final class TouchControls extends View {
         keyboard.setOnApplyWindowInsetsListener((view,insets)->{updateImeViewport(insets);return insets;});
         activity.addContentView(keyboard,new FrameLayout.LayoutParams(1,1));
         activity.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
-        FrameLayout layer = new FrameLayout(activity);
+        layer = new FrameLayout(activity);
         layer.addView(this, new FrameLayout.LayoutParams(-1, -1));
         // Vulkan owns NativeActivity's surface; the transparent subwindow receives touch input.
         popup = new PopupWindow(layer, -1, -1, false);
@@ -997,6 +1007,12 @@ final class TouchControls extends View {
             }
             if (!drag && !pan && !held && Math.hypot(x - downX, y - downY) > dp(10)) {
                 stopHold(); moved = true;
+                // The camera may have been unavailable at finger-down (engine zoom transition); only a hover
+                // was sent so far (no press), so ask again before routing the drag as a mouse drag.
+                if ((context & 1) == 0 && (context & 6) == 0) { int again = mode(downX, downY); if ((again & 1) != 0 && (again & 6) == 0) context = again; }
+                // Still unavailable right after a pinch commit: decide on a later move (lastX/lastY stay, so the
+                // first pan step carries the whole movement).
+                if ((context & 1) == 0 && (context & 6) == 0 && android.os.SystemClock.uptimeMillis() - zoomCommitAt < 450) return;
                 pan = (context & 1) != 0 && (context & 6) == 0;
                 if (!pan) { drag = true; pointer((context & 4096) != 0 ? 2 : 1, downX, downY, 0); }
             }
@@ -1063,7 +1079,11 @@ final class TouchControls extends View {
                 stopHold(); releasePointer();
                 maximum = Math.max(maximum, event.getPointerCount());
                 contactStarts.put(event.getPointerId(index), new float[]{event.getX(index), event.getY(index)});
-                building = (mode(lastX, lastY) & 6) == 4;
+                int multiContext = mode(lastX, lastY);
+                building = (multiContext & 6) == 4;
+                if (!multi) android.util.Log.i("FrostpunkTouch", "multi start context=0x" + Integer.toHexString(context)
+                    + " now=0x" + Integer.toHexString(multiContext) + " building=" + building + " center=" + centerMode
+                    + " pointers=" + event.getPointerCount());
                 multi = true;
                 settingSwipe=controlDragging=settingsScroll=false;
                 timeEnd(); timeline = false;
@@ -1079,7 +1099,7 @@ final class TouchControls extends View {
                     else moveSingle(event.getX(i), event.getY(i));
                 }
             } else if (action == MotionEvent.ACTION_POINTER_UP) {
-                if (multi) { moveMulti(event); releasePointer(); rebase(event, index); }
+                if (multi) { moveMulti(event); releasePointer(); if (maximum == 2) { nativeCamera(10, 0, 0, 0, 0); zoomCommitAt = android.os.SystemClock.uptimeMillis(); } rebase(event, index); }
             } else if (action == MotionEvent.ACTION_UP) {
                 stopHold();
                 if(!multi)moveSingle(event.getX(index),event.getY(index));

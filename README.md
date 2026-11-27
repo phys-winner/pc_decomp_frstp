@@ -1,4 +1,4 @@
-# Frostpunk for Android — 0.3.2.1-dev
+# Frostpunk for Android — 0.4-dev
 
 Experimental native ARM64 Android port of Frostpunk using static recompilation,
 with Vulkan rendering, touch controls, and on-device texture conversion.
@@ -19,7 +19,8 @@ DLC, or long-session compatibility, or guarantee a particular frame rate.
 You need:
 
 - Android 11 / API 30 or newer on a 64-bit ARM device.
-- A compatible Vulkan 1.3 GPU and driver. Adreno uses Mesa Turnip; supported Mali
+- A compatible Vulkan 1.3 GPU and driver. Adreno uses Mesa Turnip, or its system driver
+  where that one reports Vulkan 1.3 with the features the renderer needs; supported Mali
   and PowerVR devices use system Vulkan. The launcher reports the actual features; attempting launch despite a warning does not guarantee compatibility.
 - The launcher checks experimental PanVK on all Mali and Immortalis GPUs.
   The launcher checks the selected driver for DXT1, DXT3 and DXT5 sampling. It can offer
@@ -40,10 +41,25 @@ compiled port code and a translated runtime; its data assets do not include the
 original game installation. Supply your own executable and game data. JSON data
 manifests in `android/` contain names, sizes, and hashes, not game payloads.
 
+Since the port sync of 24 November 2026 the working tree builds an APK with the native Vulkan renderer only:
+the launcher lists **Vulkan** (system driver), **Vulkan (Turnip)** and **Vulkan (PanVK)**, each with the Vulkan
+version and the texture formats of its own driver, and a mode that cannot run is shown disabled with its reason.
+The DXVK modes and the FSR 3 module are no longer packaged; a saved DXVK choice starts the matching Vulkan mode.
+A driver without DXT textures needs a one-time conversion to ASTC 6x6 or ETC2, offered before the first start.
+The Qualcomm system driver is judged like any other system driver: a row with Vulkan 1.3 and the native
+requirements (dynamic rendering, synchronization2, Vulkan memory model, shader draw parameters) is offered,
+an older or smaller one is disabled with that reason. Turnip keeps its own row. On Qualcomm proprietary
+driver build `0x802fa029` (Vulkan 1.3.128 on the realme RMX3851), the renderer matches vector widths between
+shader stages to prevent GPU hangs in tone mapping and city rendering. **Qualcomm shader interface fix**
+is enabled by default in the driver workarounds block for that driver build. Drivers that expose
+`VK_QCOM_rotated_copy_commands` can pre-rotate the swapchain image to match the Android surface.
+The bundled PanVK library is the shared reference build of `../launcher/drivers/panvk` (pinned by its SHA-256).
+Sections below that mention DXVK describe the published 0.3.x releases.
+
 ## Install and play
 
-1. Install `Frostpunk-0.3.2.1-dev-<commit>.apk` (eight commit hash characters). The package is
-   `com.frostpunk.staticrecomp`, with version name `0.3.2.1-dev` and version code `8`.
+1. Install `Frostpunk-0.4-dev-<commit>.apk` (eight commit hash characters). The package is
+   `com.frostpunk.staticrecomp`, with version name `0.4-dev` and version code `10`.
 2. Open the launcher and grant storage access as needed. The Play card shows
    unsupported GPU features and insufficient Vulkan versions. The launcher stays
    usable when the device cannot run the game.
@@ -59,7 +75,9 @@ and restoration; launch checks verify the cache covers the selected quality.
 
 The **Renderer** card defaults to native Vulkan. System Vulkan, Turnip on supported Adreno
 devices, and PanVK on supported Mali devices have independent compatibility results.
-A native startup failure opens the crash report. You can retry or select a different renderer.
+When the selected renderer cannot start, or its GPU device is lost before the first frame or within 30
+seconds after it, the game stops and the launcher names the failure and offers the next available renderer
+(the choice is saved); nothing switches renderers by itself. Any other native failure opens the crash report.
 The existing DXVK modes are transitional while the native backends gain coverage.
 
 **Own driver…** under **PanVK driver** imports a ZIP driver package or an ARM64
@@ -148,7 +166,7 @@ interface patches in the game ZIP. The built-in driver is purple-turnip T30
 
 Turnip disables hardware tessellation to avoid GPU hangs observed in development.
 Upscaling, frame generation, and reduced graphics are experimental and depend on
-the GPU and driver. `0.3.2.1-dev` remains an early development build.
+the GPU and driver. `0.4-dev` remains an early development build.
 
 ## Sources and building
 
@@ -193,8 +211,9 @@ the [JimVulkan build prerequisites](https://github.com/JimVulkan/mali-panvk/tree
 Kraid requires Meson 1.7 or newer, Rust 1.85 or newer with the
 `aarch64-linux-android` target, and a compatible `bindgen` CLI with libclang.
 Run `sh tools/build_panvk.sh /path/to/android-ndk` from the same checkout.
-The APK builder checks the driver artifacts in `build/gpu-runtime/panvk`
-against the hash of the current patch.
+The APK builder takes the driver from the shared folder `../launcher/drivers/panvk`
+(the 20 November build of this patch and recipe, described by its `MANIFEST.json`)
+and checks it against the SHA-256 pinned in `tools/android_release.py`.
 
 **This is an incremental research build, not a complete clean-clone bootstrap.**
 It needs previously generated private AOT inputs, dependency checkouts, and base
@@ -211,9 +230,9 @@ APK tooling and the existing signing key are read from the local
 `~/.agents/skills/adapt-arm32-game/machine_config.json` used by `tools/fastbuild.py`.
 Provide your own private machine configuration and signer; no key or keystore is
 distributed here. The recipe checks the base pin, source stability, APK signature,
-and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.3.2.1-dev-<commit>.apk`, where
+and 16 KB ZIP alignment. The output is `pub/Frostpunk-0.4-dev-<commit>.apk`, where
 `<commit>` matches the eight-character commit embedded in the APK, with a SHA-256
-sidecar. Local aliases `pub/Frostpunk-0.3.2.1-dev.apk` and `pub/Frostpunk.apk` are also
+sidecar. Local aliases `pub/Frostpunk-0.4-dev.apk` and `pub/Frostpunk.apk` are also
 updated. The whole `pub/` directory is Git-ignored.
 
 A portable localization check needs no device or game files:

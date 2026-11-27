@@ -178,8 +178,8 @@ int guard_init() {
         return 1;
     }
     const char* renderer = std::getenv("PORT_RENDERER");
-    bool panvk = renderer && !strcmp(renderer, "native_vulkan_panvk");
-    bool turnip = renderer && !strcmp(renderer, "native_vulkan_turnip");
+    bool panvk = renderer && (!strcmp(renderer, "vulkan-panvk") || !strcmp(renderer, "native_vulkan_panvk") || !strcmp(renderer, "dxvk_panvk"));
+    bool turnip = renderer && (!strcmp(renderer, "vulkan-turnip") || !strcmp(renderer, "native_vulkan_turnip") || !strcmp(renderer, "turnip"));
     std::string path = std::string(host->files_dir) + (panvk ? "/rdvk-panvk-guard.txt" : turnip ? "/rdvk-turnip-guard.txt" : "/rdvk-guard.txt");
     unsigned crashes = 0;
     if (FILE* f = fopen(path.c_str(), "r")) {
@@ -194,7 +194,9 @@ int guard_init() {
         fclose(f);
     }
     // An explicit native selection can retry after a previous startup crash.
-    bool forced = property("debug.fp.renderer") == "vulkan" || panvk || turnip || (renderer && !strcmp(renderer, "native_vulkan"));
+    /* The APK carries no other renderer (DXVK left on 24 November 2026): every launch is native, and a
+     * session after crashes runs with the serialized compiler of level 1. */
+    bool forced = true;
     if (crashes >= 2 && !forced) {
         log("RDVK_SAFE_MODE level=2 crashes=%u: the native Vulkan renderer crashed in %u sessions in a row; this launch uses D3D11/DXVK "
             "(a new build, debug.fp.rdvk_guard=0 or debug.fp.renderer=vulkan tries it again)", crashes, crashes);
@@ -218,7 +220,7 @@ void guard_fatal() { write_crash_marker(); }
 void guard_unsupported() {
     prepare_crash_text(1);   /* "crashes=2": level 2 on the next launch */
     write_crash_marker();
-    log("RDVK_SAFE_MODE unsupported driver: the next launch uses D3D11/DXVK");
+    log("RDVK_SAFE_MODE unsupported driver: this build has no other renderer; choose another driver in the launcher");
 }
 
 void guard_present(uint64_t frames) {

@@ -68,7 +68,7 @@ public final class FrostpunkTextures implements TextureBackend {
     /** Whether a renderer mode of port.json reads a conversion of this format (0: originals).
      *  The transitional DXVK modes know the ASTC formats only. */
     public static boolean rendererReads(String renderer, int format) {
-        return format != ETC2 || renderer != null && renderer.startsWith("native_vulkan");
+        return format != ETC2 || renderer != null && (renderer.startsWith("vulkan") || renderer.startsWith("native_vulkan"));
     }
 
     static final class Row {

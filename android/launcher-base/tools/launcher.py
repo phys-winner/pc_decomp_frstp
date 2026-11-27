@@ -18,9 +18,10 @@ prepare writes into --out:
   assets/launcher/build.json  versionName, versionCode, commit and build time
 and prints a JSON summary. A build script imports prepare() instead. Standard library only.
 
-probe compiles native/vulkan_probe.c into libportprobe.so (arm64-v8a, 16 KB pages) with the Android
-NDK for the game's launcher package: the Vulkan driver check behind the DXVK renderers (Probe.java).
-A build script calls build_probe() and puts the library beside the game's own.
+probe compiles native/vulkan_probe.c into libportprobe.so with the Android NDK for the game's
+launcher package: the Vulkan driver check behind the DXVK renderers (Probe.java). build_probe()
+defaults to arm64-v8a with 16 KB pages; abi="arm32" is armeabi-v7a with 4 KB pages. A build script
+calls build_probe() and puts the library beside the game's own.
 """
 import argparse
 import datetime
@@ -46,6 +47,10 @@ ETC_FORMATS = {"ETC2_RGB", "ETC2_RGB_A1", "ETC2_RGBA", "EAC_R11", "EAC_R11_SNORM
 ETC_FORMATS.update(f"{name}_SRGB" for name in ("ETC2_RGB", "ETC2_RGB_A1", "ETC2_RGBA"))
 ASTC_FORMATS = {f"ASTC_{size}{suffix}" for size in "4x4 5x4 5x5 6x5 6x6 8x5 8x6 8x8 10x5 10x6 10x8 10x10 12x10 12x12".split()
                 for suffix in ("", "_SRGB")}
+# An ASTC conversion may write one- and two-channel data (BC4, BC5 and their signed forms) as EAC
+# R11 / RG11: ASTC has no signed formats (Prey's normal maps are BC5_SNORM). astcFormats then names
+# those EAC formats too, so the offer requires what the cache really holds.
+EAC_FORMATS = {"EAC_R11", "EAC_R11_SNORM", "EAC_RG11", "EAC_RG11_SNORM"}
 OPTION_TYPES = ("bool", "choice", "text")
 FPS_COUNTER = {
     "key": "fps_counter", "type": "bool", "default": "0",
@@ -108,14 +113,23 @@ def validate(spec):
     need(package == "" or re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", package), "app.javaPackage must be a Java package")
     renderers = spec.get("renderers") or {}
     textures = spec.get("textures") or {}
-    for key, allowed in (("formats", BC_FORMATS), ("etc2Formats", ETC_FORMATS), ("astcFormats", ASTC_FORMATS)):
+    for key, allowed in (("formats", BC_FORMATS), ("etc2Formats", ETC_FORMATS), ("astcFormats", ASTC_FORMATS | EAC_FORMATS)):
         if key in textures:
             values = textures[key]
             need(isinstance(values, list) and all(isinstance(v, str) and v in allowed for v in values),
                  f"textures.{key} must list known format names ({', '.join(sorted(allowed))})")
+    if "conversionRequired" in textures:
+        need(isinstance(textures["conversionRequired"], bool), "textures.conversionRequired must be true or false")
+        need(not textures["conversionRequired"] or textures.get("backend"),
+             "textures.conversionRequired needs textures.backend (a converter)")
     modes = [m.get("id") for m in renderers.get("modes", [])]
     for mode in renderers.get("modes", []):
         need(isinstance(mode.get("id"), str) and mode.get("id"), "renderers.modes[].id is required")
+        need(isinstance(mode.get("aliases", []), list) and all(isinstance(a, str) and a for a in mode.get("aliases", [])),
+             f"renderers.modes[{mode.get('id')}].aliases must be a list of earlier ids")
+        taken = [m.get("id") for m in renderers.get("modes", [])] +                 [a for m in renderers.get("modes", []) if m is not mode for a in m.get("aliases", []) if isinstance(m.get("aliases", []), list)]
+        need(not any(a in taken for a in mode.get("aliases", []) if isinstance(mode.get("aliases", []), list)),
+             f"renderers.modes[{mode.get('id')}].aliases: an alias repeats another mode's id or alias")
         need(mode.get("kind", "gles") in KINDS, f"renderer {mode.get('id')}: kind must be one of {', '.join(KINDS)}")
         if "vulkan" in mode:
             need(re.fullmatch(r"\d+\.\d+", str(mode["vulkan"])), f"renderer {mode.get('id')}: vulkan must look like 1.3")
@@ -154,6 +168,12 @@ def validate(spec):
             need(mode["option"] in switches, f"renderer {mode.get('id')}: option must name a bool option of \"options\"")
     if modes:
         need(renderers.get("default", modes[0]) in modes, "renderers.default must be one of the modes")
+    if "failureWindowSeconds" in renderers:
+        # How long after the first presented frame a GPU device loss still counts as the renderer's failure
+        # (RendererFailure.java: the launcher offers the next renderer); later it is an ordinary crash.
+        window = renderers["failureWindowSeconds"]
+        need(type(window) is int and 0 <= window <= 600,
+             "renderers.failureWindowSeconds must be an integer from 0 to 600 (seconds after the first presented frame)")
     distributions = spec.get("distributions") or []
     need(distributions, "at least one distribution is required")
     ids = set()
@@ -437,15 +457,22 @@ def jni_class(package):
     return (package + ".Probe").replace(".", "/")
 
 
-def build_probe(out, package, ndk=None, api=30):
-    """Compiles libportprobe.so (the Vulkan driver check) for arm64-v8a into the folder out, with
-    16 KB page alignment; returns its path. The Java class it registers with is the game's."""
+def build_probe(out, package, ndk=None, api=30, abi="arm64"):
+    """Compiles libportprobe.so (the Vulkan driver check) into the folder out. arm64-v8a is 16 KB
+    aligned; armeabi-v7a (abi="arm32") is 4 KB. Returns its path. The Java class it registers with
+    is the game's. The default abi keeps every other game on arm64."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     library = out / PROBE_LIBRARY
-    command = [str(ndk_clang(ndk)), f"--target=aarch64-linux-android{api}", "-std=c11", "-O2", "-fPIC", "-shared",
+    if abi == "arm32":
+        target, page = f"armv7a-linux-androideabi{api}", "4096"
+    elif abi == "arm64":
+        target, page = f"aarch64-linux-android{api}", "16384"
+    else:
+        raise SpecError(f"probe abi must be arm64 or arm32, not {abi}")
+    command = [str(ndk_clang(ndk)), f"--target={target}", "-std=c11", "-O2", "-fPIC", "-shared",
                "-Wall", "-Wextra", "-Werror", f'-DPORT_PROBE_CLASS="{jni_class(package)}"',
-               "-Wl,-z,max-page-size=16384", "-Wl,--build-id=sha1", "-o", str(library), str(PROBE_SOURCE), "-ldl"]
+               f"-Wl,-z,max-page-size={page}", "-Wl,--build-id=sha1", "-o", str(library), str(PROBE_SOURCE), "-ldl"]
     subprocess.run(command, check=True)
     return library
 

@@ -23,6 +23,8 @@ struct SwapChainObject : Object {
     /* Swap chain images: the back buffer size (the compositor scales), or the window size when the
      * "Upscaling" row asks for FSR 1, which the presenter then draws from the back buffer. */
     uint32_t out_width = 0, out_height = 0;
+    VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    VkSurfaceTransformFlagBitsKHR surface_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     int upscaler = 0;
     std::vector<VkImageView> views;
     VkImageView back_view = VK_NULL_HANDLE;

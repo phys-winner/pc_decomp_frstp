@@ -1,4 +1,5 @@
 #include "formats.h"
+#include "pipeline.h"
 #include "stability.h"
 #include "device.h"
 #include <algorithm>
@@ -25,7 +26,12 @@ const char* vk_result(VkResult r) {
     }
 }
 void vk_check(VkResult r, const char* what) {
-    if (r != VK_SUCCESS) stop("%s failed: %d %s", what, int(r), vk_result(r));
+    if (r == VK_SUCCESS) return;
+    /* The renderer failure policy: a lost device at any time, any other Vulkan failure before the first presented
+       frame (the renderer did not start) is recorded for the launcher; later ones stay ordinary crashes. */
+    if (r == VK_ERROR_DEVICE_LOST) renderer_stop(true, "%s: VK_ERROR_DEVICE_LOST (%d)", what, int(r));
+    if (!renderer_has_presented()) renderer_stop(false, "%s failed: %d %s", what, int(r), vk_result(r));
+    stop("%s failed: %d %s", what, int(r), vk_result(r));
 }
 
 /* ------------------------------------------------------------------ allocator */
@@ -231,6 +237,7 @@ static bool has_extension(const std::vector<VkExtensionProperties>& list, const 
 }
 
 bool Gpu::init() {
+    trace_submissions_ = property("debug.fp.rdvk_submit_wait") == "1";
     vk.vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(host->vk_get_instance_proc_addr());
     if (!vk.vkGetInstanceProcAddr) { log("RDVK_GPU no Vulkan provider"); return false; }
     vk.vkCreateInstance = reinterpret_cast<PFN_vkCreateInstance>(vk.vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance"));
@@ -264,6 +271,12 @@ bool Gpu::init() {
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     caps.vendor = props.properties.vendorID; caps.device_id = props.properties.deviceID;
     caps.driver_id = driver.driverID; caps.api = props.properties.apiVersion;
+    if (caps.vendor == 0x5143 && caps.driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY && props.properties.driverVersion == 0x802fa029u) {
+        const char* option = getenv("PORT_OPTION_FIX_QUALCOMM_SHADER_INTERFACE");
+        caps.qualcomm_shader_interfaces = !option || strcmp(option, "0") != 0;
+        log("RDVK_WORKAROUND name=qualcomm_shader_interfaces state=%s driver_version=0x%08x",
+            caps.qualcomm_shader_interfaces ? "on" : "off", props.properties.driverVersion);
+    }
     caps.min_uniform_offset = limits.minUniformBufferOffsetAlignment;
     caps.min_storage_offset = limits.minStorageBufferOffsetAlignment;
     caps.non_coherent_atom = limits.nonCoherentAtomSize;
@@ -381,6 +394,8 @@ bool Gpu::init() {
     features.pNext = &w11; w11.pNext = &w12; w12.pNext = &w13; w13.pNext = nullptr;
 
     std::vector<const char*> device_extensions = {"VK_KHR_swapchain"};
+    caps.rotated_present = has_extension(extensions, VK_QCOM_ROTATED_COPY_COMMANDS_EXTENSION_NAME);
+    if (caps.rotated_present) device_extensions.push_back(VK_QCOM_ROTATED_COPY_COMMANDS_EXTENSION_NAME);
     void** chain = &w13.pNext;
     VkPhysicalDeviceRobustness2FeaturesEXT wr2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     if (has_extension(extensions, "VK_EXT_robustness2") && robust2.nullDescriptor) {
@@ -639,7 +654,7 @@ void Gpu::wait_fence(VkFence fence, const char* what) {
             log("RDVK_WAIT_RETRY %s VK_TIMEOUT retry=%u", what, timeouts);
             continue;
         }
-        stop("%s failed: %d %s (GPU hang or device lost)", what, int(r), vk_result(r));
+        renderer_stop(true, "%s failed: %d %s (GPU hang or device lost)", what, int(r), vk_result(r));
     }
 }
 
@@ -698,10 +713,18 @@ void Gpu::submit_now(Submission& job) {
     }
     if (job.signal) { info.signalSemaphoreCount = 1; info.pSignalSemaphores = &job.signal; }
     std::lock_guard lock(queue_mutex_);
+    if (trace_submissions_)
+        log("RDVK_SUBMIT begin serial=%llu upload=%d present=%d", (unsigned long long)job.serial, job.count > 1, bool(job.present));
     uint64_t t0 = mono_ns();
     vk_check(vk.vkQueueSubmit(queue, 1, &info, job.fence), "vkQueueSubmit");
     uint64_t t1 = mono_ns();
     ++sync.submits; sync.submit_ns += t1 - t0;
+    if (trace_submissions_) {
+        VkResult result = vk.vkWaitForFences(device, 1, &job.fence, VK_TRUE, 5000000000ull);
+        log("RDVK_SUBMIT end serial=%llu wait_ms=%.3f result=%s", (unsigned long long)job.serial, (mono_ns() - t1) / 1e6, vk_result(result));
+        vk_check(result, "vkWaitForFences(submission trace)");
+        t1 = mono_ns();
+    }
     if (job.present) { job.present(); sync.present_ns += mono_ns() - t1; }
 }
 
@@ -784,6 +807,7 @@ void Gpu::poll() {
 void Gpu::destroy() {
     if (!device) return;
     stop_submit_thread();
+    pipeline_cache_wait_and_save();
     wait_idle();
     for (Frame& f : frames_) {
         for (auto& g : f.garbage) g();

@@ -94,7 +94,9 @@ final class FrostpunkDevice {
         return shared;
     }
 
-    /** A key of the compatibility texts, or null. */
+    /** A key of the compatibility texts, or null. The system driver of every vendor, Qualcomm's included
+     *  (owner's decision of 24 November 2026; the port had refused it as "Turnip only"), is judged like the
+     *  others: Vulkan version (shared check), BGRA, a readable texture format and the native requirements. */
     static String profileProblem(Map<String, String> report, Spec.Mode mode) {
         String driver = mode.driverKey();
         if ("4".equals(report.get(driver + ".gpuType"))) return "software";
@@ -104,9 +106,6 @@ final class FrostpunkDevice {
             if (id != null && (!"18".equals(id) || vendor != QUALCOMM)) return "driver_turnip";
         } else if ("panvk".equals(driver)) {
             if (vendor != ARM || !"20".equals(id)) return "driver_panvk";
-        } else if (vendor == QUALCOMM) {
-            // The Qualcomm system driver: the port runs Adreno through Mesa Turnip only.
-            return "driver_qualcomm";
         } else if (!nativeMode(mode) && !(vendor == ARM && "9".equals(id)) && !(vendor == IMAGINATION && "7".equals(id))) {
             return "driver";
         }
@@ -147,6 +146,13 @@ final class FrostpunkDevice {
         String driver = mode.driverKey();
         int vendor = Probe.vendor(report, driver);
         boolean nativeRenderer = nativeMode(mode);
+        if (nativeRenderer && "stock".equals(driver) && vendor == QUALCOMM && "8".equals(report.get("stock.driverId"))
+                && "802fa029".equals(report.get("stock.driverVersion")))
+            list.add(new Workaround("fix_qualcomm_shader_interface",
+                tr(context, "Qualcomm shader interface fix", "Исправление интерфейсов шейдеров Qualcomm"),
+                tr(context, "Matches vector widths between shader stages to prevent GPU hangs on this driver version.",
+                    "Согласует число компонентов векторов между стадиями шейдеров, чтобы GPU не зависал на этой версии драйвера."),
+                true, !"0".equals(State.get(context, State.CHOICES, "option.fix_qualcomm_shader_interface", "1"))));
         if (nativeRenderer && vendor == ARM)
             list.add(new Workaround("fix_mali_dynamic_state",
                 tr(context, "Mali: set dynamic state again in every pass", "Mali: повторно задавать динамическое состояние в каждом проходе"),

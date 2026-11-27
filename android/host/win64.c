@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "perf_counters.h"
 #include "win64.h"
+#include "port_adpf.h"
 #include "../dxvk/bridge.h"
 #include "win64_kernel.h"
 #include "win64_threads.h"
@@ -1353,6 +1354,7 @@ static int fast_qpc(CPU *c) {
     memcpy(win64_pointer(c->rcx,8,1),&result,8); c->rax=1; return 1;
 }
 __attribute__((visibility("default"))) void frostpunk_android_set_paused(int paused) {
+    port_adpf_block(1, paused);
     static pthread_mutex_t lifecycle_mutex=PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&lifecycle_mutex);
     win64_time_pause(paused);win64_openal_pause(paused);

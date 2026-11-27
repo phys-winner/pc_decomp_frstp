@@ -148,7 +148,7 @@ final class Ui {
         return c;
     }
 
-    TextView label(String value, float sp, int colour) {
+    TextView label(CharSequence value, float sp, int colour) {
         TextView t = new TextView(activity);
         t.setText(value);
         t.setTextSize(sp);
@@ -559,7 +559,8 @@ final class Ui {
     }
 
     /** A tappable choice: title, hint, a stroke when chosen, faded when unavailable. */
-    View choice(String title, String hint, boolean chosen, boolean available, Runnable action) {
+    /** A selectable row; the hint may carry spans (the renderer row's green texture line). */
+    View choice(String title, CharSequence hint, boolean chosen, boolean available, Runnable action) {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setTag(title);
@@ -572,7 +573,7 @@ final class Ui {
         if (chosen) bg.setStroke(dp(2), accent);
         row.setBackground(bg);
         row.addView(label(title, 15, available ? text : muted));
-        if (hint != null && !hint.isEmpty()) row.addView(label(hint, 12, muted));
+        if (hint != null && hint.length() > 0) row.addView(label(hint, 12, muted));
         row.setAlpha(available ? 1f : 0.55f);
         if (action != null) {
             row.setFocusable(true);

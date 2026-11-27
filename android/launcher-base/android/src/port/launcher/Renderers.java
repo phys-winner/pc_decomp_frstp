@@ -248,6 +248,39 @@ final class Renderers {
         return null;
     }
 
+    /** The renderer the launcher offers after `failed` failed (RendererFailure; owner's decision of 24 November
+     *  2026): the next row after it in the list's order (the renderer card's), wrapping around, skipping rows that
+     *  are unavailable here (disabled with a reason) and the failed one itself; null when none is left. An
+     *  earlier id of the failed mode (its aliases) names its current row; an id of no row starts at the first. */
+    static Status next(List<Status> statuses, String failed) {
+        int at = -1;
+        for (int i = 0; i < statuses.size(); ++i) {
+            Spec.Mode mode = statuses.get(i).mode;
+            if (mode.id.equals(failed) || mode.aliases.contains(failed)) { at = i; break; }
+        }
+        String id = at >= 0 ? statuses.get(at).mode.id : failed;
+        for (int step = 1; step <= statuses.size(); ++step) {
+            Status s = statuses.get((at + step) % statuses.size());
+            if (s.available && !s.mode.id.equals(id)) return s;
+        }
+        return null;
+    }
+
+    /** The renderer a saved choice is switched to once that choice can no longer run here — a driver update,
+     *  a removed driver, a new requirement (owner's decision of 24 November 2026: switch to a working renderer and
+     *  say so in a toast): the default renderer when it is confirmed here, else the first confirmed row of the list.
+     *  null while the choice still runs, while the verdict is not final (settled: the driver check has reported and
+     *  is not running — PanVK is unavailable until then), when the choice is no row of this list, or when nothing
+     *  confirmed is left (the card's note then names the problem, as before). */
+    static Status replacement(List<Status> statuses, String chosen, String defaultMode, boolean settled) {
+        Status current = status(statuses, chosen);
+        if (!settled || current == null || current.available) return null;
+        Status fallback = status(statuses, defaultMode);
+        if (fallback != null && fallback != current && fallback.available && fallback.verified) return fallback;
+        for (Status other : statuses) if (other != current && other.available && other.verified) return other;
+        return null;
+    }
+
     static String key(Spec.Distribution d) { return "renderer." + d.id; }
 
     /** The player's renderer: the game's own setting (hooks), else the launcher's, else the default. */
@@ -261,7 +294,8 @@ final class Renderers {
         String mode = null;
         try { mode = hooks.renderer(context); } catch (RuntimeException e) { android.util.Log.w("Launcher", "hooks renderer: " + e); }
         if (mode == null || spec.mode(mode) == null) mode = State.get(context, State.CHOICES, key(d), "");
-        return spec.mode(mode) != null ? mode : null;
+        /* The mode's current id: the saved one may be an alias from before a rename. */
+        return spec.mode(mode) != null ? spec.mode(mode).id : null;
     }
 
     static void choose(Context context, Spec.Distribution d, PortHooks hooks, String mode) {

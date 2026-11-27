@@ -12,6 +12,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.view.Gravity;
@@ -31,7 +32,9 @@ import java.util.regex.Pattern;
  *  library); the game's activity calls {@link #attach} first (paths, options and update in the
  *  PORT_* environment for native code), {@link #failed} when it refuses to start (files, access,
  *  preparation), {@link #firstFrame} once the game shows a picture, and {@link #exited} when the
- *  game ends. A start that never reached its first frame tells the launcher the renderer failed. */
+ *  game ends. When the selected renderer fails the game calls {@link #rendererFailed} (or the native
+ *  renderer_failure.h) instead of switching renderers: the launcher offers the next one of its list. A start
+ *  that never reached its first frame without saying why tells the launcher the renderer may have failed. */
 public final class Launch {
     public static final String EXTRA_DISTRIBUTION = "launcher.distribution", EXTRA_RENDERER = "renderer",
         EXTRA_SKIP_INTRO = "skipIntro", EXTRA_PLAY = "launcher.play";
@@ -44,6 +47,8 @@ public final class Launch {
     private boolean reached;
     private static volatile boolean migrated;
     private static volatile String monitoredEdition;
+    /** SystemClock.elapsedRealtime of this process's first presented frame (firstFrame); 0: none yet. */
+    private static volatile long presentedAt;
 
     private Launch(Activity activity, Spec spec, Spec.Distribution distribution) {
         this.activity = activity;
@@ -57,18 +62,23 @@ public final class Launch {
     public static Launch attach(Activity activity) {
         Spec spec = Spec.get(activity);
         migrate(activity, PortHooks.of(activity));
-        String id = activity.getIntent().getStringExtra(EXTRA_DISTRIBUTION);
-        Spec.Distribution d = id != null ? spec.distribution(id) : null;
-        if (d == null) {
-            /* Started by a tool (am start) or the game's own restart: the distribution of this activity. */
-            for (Spec.Distribution each : spec.distributions)
-                if (each.activity.equals(activity.getClass().getName())) { d = each; break; }
-        }
-        if (d == null) d = spec.distributions.get(0);
+        Spec.Distribution d = distributionOf(activity, spec);
         Launch launch = new Launch(activity, spec, d);
         monitor(activity.getApplicationContext(), d, launch.renderer());
         launch.environment();
         return launch;
+    }
+
+    /** The distribution the launcher started this activity for; started by a tool (am start) or by the
+     *  game's own restart: the distribution of this activity's class. */
+    private static Spec.Distribution distributionOf(Activity activity, Spec spec) {
+        String id = activity.getIntent() != null ? activity.getIntent().getStringExtra(EXTRA_DISTRIBUTION) : null;
+        Spec.Distribution d = id != null ? spec.distribution(id) : null;
+        if (d == null) {
+            for (Spec.Distribution each : spec.distributions)
+                if (each.activity.equals(activity.getClass().getName())) { d = each; break; }
+        }
+        return d != null ? d : spec.distributions.get(0);
     }
 
     private static synchronized void monitor(Context context, Spec.Distribution distribution, String renderer) {
@@ -182,6 +192,8 @@ public final class Launch {
     /** PORT_* variables for the game's native code (native/port_env.h): no JNI names involved. */
     private void environment() {
         set("PORT_CRASH_JOURNAL", crashFile(State.folder(activity), distribution.id).getAbsolutePath());
+        /* native/replacements/renderer_failure.h writes the failed renderer's record here (RendererFailure). */
+        set("PORT_RENDERER_FAILURE", RendererFailure.file(State.folder(activity), distribution.id).getAbsolutePath());
         set("PORT_DISTRIBUTION", distribution.id);
         set("PORT_VERSION_NAME", Updates.installedName(activity));
         set("PORT_VERSION_CODE", Long.toString(Updates.installedCode(activity)));
@@ -239,7 +251,13 @@ public final class Launch {
     public void firstFrame(FrameLayout root) {
         if (reached) return;
         reached = true;
-        State.put(activity, State.launch(distribution.id), "reached", "1");
+        if (presentedAt == 0) presentedAt = SystemClock.elapsedRealtime();
+        String now = Long.toString(System.currentTimeMillis());
+        State.update(activity, State.launch(distribution.id), values -> {
+            values.setProperty("reached", "1");
+            /* When: a GPU device loss within renderers.failureWindowSeconds still counts as the renderer's failure. */
+            if (!values.containsKey("reachedTime")) values.setProperty("reachedTime", now);
+        });
         Updates.Info update = Updates.available(activity);
         if (update == null || root == null) return;
         String shown = State.get(activity, State.UPDATE, "noticed", "");
@@ -272,6 +290,39 @@ public final class Launch {
      *  preparation failed): the reason in the player's words, shown on the distribution's card.
      *  The renderer is not blamed for it. */
     public void failed(String reason) { recordFailure(State.folder(activity), distribution.id, reason); }
+
+    /** The selected renderer failed (owner's decision of 24 November 2026; RendererFailure): it did not start
+     *  (deviceLost false: the driver library is missing or refused, the driver's identity is wrong, creating the
+     *  instance, device, surface, swapchain or EGL context failed, a required feature is missing at run time)
+     *  or the GPU device was lost (deviceLost true: VK_ERROR_DEVICE_LOST, an EGL context loss, a GL robustness
+     *  reset). The game must not switch to another driver or renderer itself. This records the failure for the
+     *  current launch (the renderer as started, the reason, the kind, the time since the first presented frame),
+     *  opens the launcher, which offers the next available renderer of its list, and ends the game's process;
+     *  no crash report is shown for it. Any thread; it does not return. */
+    public static void rendererFailed(Activity activity, String reason, boolean deviceLost) {
+        Spec spec = Spec.get(activity);
+        Spec.Distribution d = distributionOf(activity, spec);
+        File dir = State.folder(activity);
+        String renderer = State.read(dir, State.launch(d.id)).getProperty("renderer");
+        if (renderer == null && activity.getIntent() != null) renderer = activity.getIntent().getStringExtra(EXTRA_RENDERER);
+        if (renderer == null) renderer = Os.getenv("PORT_RENDERER");
+        long presented = presentedAt;
+        long since = presented > 0 ? Math.max(0, SystemClock.elapsedRealtime() - presented) : -1;
+        String kind = deviceLost ? RendererFailure.LOST : RendererFailure.START;
+        android.util.Log.e("Launcher", "renderer failure (" + kind + ", " + renderer + ", " + since + " ms after the first frame): " + reason);
+        try {
+            RendererFailure.write(RendererFailure.file(dir, d.id), android.os.Process.myPid(), kind, renderer,
+                System.currentTimeMillis(), since, reason);
+        } catch (java.io.IOException e) {
+            android.util.Log.w("Launcher", "renderer failure record: " + e);
+        }
+        openLauncher(activity, d.id);
+        activity.finish();
+        android.os.Process.killProcess(android.os.Process.myPid());
+    }
+
+    /** rendererFailed for this activity. */
+    public void rendererFailed(String reason, boolean deviceLost) { rendererFailed(activity, reason, deviceLost); }
 
     /** The game's native code starts now (after the player fixed what it refused, say): an earlier
      *  refusal of this start no longer applies. */
@@ -419,6 +470,7 @@ public final class Launch {
     /** The record a start leaves before the game's activity runs (Launch.start). */
     static void recordStart(File dir, String distribution, String build, String renderer) {
         crashFile(dir, distribution).delete();
+        RendererFailure.file(dir, distribution).delete();
         State.update(dir, State.launch(distribution), values -> {
             values.clear();
             values.setProperty("build", build);
@@ -512,6 +564,10 @@ public final class Launch {
     static String lastExit(Context context, Spec.Distribution d) {
         Properties launch = State.read(context, State.launch(d.id));
         if (!build(context).equals(launch.getProperty("build"))) return null;
+        /* The game stopped because its renderer failed (Launch.rendererFailed, renderer_failure.h): that cause,
+           told apart from crashes, whether or not it is inside the rules of the launcher's offer. */
+        RendererFailure failure = RendererFailure.last(State.folder(context), d.id, launch, build(context), false, 0);
+        if (failure != null) return failure.summary();
         String code = launch.getProperty("exit");
         if (code != null) return "0".equals(code) ? null : "exit " + code;
         String javaCrash = launch.getProperty("javaCrash");

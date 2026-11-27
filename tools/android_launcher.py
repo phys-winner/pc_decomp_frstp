@@ -9,7 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = 'com.frostpunk.staticrecomp'
-VERSION = ('0.3.2.1-dev', 8)
+VERSION = ('0.4-dev', 10)
 LANGUAGES = ('en', 'ru', 'de', 'pl', 'fr', 'es', 'it', 'pt-BR', 'tr', 'ja', 'ko', 'zh-CN', 'fa', 'cs', 'hu')
 
 
@@ -289,9 +289,9 @@ def activity_extensions(result):
             '        if (textures instanceof FrostpunkTextures) card.addView(ui.label(FrostpunkDevice.tr(this,\n'
             '            "Additional space: ", "Дополнительное место: ") + Texts.size(this, ((FrostpunkTextures)textures).outputBytes()), 13, ui.muted));\n'
             '        List<TextView> buttons = new ArrayList<>();\n        Long caps = Launch.textureCaps(this, mode, gpu);\n        if (caps == null) return;',
-        '        File cache = Install.textureCacheRoot(this, spec, distribution, root);\n'
+        '        boolean selective = backend.selective();\n'
         '        return new Work.Job(Texts.TEXTURES, Texts.t(this, mods == null ? Texts.JOB_TEXTURES : Texts.MOD_TEXTURES), format > 0 ? cache : root) {':
-            '        File cache = Install.textureCacheRoot(this, spec, distribution, root);\n'
+            '        boolean selective = backend.selective();\n'
             '        if (backend instanceof FrostpunkTextures) ((FrostpunkTextures)backend).quality(fpReducedTextureQuality());\n'
             '        final boolean rebuild = fpTextureRebuild; fpTextureRebuild = false;\n'
             '        return new Work.Job(fpTexturePlay != null ? Texts.PLAY : Texts.TEXTURES, Texts.t(this, mods == null ? Texts.JOB_TEXTURES : Texts.MOD_TEXTURES), format > 0 ? cache : root) {\n'
@@ -305,12 +305,21 @@ def activity_extensions(result):
         'if (p != null && p.length >= 4) { done = p[2]; total = p[3]; itemsDone = p[0]; itemsTotal = p[1]; }':
             'if (p != null && p.length >= 4) { done = p[2]; total = p[3]; itemsDone = p[0]; itemsTotal = p[1]; file = backend.message(); }',
         # The first-start offer of the shared base goes on to the game when the conversion is done.
-        '        if (etc2) dialog.setPositiveButton("ETC2", (dlg, w) -> startTextures(TextureBackend.ETC2));\n'
-        '        if (astc) dialog.setNeutralButton("ASTC", (dlg, w) -> startTextures(TextureBackend.ASTC));':
-            '        if (etc2) dialog.setPositiveButton("ETC2", (dlg, w) -> { fpTexturePlay = d; startTextures(TextureBackend.ETC2); });\n'
-            '        if (astc) dialog.setNeutralButton("ASTC", (dlg, w) -> { fpTexturePlay = d; startTextures(TextureBackend.ASTC); });',
+        '        if (etc2) dialog.setPositiveButton("ETC2", (dlg, w) -> startTextures(TextureBackend.ETC2, sources));\n'
+        '        if (astc) dialog.setNeutralButton("ASTC", (dlg, w) -> startTextures(TextureBackend.ASTC, sources));':
+            '        if (etc2) dialog.setPositiveButton("ETC2", (dlg, w) -> { fpTexturePlay = d; startTextures(TextureBackend.ETC2, sources); });\n'
+            '        if (astc) dialog.setNeutralButton("ASTC", (dlg, w) -> { fpTexturePlay = d; startTextures(TextureBackend.ASTC, sources); });',
         '        if (!idle() || mode == null || !d.readsCache(mode) || textureBackend() == null) return false;\n        Long caps = Launch.textureCaps(this, mode, gpu);':
             '        if (fpOwnTextureOffer() || !idle() || mode == null || !d.readsCache(mode) || textureBackend() == null) return false;\n        Long caps = Launch.textureCaps(this, mode, gpu);',
+        # ETC2 is read by the native Vulkan modes only (FrostpunkTextures.rendererReads): the DXVK rows
+        # neither list it nor offer it.
+        '                    for (String format : spec.etc2Formats) if (!formats.contains(format)) formats.add(format);':
+            '                    if (FrostpunkTextures.rendererReads(s.mode.id, TextureBackend.ETC2))\n'
+            '                        for (String format : spec.etc2Formats) if (!formats.contains(format)) formats.add(format);',
+        '        if (Boolean.TRUE.equals(TextureFormats.supports(caps, spec.etc2Formats)))\n'
+        '            buttons.add(ui.button(Texts.fmt(this, Texts.TEX_CONVERT, "ETC2")':
+            '        if (Boolean.TRUE.equals(TextureFormats.supports(caps, spec.etc2Formats)) && FrostpunkTextures.rendererReads(mode.id, TextureBackend.ETC2))\n'
+            '            buttons.add(ui.button(Texts.fmt(this, Texts.TEX_CONVERT, "ETC2")',
         # The workaround switches are shown by fpWorkarounds for the driver they belong to.
         '            if (!option.rendererSetting || (option.arm64Only && !android.os.Process.is64Bit())) continue;':
             '            if (!option.rendererSetting || option.key.startsWith("fix_") || (option.arm64Only && !android.os.Process.is64Bit())) continue;',
@@ -340,6 +349,11 @@ def activity_extensions(result):
         # Fifteen languages: rows of the base's four fall back to translations.json.
         'names[field.ordinal()] = field.title[Texts.column(this)];': 'names[field.ordinal()] = Texts.pick(this, field.title);',
         'HyperOs.advice(vendor, column)': 'Texts.translated(this, HyperOs.advice(vendor, column))',
+        # The tool's name (realme/OPPO "Game Assistant") in the same words as the translated advice.
+        'String system = HyperOs.system(vendor, Build.MANUFACTURER), tool = HyperOs.tool(vendor, column);':
+            'String system = HyperOs.system(vendor, Build.MANUFACTURER), tool = Texts.translated(this, HyperOs.tool(vendor, column));',
+        '.setMessage(Texts.fmt(this, Texts.HYPEROS_FAILED, HyperOs.tool(vendor, Texts.column(this))))':
+            '.setMessage(Texts.fmt(this, Texts.HYPEROS_FAILED, Texts.translated(this, HyperOs.tool(vendor, Texts.column(this)))))',
         'names.add(new java.util.Locale(code).getDisplayLanguage(new java.util.Locale(code)));':
             'names.add(java.util.Locale.forLanguageTag(code).getDisplayName(java.util.Locale.forLanguageTag(code)));',
     }
@@ -399,6 +413,7 @@ def build_probe(launcher, work, package):
     snprintf(text, sizeof text, "%d", etc2); port_line(r, prefix, "etc2", text);
     snprintf(text, sizeof text, "%u", f2.features.textureCompressionBC); port_line(r, prefix, "bcFeature", text);
     snprintf(text, sizeof text, "%u", p.deviceType); port_line(r, prefix, "gpuType", text);
+    snprintf(text, sizeof text, "%08x", p.driverVersion); port_line(r, prefix, "driverVersion", text);
     snprintf(text, sizeof text, "%u", r2.robustBufferAccess2); port_line(r, prefix, "robustBufferAccess2", text);
     snprintf(text, sizeof text, "%u", r2.nullDescriptor); port_line(r, prefix, "nullDescriptor", text);
     snprintf(text, sizeof text, "%u", v12.descriptorBindingPartiallyBound); port_line(r, prefix, "partiallyBound", text);
@@ -464,14 +479,15 @@ def main_java(text):
     text = text.replace('import android.app.NativeActivity;',
                         'import android.app.NativeActivity;\nimport '+PACKAGE+'.launcher.Launch;')
     text = text.replace('private TextView status;', 'private Launch launch;\n    private volatile boolean presented;\n    private TextView status;')
-    # The launcher's FPS overlay (port.json app.performanceHud) above the game surface and the touch layer:
+    # The launcher's FPS overlay (port.json app.performanceHud) above the game surface and the touch layer,
+    # inside the touch subwindow (Vulkan owns NativeActivity's own window surface; addContentView is not drawn):
     # null while the player leaves the counter off, so nothing is created or sampled then.
     edits = {
         'private TextView status;': 'private ' + PACKAGE + '.launcher.FpsOverlay fpsOverlay;\n    private TextView status;',
         '            controls.attach(this);\n':
             '            controls.attach(this);\n'
             '            fpsOverlay=' + PACKAGE + '.launcher.FpsOverlay.create(this, TouchControls::frameTimes);\n'
-            '            if(fpsOverlay!=null){addContentView(fpsOverlay,new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,FrameLayout.LayoutParams.MATCH_PARENT));fpsOverlay.start();}\n',
+            '            if(fpsOverlay!=null){controls.addOverlay(fpsOverlay);fpsOverlay.start();}\n',
         '    @Override protected void onPause() {\n':
             '    @Override protected void onResume() {\n        super.onResume();\n        if(fpsOverlay!=null)fpsOverlay.start();\n    }\n'
             '    @Override protected void onPause() {\n        if(fpsOverlay!=null)fpsOverlay.stop();\n',

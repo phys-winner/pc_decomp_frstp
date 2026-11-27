@@ -18,6 +18,12 @@ public interface PortHooks {
     default String optionProblem(Context context, String key, String value) { return null; }
     /** A warning to confirm before saving a choice; may carry styled text. Null accepts it. */
     default CharSequence optionWarning(Context context, String key, String value) { return null; }
+
+    /** Optional editor belonging to a game-specific launcher option. */
+    default android.view.View optionEditor(Context context, String key) { return null; }
+
+    /** Returns true if a game-specific option handled this picker result. */
+    default boolean optionResult(android.app.Activity activity, int request, int result, Intent data) { return false; }
     /** Paths of a part, relative to its folder, which the game also needs and which are missing
      *  there now, beyond port.json's "required": what depends on the game's own settings (UT3: the
      *  language chosen in its settings). Empty when nothing is missing. */
@@ -74,6 +80,24 @@ public interface PortHooks {
      *  launcher names no log. Only a path: nothing is opened, and it runs in the launcher's
      *  process on its UI thread. */
     default String logFile(Context context, String distribution) { return null; }
+
+    /** A one-time question before this start: title, message, accept, decline. Null starts at once.
+     *  The hook records that it asked; the launcher does not. */
+    default String[] startOffer(Context context) { return null; }
+
+    /** Saves the answer from startOffer. False leaves the player in the launcher.
+     *  accept is the minimal-graphics choice. An ETC2 choice is the launcher's own work. */
+    default boolean startOfferAnswer(Context context, boolean accept) { return true; }
+
+    /** True when the plain startOffer dialog should also offer an ETC2 texture conversion.
+     *  probed/etc2 come from the GLES probe. nativeBcUnsupported is true only when DXT/BC is
+     *  known to be missing. alreadyConverted is a finished scan that found a cache.
+     *  converterPresent means this APK has the converter and it can be constructed. */
+    default boolean offerEtc2(Context context, boolean probed, boolean etc2, boolean nativeBcUnsupported,
+            boolean alreadyConverted, boolean converterPresent) { return false; }
+
+    /** Title, body, continue, graphics choice, ETC2 choice for that dialog. Null keeps the plain one. */
+    default String[] startOfferEtc2(Context context) { return null; }
 
     /** Loads the hooks of port.json, or the defaults. */
     static PortHooks of(Context context) {

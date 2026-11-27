@@ -49,12 +49,9 @@
       "title": "Frostpunk",
       "activity": "com.frostpunk.staticrecomp.MainActivity",
       "renderers": [
-        "native_vulkan",
-        "native_vulkan_turnip",
-        "native_vulkan_panvk",
-        "dxvk",
-        "turnip",
-        "dxvk_panvk"
+        "vulkan",
+        "vulkan-turnip",
+        "vulkan-panvk"
       ],
       "parts": [
         {
@@ -80,10 +77,11 @@
     }
   ],
   "renderers": {
-    "default": "native_vulkan",
+    "default": "vulkan",
     "modes": [
       {
-        "id": "native_vulkan",
+        "id": "vulkan",
+        "aliases": ["native_vulkan", "dxvk"],
         "kind": "vulkan",
         "probe": "version",
         "title": "Vulkan",
@@ -93,7 +91,8 @@
         "libraries": ["libfrostpunk_rdvk.so"]
       },
       {
-        "id": "native_vulkan_turnip",
+        "id": "vulkan-turnip",
+        "aliases": ["native_vulkan_turnip", "turnip"],
         "kind": "turnip",
         "probe": "version",
         "title": "Vulkan (Turnip)",
@@ -106,7 +105,8 @@
         "libraries": ["libfrostpunk_rdvk.so", "libadrenotools.so", "libpurple_turnip.so"]
       },
       {
-        "id": "native_vulkan_panvk",
+        "id": "vulkan-panvk",
+        "aliases": ["native_vulkan_panvk", "dxvk_panvk"],
         "kind": "panvk",
         "probe": "version",
         "title": "Vulkan (PanVK)",
@@ -116,45 +116,35 @@
         "textureCache": "read",
         "driver": "libvulkan_panfrost.so",
         "libraries": ["libfrostpunk_rdvk.so", "libadrenotools.so", "libvulkan_panfrost.so"]
-      },
-      {
-        "id": "dxvk",
-        "kind": "vulkan",
-        "probe": "dxvk",
-        "title": "DXVK",
-        "vulkan": "1.3",
-        "needsBC": false,
-        "textureCache": "read",
-        "libraries": ["libdxvk_d3d11.so", "libdxvk_dxgi.so"]
-      },
-      {
-        "id": "turnip",
-        "kind": "turnip",
-        "probe": "dxvk",
-        "title": "DXVK (Turnip)",
-        "minSdk": 30,
-        "vulkan": "1.3",
-        "needsBC": false,
-        "textureCache": "read",
-        "adreno": [600, 899],
-        "driver": "libpurple_turnip.so",
-        "libraries": ["libadrenotools.so", "libpurple_turnip.so", "libdxvk_d3d11.so", "libdxvk_dxgi.so"]
-      },
-      {
-        "id": "dxvk_panvk",
-        "kind": "panvk",
-        "probe": "dxvk",
-        "title": "DXVK (PanVK)",
-        "minSdk": 30,
-        "vulkan": "1.3",
-        "needsBC": false,
-        "textureCache": "read",
-        "driver": "libvulkan_panfrost.so",
-        "libraries": ["libdxvk_d3d11.so", "libdxvk_dxgi.so", "libadrenotools.so", "libvulkan_panfrost.so"]
       }
     ]
   },
   "options": [
+    {
+      "key": "adpf",
+      "type": "bool",
+      "default": "1",
+      "title": {
+        "en": "Performance hints (ADPF)",
+        "ru": "Подсказки производительности (ADPF)",
+        "de": "Leistungshinweise (ADPF)",
+        "pl": "Wskazówki wydajności (ADPF)"
+      },
+      "hint": {
+        "en": "Reports frame work to Android performance hints on supported devices. Turn off if the device overheats or frame times become unstable. Applies at the next game start.",
+        "ru": "Передаёт Android время работы кадра через ADPF на поддерживаемых устройствах. Выключите при перегреве или нестабильном времени кадров. Применяется при следующем запуске игры.",
+        "de": "Meldet die Bildarbeitszeit an Android auf unterstützten Geräten. Bei Überhitzung oder unruhigen Bildzeiten ausschalten. Gilt ab dem nächsten Spielstart.",
+        "pl": "Przekazuje Androidowi czas pracy klatki na obsługiwanych urządzeniach. Wyłącz przy przegrzewaniu lub niestabilnym czasie klatek. Działa od następnego uruchomienia gry."
+      }
+    },
+    {
+      "key": "fix_qualcomm_shader_interface",
+      "type": "bool",
+      "default": "1",
+      "rendererSetting": true,
+      "only": ["frostpunk"],
+      "title": {"en": "Qualcomm shader interface fix", "ru": "Исправление интерфейсов шейдеров Qualcomm"}
+    },
     {
       "key": "fix_mali_dynamic_state",
       "type": "bool",
@@ -434,9 +424,9 @@
   ],
   "textures": {
     "backend": "com.frostpunk.staticrecomp.launcher.FrostpunkTextures",
-    "formats": ["DXT1", "DXT3", "DXT5"],
-    "etc2Formats": [],
-    "astcFormats": ["ASTC_6x6"]
+    "formats": ["DXT1", "DXT3", "DXT5", "DXT1_SRGB", "DXT3_SRGB", "DXT5_SRGB"],
+    "etc2Formats": ["ETC2_RGB", "ETC2_RGBA", "ETC2_RGB_SRGB", "ETC2_RGBA_SRGB"],
+    "astcFormats": ["ASTC_6x6", "ASTC_6x6_SRGB"]
   },
   "hints": {
     "gameFiles": {

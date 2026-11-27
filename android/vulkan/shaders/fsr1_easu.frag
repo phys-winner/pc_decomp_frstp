@@ -7,6 +7,7 @@
 
 layout(constant_id = 3) const uint s_output_width = 1;
 layout(constant_id = 4) const uint s_output_height = 1;
+layout(constant_id = 5) const uint s_pre_transform = 1;
 layout(set = 0, binding = 0) uniform sampler2D s_image;
 layout(location = 0) out vec4 o_color;
 layout(push_constant) uniform present_info_t { ivec2 src_offset; uvec2 src_extent; };
@@ -25,6 +26,13 @@ void main() {
   FsrEasuCon(c0, c1, c2, c3, AF1(src_extent.x), AF1(src_extent.y),
     AF1(src_extent.x), AF1(src_extent.y), AF1(s_output_width), AF1(s_output_height));
   AF3 color;
-  FsrEasuF(color, AU2(gl_FragCoord.xy), c0, c1, c2, c3);
+  // Invert the VkSurfaceTransformFlagBitsKHR rotation for the logical EASU pixel.
+  AU2 pixel = AU2(gl_FragCoord.xy);
+  switch (s_pre_transform) {
+    case 2u: pixel = AU2(pixel.y, s_output_height - 1u - pixel.x); break;
+    case 4u: pixel = AU2(s_output_width - 1u, s_output_height - 1u) - pixel; break;
+    case 8u: pixel = AU2(s_output_width - 1u - pixel.y, pixel.x); break;
+  }
+  FsrEasuF(color, pixel, c0, c1, c2, c3);
   o_color = vec4(color, 1.0);
 }

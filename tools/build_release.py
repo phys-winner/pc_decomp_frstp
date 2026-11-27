@@ -1,4 +1,5 @@
 """Build a Frostpunk release from the validated private AOT/base-APK inputs."""
+import os
 import shutil
 import hashlib
 import json
@@ -35,12 +36,11 @@ sources = [ROOT / 'android/app/app.c', ROOT / 'android/dxvk/bridge.cpp', ROOT / 
            ROOT / 'android/launcher/launch_checks.java.inc']
 pins = {str(p.relative_to(ROOT)): builder.sha(p) for p in sources}
 pins.update({str(p.relative_to(ROOT)): builder.sha(p) for p in (ROOT / 'android/vulkan').rglob('*') if p.is_file()})
-subprocess.run([sys.executable, '-X', 'utf8', '-B', str(Path(build_dxvk.__file__))], check=True)
-dxvk = OUT / 'dxvk'
-dxvk.mkdir(exist_ok=True)
-for name in ('d3d11', 'dxgi'):
-    library = 'libdxvk_' + name + '.so'
-    shutil.copyfile(build_dxvk.OUT / 'src' / name / library, dxvk / library)
+# The normal APK carries the native Vulkan renderer only (owner's decision of 24 November 2026): DXVK is
+# neither built nor packaged, and the FSR 3 module, which only the DXVK path loaded, leaves with it.
+DROPPED = {'lib/arm64-v8a/libdxvk_d3d11.so', 'lib/arm64-v8a/libdxvk_dxgi.so', 'lib/arm64-v8a/libfrostpunk_fsr3.so',
+           'assets/licenses/FSR3.txt', 'assets/licenses/FSR3-SDK.txt', 'assets/licenses/FSR3-origin.json'}
+PUB = Path(os.environ['FROSTPUNK_PUB']).resolve() if os.environ.get('FROSTPUNK_PUB') else ROOT / 'pub'
 builder.build_dex()
 fan_localizations(ROOT / 'build/fan-localizations', OUT / 'launcher-assets', OUT)
 builder.build_app()
@@ -49,7 +49,8 @@ archive = vulkan_dev.build_bridge(OUT)
 runtime_units = build_localized_apk.language_units(OUT)
 visibility_build = OUT / 'visibility'
 subprocess.run([sys.executable, '-X', 'utf8', '-B', str(ROOT / 'tools/fastlift.py'), 'build',
-                '--units', '822', '--out', str(visibility_build)], check=True)
+                '--units', '795,822', '--out', str(visibility_build)], check=True)
+runtime_units[795] = str(visibility_build / 'obj/recomp_funcs_0795.o')
 native_hooks = {
     810: ('L_000140E92AF0', 'L_000140E92B80'),
     812: ('L_000140EB45F0',),
@@ -98,7 +99,7 @@ builder.unit_objects = release_unit_objects
 runtime = vulkan_dev.link_runtime(OUT, archive, unit_overrides=runtime_units, host_sources=release_host)
 rdvk = build_rdvk.build_lib()
 source_manifest_sha256 = hashlib.sha256(json.dumps(source_pins, sort_keys=True).encode()).hexdigest()
-apk = builder.package(runtime, 'data-flow', dxvk=dxvk, native_libraries=(rdvk,))
+apk = builder.package(runtime, 'data-flow', native_libraries=(rdvk,))
 unsigned, aligned = OUT / 'data-unsigned.apk', OUT / 'data-aligned.apk'
 extra = {p.name: p for p in (OUT / 'launcher-assets').glob('game-data-*.json')}
 extra['game-inputs.tsv'] = OUT / 'launcher-assets/game-inputs.tsv'
@@ -114,7 +115,7 @@ with zipfile.ZipFile(apk) as z:
     assert len(home) >= len(b'/build')
     neutral = b'/build'.ljust(len(home), b'_')
     # shortcut: redact cached NDK assertion paths in place; use -ffile-prefix-map when rebuilding these libraries.
-    for name in ('libdxvk_d3d11.so', 'libdxvk_dxgi.so', 'libopenal.so'):
+    for name in ('libopenal.so',):
         entry = 'lib/arm64-v8a/' + name
         original = z.read(entry)
         cleaned = original.replace(b'\0' + home + b'/', b'\0' + neutral + b'/')
@@ -147,7 +148,7 @@ extra['licenses/Turnip-origin.json'] = public_general
 with zipfile.ZipFile(apk) as source, zipfile.ZipFile(unsigned, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as target:
     for info in source.infolist():
         if info.filename.startswith(('META-INF/', 'assets/switch-ui/')) or info.filename.removeprefix('assets/') in extra \
-                or info.filename == 'assets/' + build_shaderlib.ASSET:
+                or info.filename == 'assets/' + build_shaderlib.ASSET or info.filename in DROPPED:
             continue
         target.writestr(info, public_libraries[info.filename] if info.filename in public_libraries else source.read(info.filename))
     for name, path in extra.items():
@@ -155,7 +156,7 @@ with zipfile.ZipFile(apk) as source, zipfile.ZipFile(unsigned, 'w', zipfile.ZIP_
     build_shaderlib.add_to_apk(target)   # stored: the native Vulkan device maps it from the APK
 fb = builder.fb
 subprocess.run([str(fb.BUILD_TOOLS / 'zipalign.exe'), '-P', '16', '-f', '4', str(unsigned), str(aligned)], check=True)
-final = ROOT / 'pub' / ('Frostpunk-' + VERSION[0] + '-' + build_metadata['commit'] + '.apk')
+final = PUB / ('Frostpunk-' + VERSION[0] + '-' + build_metadata['commit'] + '.apk')
 final.parent.mkdir(exist_ok=True)
 atomic_originals = {row['source'] for row in atomic_manifest['units']}
 for name, pin in {**pins, **source_pins}.items():
@@ -192,6 +193,7 @@ with zipfile.ZipFile(final) as packaged:
     shaderlib_info = packaged.getinfo('assets/' + build_shaderlib.ASSET)
     assert shaderlib_info.compress_type == zipfile.ZIP_STORED, 'shader library must be stored'
     assert hashlib.sha256(packaged.read(shaderlib_info)).hexdigest() == build_shaderlib.sha(build_shaderlib.OUTPUT)
+    assert not any(name.startswith('lib/') and ('dxvk' in name.lower() or 'fsr3' in name.lower()) for name in packaged.namelist()), 'DXVK payload in APK'
     assert packaged.testzip() is None, 'APK CRC mismatch'
 unsigned.unlink(); aligned.unlink()
 (final.parent / (final.name + '.sha256')).write_text(builder.sha(final) + '  ' + final.name + '\n', encoding='ascii')
@@ -202,6 +204,6 @@ report['public_binary_redactions'] = redactions
 (OUT / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
 print(json.dumps({key: report[key] for key in ('apk', 'apk_sha256', 'bytes', 'runtime_sha256')}, indent=2), flush=True)
 
-for alias in ('Frostpunk-' + VERSION[0] + '.apk', 'Frostpunk.apk'):
+for alias in ('Frostpunk-' + VERSION[0] + '.apk', 'Frostpunk.apk') if PUB == ROOT / 'pub' else ():
     shutil.copyfile(final, final.parent / alias)
     (final.parent / (alias + '.sha256')).write_text(builder.sha(final) + '  ' + alias + '\n', encoding='ascii')

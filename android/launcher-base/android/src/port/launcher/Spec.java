@@ -52,6 +52,10 @@ final class Spec {
 
     static final class Mode {
         String id, kind, title, textureCache = "";
+        /* Earlier ids of this mode ("aliases"): a saved choice or a game setting that still names
+           one is read as this mode, so that a port can rename its modes to the common ids
+           (gles, vulkan, vulkan-turnip, vulkan-panvk) without losing the player's choice. */
+        final List<String> aliases = new ArrayList<>();
         int gles;
         boolean maintenance1;
         final List<String> vulkanRequires = new ArrayList<>();
@@ -119,6 +123,9 @@ final class Spec {
     final JSONObject json;
     final String label, logTag, storage, github, hooks, textureBackend, gogInstaller;
     final boolean separateTextureCache, performanceHud, textureSection;
+    /** port.json textures.conversionRequired: a renderer that lacks an original format starts only after the
+     *  conversion (no "Not now"; owner's decision of 24 November 2026 for Prey, as Frostpunk's own launcher). */
+    final boolean conversionRequired;
     final List<String> textureFormats = new ArrayList<>(), etc2Formats = new ArrayList<>(), astcFormats = new ArrayList<>();
     final Object title, subtitle, gameFilesHint, optionsHint, textureHint;
     final boolean allFilesAccess, localNetwork, updates, autoLaunch, hyperosNotice;
@@ -126,6 +133,9 @@ final class Spec {
     final List<Distribution> distributions = new ArrayList<>();
     final List<Mode> modes = new ArrayList<>();
     final String defaultMode;
+    /** renderers.failureWindowSeconds: how long after the first presented frame a GPU device loss still counts
+     *  as the renderer's failure (RendererFailure), in milliseconds; later it is an ordinary crash. */
+    final long rendererFailureWindowMs;
     final List<String> autoModes = new ArrayList<>(), verifiedModes = new ArrayList<>();
     final List<Option> options = new ArrayList<>();
     final List<Folder> folders = new ArrayList<>();
@@ -189,6 +199,7 @@ final class Spec {
                 Mode mode = new Mode();
                 mode.id = m.getString("id");
                 mode.kind = m.optString("kind", "gles");
+                strings(m.optJSONArray("aliases"), mode.aliases);
                 mode.title = m.optString("title", mode.id);
                 mode.description = m.opt("description");
                 mode.vulkan = vulkanVersion(m.optString("vulkan", ""));
@@ -211,8 +222,10 @@ final class Spec {
             defaultMode = renderers.optString("default", modes.isEmpty() ? "" : modes.get(0).id);
             strings(renderers.optJSONArray("auto"), autoModes);
             strings(renderers.optJSONArray("verified"), verifiedModes);
+            rendererFailureWindowMs = 1000L * Math.max(0, renderers.optInt("failureWindowSeconds", RendererFailure.DEFAULT_WINDOW_SECONDS));
         } else {
             defaultMode = "";
+            rendererFailureWindowMs = 1000L * RendererFailure.DEFAULT_WINDOW_SECONDS;
         }
 
         JSONArray list = json.getJSONArray("distributions");
@@ -325,6 +338,7 @@ final class Spec {
             if (textures.has("formats") || !textureFormats.isEmpty()) for (Mode mode : modes) mode.originalFormats = textureFormats;
         }
         separateTextureCache = textures != null && textures.optBoolean("separateCache", false);
+        conversionRequired = textures != null && textures.optBoolean("conversionRequired", false);
     }
 
     Distribution distribution(String id) {
@@ -336,6 +350,7 @@ final class Spec {
 
     Mode mode(String id) {
         for (Mode m : modes) if (m.id.equals(id)) return m;
+        for (Mode m : modes) if (m.aliases.contains(id)) return m;
         return null;
     }
 

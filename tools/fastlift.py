@@ -79,7 +79,7 @@ SOURCE_OVERRIDE = {
 ALIASES = {va: 'fp_original_L_%012X' % va for va in (
     0x140D8DB10, 0x140D8E470, 0x140DFA630, 0x140E1E6C0, 0x140E26E40, 0x140E26F30, 0x140E26F90, 0x140E74B30,
     0x140EC6200, 0x140EC7240, 0x140F99F00, 0x140F9D240, 0x14124C7B0, 0x141250610, 0x1419EF190, 0x141A04EB0,
-    0x141A5EE10, 0x141A62E90, 0x141AAAFB0, 0x14180A400,
+    0x141A5EE10, 0x141A62E90, 0x141AAAFB0, 0x14180A400, 0x141596CD0,
     # UICanvas::Render (line charts of the Economy panel): mobile_controls.c corrects its scale.
     0x1410CCA60)}
 
@@ -91,7 +91,8 @@ ALIASES[0x140FBA350] = 'fp_lod_original_L_000140FBA350'
 # Wrappers that must also see the references of their own unit.  SociotechTree's camera update
 # (141A62E90) is only reached by tail jumps from 141A60220 (cancel) and 141A60530 (selection) in its
 # own unit. The building painter also calls its aim routine directly in its own unit.
-ALIAS_WRAP_OWN_UNIT = {0x141A62E90, 0x141AAAFB0, 0x14180A400}
+# The ambient system calls its multiplier (141596CD0) only from its own unit (0901).
+ALIAS_WRAP_OWN_UNIT = {0x141A62E90, 0x141AAAFB0, 0x14180A400, 0x141596CD0}
 
 
 # Production link rows of patched units that do not carry the unit number in their file name.
@@ -125,6 +126,10 @@ PREFETCH = {
     # Entity walk before the frame: rbx = element, rbp = index, r14 = count.
     0x140EB4642: 'if (c->rbp + 8 < c->r14) { uint64_t fl_p = rd64(c->rbx + 64); FL_PREFETCH(fl_p + 0x40); '
                  'FL_PREFETCH(fl_p); FL_PREFETCH(fl_p + 0xAC0); FL_PREFETCH(fl_p + 0x180); }',
+    0x140EB4A60: 'if (c->r14 + 8 < c->r12) { uint64_t fl_p = rd64(c->r13 + (c->r14 + 8)*8); '
+                 'FL_PREFETCH(fl_p + 0x58); }',
+    0x140F8FBB0: 'if (c->r15 + 8 < c->r12) { uint64_t fl_p = rd64(c->rbx + 64); '
+                 'FL_PREFETCH(fl_p + 0x50); FL_PREFETCH(fl_p + 0x34); }',
 }
 
 FLAGS = ('cf', 'zf', 'sf', 'of', 'pf', 'af')
@@ -575,6 +580,145 @@ def port_settings_patch(text):
     return text
 
 
+def entity_membership_patch(text):
+    # ComponentSystemBase owns 0x2000 bitmap bytes (65536 entity bits). A retired or
+    # garbage id must not index past that table: Android scudo guard pages turn the
+    # same read that Windows absorbs into SIGSEGV when a build preview is cleared.
+    old = 'SET32(c->rax, rd32((c->r8 + c->rax*4 + 0x60ull)));'
+    new = 'SET32(c->rax, c->rax < 0x800ull ? rd32((c->r8 + c->rax*4 + 0x60ull)) : 0);'
+    if text.count(old) != 1:
+        raise ValueError('ComponentSystemBase::ContainsEntity bitmap read changed')
+    return text.replace(old, new, 1)
+
+
+def entity_membership_emit(text):
+    """Same bitmap bound on fastlift output. Already-patched text is left as it is."""
+    old = 'SET32(c->rax, rd32((c->r8 + c->rax*4 + 0x60ull)));'
+    new = 'SET32(c->rax, c->rax < 0x800ull ? rd32((c->r8 + c->rax*4 + 0x60ull)) : 0);'
+    if text.count(new) == 1 and text.count(old) == 0:
+        return text
+    if text.count(old) != 1:
+        raise ValueError('ComponentSystemBase::ContainsEntity bitmap read changed')
+    return text.replace(old, new, 1)
+
+
+# Inlined ComponentSystemBase membership tests. The bitmap is 0x800 dwords at object+0x60
+# (the next field starts at +0x2060). Word index is entity_id >> 5, with the id taken from
+# entity+0x50 and the bit from id & 31. A retired id must not touch that table.
+_BITMAP_SHR = re.compile(
+    r'\bSET(?:32|64)\(c->([a-z0-9]+),\s*op_shr_fl\(&fl,\s*c->([a-z0-9]+),\s*0x5u,\s*[48]\)\)')
+_BITMAP_ASSIGN = re.compile(r'\bSET(?:8L|8H|16|32|64)\(c->([a-z0-9]+),')
+_BITMAP_ADDR = re.compile(r'c->([a-z0-9]+) \+ c->([a-z0-9]+)\*4 \+ 0x60ull')
+_BITMAP_LOAD = re.compile(
+    r'^(?P<indent>[ \t]*)SET32\(c->(?P<dst>[a-z0-9]+), rd32\(\(c->(?P<base>[a-z0-9]+) \+ '
+    r'c->(?P<idx>[a-z0-9]+)\*4 \+ 0x60ull\)\)\);(?P<tail>.*)$')
+_BITMAP_TEST = re.compile(
+    r'^(?P<indent>[ \t]*)flags_logicz_lt\(&fl, rd32\(\(c->(?P<base>[a-z0-9]+) \+ '
+    r'c->(?P<idx>[a-z0-9]+)\*4 \+ 0x60ull\)\) & R32\(c->(?P<mask>[a-z0-9]+)\), 4\);(?P<tail>.*)$')
+_BITMAP_STORE = re.compile(
+    r'^(?P<indent>[ \t]*)wr32\(\(c->(?P<base>[a-z0-9]+) \+ c->(?P<idx>[a-z0-9]+)\*4 \+ 0x60ull\), '
+    r'\(uint32_t\)\(R32\(c->(?P<src>[a-z0-9]+)\)\)\);(?P<tail>.*)$')
+_BITMAP_RMW = re.compile(
+    r'^(?P<indent>[ \t]*)wr32\(\(c->(?P<base>[a-z0-9]+) \+ c->(?P<idx>[a-z0-9]+)\*4 \+ 0x60ull\), '
+    r'\(uint32_t\)\(flags_logicz_lt\(&fl, rd32\(\(c->(?P=base) \+ c->(?P=idx)\*4 \+ 0x60ull\)\) '
+    r'& R32\(c->(?P<src>[a-z0-9]+)\), 4\)\)\);(?P<tail>.*)$')
+
+
+def _bitmap_reaches(lines, earlier, later):
+    """True when earlier falls through to later. A goto around a later block does not."""
+    for cursor in range(earlier, later):
+        stripped = lines[cursor].strip()
+        if (stripped.startswith('goto ') or stripped.startswith('return ') or 'musttail' in stripped):
+            return False
+    return True
+
+
+def _bitmap_word_index(lines, index):
+    """Register holding id>>5 for a membership bitmap access, or None when the line is unrelated."""
+    addrs = _BITMAP_ADDR.findall(lines[index])
+    if not addrs or any(base == 'rsp' for base, _idx in addrs):
+        return None
+    idxs = {idx for _base, idx in addrs}
+    if len(idxs) != 1:
+        return 'reject'
+    idx = next(iter(idxs))
+    for cursor in range(index - 1, max(-1, index - 160), -1):
+        if lines[cursor].startswith('void '):
+            return None
+        shift = _BITMAP_SHR.search(lines[cursor])
+        if shift and shift.group(1) == idx:
+            # id >> 5. The id is a zero-extended dword (entity+0x50). An index >= 0x800
+            # is past the 0x2000-byte map even when a later block copies that register.
+            window = lines[max(0, cursor - 24):index]
+            if not any('& 0x1Fu' in row or '& 0x1f' in row for row in window):
+                return None
+            return idx
+        assigned = _BITMAP_ASSIGN.search(lines[cursor])
+        if assigned and assigned.group(1) == idx and _bitmap_reaches(lines, cursor, index):
+            return None
+    return None
+
+
+def _rewrite_bitmap_line(line, idx):
+    """Guard one membership access. None means the syntax is not one of the known forms."""
+    match = _BITMAP_LOAD.match(line)
+    if match and match.group('idx') == idx:
+        return ('%sSET32(c->%s, c->%s < 0x800ull ? rd32((c->%s + c->%s*4 + 0x60ull)) : 0);%s'
+                % (match['indent'], match['dst'], idx, match['base'], idx, match['tail']))
+    match = _BITMAP_TEST.match(line)
+    if match and match.group('idx') == idx:
+        return ('%sflags_logicz_lt(&fl, (c->%s < 0x800ull ? rd32((c->%s + c->%s*4 + 0x60ull)) : 0) '
+                '& R32(c->%s), 4);%s'
+                % (match['indent'], idx, match['base'], idx, match['mask'], match['tail']))
+    match = _BITMAP_RMW.match(line)
+    if match and match.group('idx') == idx:
+        return ('%sif (c->%s < 0x800ull) wr32((c->%s + c->%s*4 + 0x60ull), '
+                '(uint32_t)(flags_logicz_lt(&fl, rd32((c->%s + c->%s*4 + 0x60ull)) & R32(c->%s), 4))); '
+                'else flags_logicz_lt(&fl, 0, 4);%s'
+                % (match['indent'], idx, match['base'], idx, match['base'], idx, match['src'], match['tail']))
+    match = _BITMAP_STORE.match(line)
+    if match and match.group('idx') == idx:
+        return ('%sif (c->%s < 0x800ull) wr32((c->%s + c->%s*4 + 0x60ull), (uint32_t)(R32(c->%s)));%s'
+                % (match['indent'], idx, match['base'], idx, match['src'], match['tail']))
+    return None
+
+
+def entity_bitmap_guard(text):
+    """Bound every inlined membership bitmap access. Already-guarded text is left as it is.
+
+    Reads of an out-of-range word behave as zero, so a later bit test says "not a member".
+    Writes are skipped. An `and` into the word still updates flags as if the old word were zero.
+    """
+    lines = text.split('\n')
+    trailing = bool(lines) and lines[-1] == ''
+    body = lines[:-1] if trailing else lines
+    out = []
+    problems = []
+    for index, line in enumerate(body):
+        if '*4 + 0x60ull' not in line or '< 0x800ull' in line:
+            out.append(line)
+            continue
+        kind = _bitmap_word_index(body, index)
+        if kind is None:
+            out.append(line)
+            continue
+        if kind in ('dirty', 'reject'):
+            problems.append(kind + ': ' + line.strip()[:220])
+            out.append(line)
+            continue
+        rewritten = _rewrite_bitmap_line(line, kind)
+        if rewritten is None:
+            problems.append('shape: ' + line.strip()[:220])
+            out.append(line)
+            continue
+        out.append(rewritten)
+    if problems:
+        raise ValueError('ComponentSystemBase bitmap access not guarded:\n' + '\n'.join(problems[:16]))
+    if trailing:
+        out.append('')
+    return '\n'.join(out)
+
+
 def unit_text(index):
     """Source text of a unit, with the functional patches that are applied as text overlays."""
     text = unit_path(index).read_text(encoding='utf-8').replace(chr(13) + chr(10), chr(10))
@@ -584,6 +728,8 @@ def unit_text(index):
         sys.path.insert(0, str(ROOT / 'tools'))
         import atomic_sites
         text, _ = atomic_sites.rewrite_text(text, 'main')
+    if index == 795:
+        text = entity_membership_patch(text)
     if index == 822:
         sys.path.insert(0, str(ROOT / 'tools'))
         import mobile_detail_overlay
@@ -1561,6 +1707,9 @@ def build(args):
         for index, text, stats, report, unit_notes in pool.map(generate_unit, selected, chunksize=2):
             if index == 959:
                 text = port_settings_patch(text)
+            if index == 795:
+                text = entity_membership_emit(text)
+            text = entity_bitmap_guard(text)
             (src / ('recomp_funcs_%04d.c' % index)).write_text(text, encoding='utf-8', newline='\n')
             totals.update(stats); reports.update(report); notes.extend(unit_notes)
     print('generated %d units in %.1fs: %s %s' % (len(selected), time.monotonic() - started, dict(totals), dict(reports)), flush=True)

@@ -17,7 +17,7 @@ def main():
            '0803':['L_000140E26E40','L_000140E26F30','L_000140E26F90'],'0823':['L_000140F99F00','L_000140F9D240'],
            '0958':['L_000141A04EB0'],'0957':['L_0001419EF190'],'0807':[],
            '0793':['L_000140D8DB10','L_000140D8E470'],
-           '0961':['L_000141A5EE10','L_000141A62E90']}
+           '0961':['L_000141A5EE10','L_000141A62E90'],'0901':['L_000141596CD0']}
     for unit,names in hooks.items():
         original=ROOT/f'build/arm64/eh-overlay-objects/recomp_funcs_{unit}.o'
         target=out/original.name
@@ -68,8 +68,10 @@ void fp_original_L_000141A04EB0(CPU*);
 void fp_original_L_0001419EF190(CPU*);
 void fp_original_L_000141A5EE10(CPU*);
 void fp_original_L_000141A62E90(CPU*);
+void fp_original_L_000141596CD0(CPU*);
 void L_000141A5EE10(CPU* c){fp_mobile_law_camera_init(c,fp_original_L_000141A5EE10);}
 void L_000141A62E90(CPU* c){fp_mobile_law_camera(c,fp_original_L_000141A62E90);}
+void L_000141596CD0(CPU* c){fp_mobile_ambience(c,fp_original_L_000141596CD0);}
 void L_000141A04EB0(CPU* c){fp_mobile_painters_created(c,fp_original_L_000141A04EB0);}
 void L_0001419EF190(CPU* c){fp_mobile_panels_created(c,fp_original_L_0001419EF190);}
 void L_000141250610(CPU* c){fp_mobile_camera_before(c);fp_original_L_000141250610(c);}

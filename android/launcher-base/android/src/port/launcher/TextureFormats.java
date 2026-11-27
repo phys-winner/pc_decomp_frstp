@@ -71,4 +71,32 @@ final class TextureFormats {
     static Boolean supports(Long mask, List<String> required) {
         return mask == null || required.isEmpty() ? null : missing(mask, required).isEmpty();
     }
+
+    /** What a conversion for a renderer that lacks `missing` would convert: all of it when there is no cache
+     *  (converted 0); with a cache, the missing formats it does not cover (covers null: it covers every format,
+     *  the conversion of a backend that re-encodes the whole data set). */
+    static List<String> uncovered(List<String> missing, int converted, List<String> covers) {
+        List<String> left = new ArrayList<>(missing);
+        if (converted == 0) return left;
+        if (covers == null) left.clear();
+        else left.removeAll(covers);
+        return left;
+    }
+
+    /** The launcher's record of what a cache covers after a conversion job: "*" (every format: a backend that
+     *  converts everything, or a job without sources), else the earlier formats and the job's (comma list). */
+    static String covered(List<String> before, List<String> sources, boolean selective) {
+        if (!selective || sources == null || before == null) return "*";
+        List<String> all = new ArrayList<>(before);
+        for (String format : sources) if (!all.contains(format)) all.add(format);
+        return String.join(",", all);
+    }
+
+    /** The record of covered(): null for every format, else its formats; an empty record covers nothing. */
+    static List<String> covers(String record) {
+        if ("*".equals(record)) return null;
+        List<String> formats = new ArrayList<>();
+        for (String name : record.split(",")) if (!name.trim().isEmpty()) formats.add(name.trim());
+        return formats;
+    }
 }

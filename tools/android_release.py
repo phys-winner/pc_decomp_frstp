@@ -151,16 +151,27 @@ def build_app():
     print('app', target, sha(target), flush=True)
 
 
+# The one PanVK build of all ports (owner's decision of 24 November 2026): the shared folder
+# launcher/drivers/panvk beside the project, described by its MANIFEST.json. It is the build of
+# android/gpu/panvk-r10.patch with tools/build_panvk.sh of 20 November (a superset of the 6e85bc6f… build
+# BioShock pinned). PORT_PANVK may name another copy of that folder; the hash below stays pinned.
+PANVK_SHA256 = '04bde80d79916b6934fda15cc2aeb0a59e2a395a4eb564f3a7dece35d5e54492'
+
+
 def panvk_payload():
-    directory = fb.GPU_RUNTIME.parent / 'panvk'
-    driver = directory / 'libvulkan_panfrost-fixed.so'
-    notice = directory / 'NOTICE-fixed.txt'
-    source_patch = ROOT / 'android/gpu/panvk-r10.patch'
-    recipe = ROOT / 'tools/build_panvk.sh'
-    stamp = directory / 'fixed.sha256'
-    if not all(path.is_file() for path in (driver, notice, stamp)) or \
-            stamp.read_text(encoding='ascii').splitlines() != [sha(path) for path in (source_patch, recipe, driver, notice)]:
-        raise RuntimeError('Build the patched PanVK driver with tools/build_panvk.sh before packaging')
+    directory = Path(os.environ.get('PORT_PANVK') or ROOT.parent / 'launcher/drivers/panvk')
+    manifest_path = directory / 'MANIFEST.json'
+    if not manifest_path.is_file():
+        raise RuntimeError('No shared PanVK folder with MANIFEST.json at ' + str(directory))
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    driver = directory / manifest['library']['file']
+    notice = directory / manifest['licence']['file']
+    if manifest['library']['sha256'] != PANVK_SHA256:
+        raise RuntimeError('The shared PanVK manifest names ' + manifest['library']['sha256'] + ', the port pins ' + PANVK_SHA256)
+    if not driver.is_file() or sha(driver) != PANVK_SHA256:
+        raise RuntimeError('The shared PanVK library does not match its manifest: ' + str(driver))
+    if not notice.is_file() or sha(notice) != manifest['licence']['sha256']:
+        raise RuntimeError('The shared PanVK notice does not match its manifest: ' + str(notice))
     return {'lib/arm64-v8a/libvulkan_panfrost.so': (driver, zipfile.ZIP_DEFLATED),
             'assets/licenses/PanVK-JimVulkan-NOTICE.txt': (notice, zipfile.ZIP_DEFLATED)}
 
@@ -187,6 +198,7 @@ def package(runtime, name, dxvk=None, native_libraries=()):
     replace.update({'lib/arm64-v8a/' + name: (fb.GPU_RUNTIME / name, zipfile.ZIP_DEFLATED) for name in fb.GPU_LIBS})
     replace.update({'assets/licenses/' + p.name: (p, zipfile.ZIP_DEFLATED) for p in (fb.GPU_RUNTIME / 'licenses').iterdir()})
     with zipfile.ZipFile(FL18_APK) as fl18:
+        # The base APK's DXVK libraries pass through here unchanged; tools/build_release.py drops them.
         for lib in ('lib/arm64-v8a/libdxvk_d3d11.so', 'lib/arm64-v8a/libdxvk_dxgi.so'):
             path = folder / Path(lib).name
             # --dxvk: libraries relinked by build/ui-20261114/dxvk_cache/build.py (pipeline cache fix)

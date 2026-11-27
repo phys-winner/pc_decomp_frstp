@@ -22,6 +22,9 @@
 #include "geometry.h"
 #include "pipeline.h"
 #include "present.h"
+extern "C" void port_adpf_end(void) __attribute__((weak));
+extern "C" void port_adpf_begin(double fps) __attribute__((weak));
+extern "C" uint32_t frostpunk_android_frame_limit(void) __attribute__((weak));
 #include "stability.h"
 #include "rdvk.h"
 
@@ -62,9 +65,10 @@ void dev_init(CPU* c) {
     uint64_t dev = c->rcx;
     static bool ready = false;
     if (!ready) {
+        renderer_qa_start();
         if (!gpu.init()) {
             guard_unsupported();
-            stop("Vulkan device initialisation failed (see RDVK_GPU)");
+            renderer_stop(false, "Vulkan device initialisation failed: %s", gpu_failure_note());
         }
         objects_init();
         g_ctx.init();
@@ -85,12 +89,14 @@ void dev_frame_end_query(CPU* c) {
     ret(c);
 }
 void dev_present(CPU* c) {
+    if (port_adpf_end) port_adpf_end();
     uint64_t dev = c->rcx, window = c->rdx;
     for (int i = 0; i < 5; ++i) wr64(dev + 1192 + 8 * i, 0);
     g_ctx.set_targets(0, nullptr, nullptr);
     auto* swapchain = window ? reinterpret_cast<SwapChainObject*>(object_of(rd64(window + 64))) : nullptr;
     g_ctx.present(swapchain, rd8(dev + 688));
     ret(c, 1);
+    if (port_adpf_begin) port_adpf_begin(frostpunk_android_frame_limit ? frostpunk_android_frame_limit() : 60);
 }
 
 /* ---------------------------------------------------------------- render targets */

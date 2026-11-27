@@ -50,6 +50,12 @@ void layout_access(VkImageLayout layout, bool source, VkPipelineStageFlags& stag
         access = source ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
                         : (VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         break;
+    case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL:
+    case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL:
+        stage = DEPTH_STAGES | SHADERS;
+        access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        if (!source) access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+        break;
     case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
         stage = DEPTH_STAGES | SHADERS;
         access = source ? 0 : (VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT);
@@ -90,6 +96,20 @@ VkStencilOp stencil_op(uint32_t op) {
     }
 }
 bool is_depth_texture(const Texture* t) { return t->aspect != VK_IMAGE_ASPECT_COLOR_BIT; }
+
+bool writable_attachment_layout(VkImageLayout layout) {
+    return layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL || layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+           layout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL || layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL;
+}
+
+VkImageLayout depth_view_layout(const View& view) {
+    bool has_stencil = (view.texture->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+    if (view.read_only_depth)
+        return has_stencil && !view.read_only_stencil ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
+                                                     : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    return has_stencil && view.read_only_stencil ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL
+                                                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+}
 
 bool srv_layout_matches(const View& view, VkImageLayout layout) {
     const Texture* t = view.texture;
@@ -322,6 +342,7 @@ void Context::set_targets(uint32_t count, View* const* rtvs, View* dsv) {
     end_pass(PE_TARGETS);
     for (uint32_t i = 0; i < MAX_RT; ++i) rtv_[i] = i < used ? next[i] : nullptr;
     rt_count_ = used;
+    if (dsv_ != dsv) dirty_ |= D_DEPTH;
     dsv_ = dsv;
     dirty_ |= D_PIPELINE | D_SCISSOR | D_VIEWPORT;
 }
@@ -346,8 +367,7 @@ void Context::transition(Texture* t, const VkImageSubresourceRange& range, VkIma
             barriers.src |= src; barriers.dst |= dst;
             current = layout;
             layout_changed();
-            if (!gpu.caps.defer_attachment_transitions &&
-                (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL || layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)) {
+            if (!gpu.caps.defer_attachment_transitions && writable_attachment_layout(layout)) {
                 if (std::find(attachment_layouts_.begin(), attachment_layouts_.end(), t) == attachment_layouts_.end())
                     attachment_layouts_.push_back(t);
             }
@@ -357,7 +377,12 @@ void Context::transition(Texture* t, const VkImageSubresourceRange& range, VkIma
 void Context::transition_view(View* v, VkImageLayout layout) { transition(v->texture, v->range, layout); }
 
 VkImageLayout Context::srv_layout(const View* v) const {
-    return is_depth_texture(v->texture) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (!is_depth_texture(v->texture)) return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (dsv_ && dsv_->texture == v->texture &&
+        (!(v->range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) || dsv_->read_only_depth) &&
+        (!(v->range.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) || dsv_->read_only_stencil))
+        return depth_view_layout(*dsv_);
+    return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 }
 
 /* Textures left in an attachment layout by earlier passes go to their sampling layout now, so
@@ -375,7 +400,7 @@ void Context::sweep_attachments() {
         for (uint32_t layer = 0; layer < t->layers; ++layer)
             for (uint32_t mip = 0; mip < t->mips; ++mip) {
                 VkImageLayout l = t->layout(mip, layer);
-                if (l == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL || l == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                if (writable_attachment_layout(l))
                     transition(t, VkImageSubresourceRange{t->aspect, mip, 1, layer, 1}, target);
             }
     }
@@ -393,8 +418,8 @@ void Context::begin_pass() {
             use(rtv_[i]->texture);
         }
     if (dsv_) {
-        transition(dsv_->texture, dsv_->range, dsv_->read_only_depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                   rebind && !dsv_->read_only_depth);
+        VkImageLayout layout = depth_view_layout(*dsv_);
+        transition(dsv_->texture, dsv_->range, layout, rebind && writable_attachment_layout(layout));
         use(dsv_->texture);
     }
     barriers.flush(cmd_);
@@ -416,7 +441,7 @@ void Context::begin_pass() {
     if (dsv_) {
         PendingClear& c = clear_[MAX_RT];
         depth.imageView = dsv_->view;
-        depth.imageLayout = dsv_->read_only_depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth.imageLayout = depth_view_layout(*dsv_);
         depth.loadOp = c.depth ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         depth.clearValue = c.value;
@@ -433,6 +458,12 @@ void Context::begin_pass() {
     bool stencil_aspect = dsv_ && (dsv_->texture->aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
     info.pDepthAttachment = dsv_ ? &depth : nullptr;
     info.pStencilAttachment = stencil_aspect ? &stencil : nullptr;
+    if (gpu.trace_submissions()) {
+        const Shader* ps = shader_[PS];
+        log("RDVK_SUBMIT_PASS serial=%llu frame=%llu pass=%llu role=%u ps=%s %ux%u", (unsigned long long)gpu.serial(),
+            (unsigned long long)frames + 1, (unsigned long long)passes + 1, ps ? unsigned(ps->role) : unsigned(ROLE_NONE),
+            ps ? ps->name : "-", width, height);
+    }
     if (tracing)
         log("RDVK_TRACE pass_begin #%llu rt0=%p cload=%d ds=%p:%s dload=%d sload=%d satt=%d dlayout=%d %ux%u", (unsigned long long)passes + 1,
             rt_count_ && rtv_[0] ? static_cast<void*>(rtv_[0]->texture) : nullptr, rt_count_ ? int(colors[0].loadOp) : -1,
@@ -744,7 +775,9 @@ void Context::clear_rtv(View* v, const float color[4]) {
 
 void Context::clear_dsv(View* v, uint32_t flags, float depth, uint8_t stencil) {
     if (!v || !(flags & 3)) return;
-    bool clear_depth = flags & 1, clear_stencil = (flags & 2) && (v->texture->aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+    bool clear_depth = (flags & 1) && !v->read_only_depth;
+    bool clear_stencil = (flags & 2) && !v->read_only_stencil && (v->texture->aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+    if (!clear_depth && !clear_stencil) return;
     if (tracing)
         log("RDVK_TRACE clear_dsv view=%p tex=%p current=%d in_pass=%d depth=%d(%g) stencil=%d(%u)", static_cast<void*>(v), static_cast<void*>(v->texture),
             int(v == dsv_), int(in_pass_), int(clear_depth), double(depth), int(clear_stencil), unsigned(stencil));
@@ -903,7 +936,6 @@ void Context::prepare_draw() {
             VkImageLayout want = srv_layout(v);
             if (srv_layout_matches(*v, want)) continue;
             if (in_pass_) {
-                if (!gpu.caps.defer_attachment_transitions && dsv_ && dsv_->texture == v->texture && dsv_->read_only_depth) { srv_clean = false; continue; }
                 static unsigned noted = 0;
                 if (noted < 24 && ++noted)
                     log("RDVK_SPLIT_CAUSE stage=%u slot=%u tex=%p dxgi=%u %ux%u mips=%u layers=%u bind=0x%x layout=%d want=%d is_rt=%d is_ds=%d ps=%s",
@@ -1008,14 +1040,15 @@ void Context::prepare_draw() {
         if (stencil != dyn.stencil_test) { vk.vkCmdSetStencilTestEnable(cmd_, stencil); dyn.stencil_test = stencil; }
         uint32_t hash = d.FrontFace.StencilFailOp | d.FrontFace.StencilDepthFailOp << 4 | d.FrontFace.StencilPassOp << 8 | d.FrontFace.StencilFunc << 12 |
                         d.BackFace.StencilFailOp << 16 | d.BackFace.StencilDepthFailOp << 20 | d.BackFace.StencilPassOp << 24 | d.BackFace.StencilFunc << 28;
-        uint32_t masks = d.StencilReadMask | d.StencilWriteMask << 8;
+        uint32_t stencil_write_mask = dsv_ && dsv_->read_only_stencil ? 0u : d.StencilWriteMask;
+        uint32_t masks = d.StencilReadMask | stencil_write_mask << 8;
         if (hash != dyn.stencil_hash || masks != (dyn.stencil_ref >> 8 & 0xFFFF) || stencil_ref_ != (dyn.stencil_ref & 0xFF)) {
             vk.vkCmdSetStencilOp(cmd_, VK_STENCIL_FACE_FRONT_BIT, stencil_op(d.FrontFace.StencilFailOp), stencil_op(d.FrontFace.StencilPassOp),
                                  stencil_op(d.FrontFace.StencilDepthFailOp), compare_of(d.FrontFace.StencilFunc));
             vk.vkCmdSetStencilOp(cmd_, VK_STENCIL_FACE_BACK_BIT, stencil_op(d.BackFace.StencilFailOp), stencil_op(d.BackFace.StencilPassOp),
                                  stencil_op(d.BackFace.StencilDepthFailOp), compare_of(d.BackFace.StencilFunc));
             vk.vkCmdSetStencilCompareMask(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, d.StencilReadMask);
-            vk.vkCmdSetStencilWriteMask(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, d.StencilWriteMask);
+            vk.vkCmdSetStencilWriteMask(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_write_mask);
             vk.vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_ref_ & 0xFF);
             dyn.stencil_hash = hash; dyn.stencil_ref = (stencil_ref_ & 0xFF) | masks << 8;
         }
@@ -1106,6 +1139,9 @@ void Context::dispatch(uint32_t x, uint32_t y, uint32_t z) {
     if (!pipeline) return;
     vk.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     bind_descriptors(VK_PIPELINE_BIND_POINT_COMPUTE, layout, shaders, 1);
+    if (gpu.trace_submissions())
+        log("RDVK_SUBMIT_DISPATCH serial=%llu frame=%llu cs=%s %ux%ux%u", (unsigned long long)gpu.serial(),
+            (unsigned long long)frames + 1, cs->name, x, y, z);
     vk.vkCmdDispatch(cmd_, x, y, z);
     /* D3D11 orders every dispatch before later reads and writes of its outputs. */
     VkMemoryBarrier mem{VK_STRUCTURE_TYPE_MEMORY_BARRIER};

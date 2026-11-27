@@ -12,6 +12,7 @@
 #include <vector>
 #include "d3d.h"
 #include "device.h"
+#include "shader_interface.h"
 #include "formats.h"
 
 namespace rdvk {
@@ -170,6 +171,8 @@ struct Shader : Object {
     uint8_t role = ROLE_NONE;
     VkShaderStageFlagBits stage = VK_SHADER_STAGE_VERTEX_BIT;
     VkShaderModule module = VK_NULL_HANDLE;   /* from the build-time library in the APK (shaders.cpp) */
+    ShaderOutputWidths output_widths{};
+    std::vector<uint32_t> fragment_spirv;   /* retained for the Qualcomm interface workaround */
     struct BindingInfo { VkDescriptorType type; uint32_t binding; VkImageViewType view; uint32_t slot; uint8_t space; };
     std::vector<BindingInfo> bindings;    /* resource bindings, `binding` = DXVK binding number */
     uint16_t cb_vec4[16] = {};            /* declared constant buffer sizes (vec4s) by slot, from dcl_constantbuffer */
@@ -211,7 +214,8 @@ void objects_init();
 
 /* Creation (D3D11 semantics; used by the COM layer and by native hooks). */
 uint32_t create_buffer(const d3d::BUFFER_DESC& desc, const d3d::SUBRESOURCE_DATA* data, Buffer** out);
-uint32_t create_texture(uint32_t dimension, const void* desc, const d3d::SUBRESOURCE_DATA* data, Texture** out);
+uint32_t create_texture(uint32_t dimension, const void* desc, const d3d::SUBRESOURCE_DATA* data, Texture** out,
+                        VkFormat extra_view = VK_FORMAT_UNDEFINED);
 uint32_t create_srv(Resource* resource, const d3d::SRV_DESC* desc, View** out);
 uint32_t create_rtv(Resource* resource, const d3d::RTV_DESC* desc, View** out);
 uint32_t create_dsv(Resource* resource, const d3d::DSV_DESC* desc, View** out);
